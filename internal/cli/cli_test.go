@@ -45,17 +45,34 @@ func TestCommandHelp(t *testing.T) {
 }
 
 func TestCommandArgumentErrorHasUsageStatus(t *testing.T) {
+	var stderr bytes.Buffer
 	status, err := Run(
 		context.Background(),
 		[]string{"restore", "example", "latest"},
 		&bytes.Buffer{},
-		&bytes.Buffer{},
+		&stderr,
 	)
 	if status != 2 {
 		t.Fatalf("status = %d, want 2", status)
 	}
 	if err == nil || !strings.Contains(err.Error(), "accepts 3 arg(s)") {
 		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Usage:") {
+		t.Fatalf("usage was not printed:\n%s", stderr.String())
+	}
+}
+
+func TestScheduleInstallArgumentErrorShowsExamples(t *testing.T) {
+	var stderr bytes.Buffer
+	status, err := Run(context.Background(), []string{"schedule", "install"}, io.Discard, &stderr)
+	if status != 2 || err == nil {
+		t.Fatalf("status=%d error=%v, want usage error", status, err)
+	}
+	for _, expected := range []string{"Usage:", "Examples:", "resticctl schedule install personal"} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("output does not contain %q:\n%s", expected, stderr.String())
+		}
 	}
 }
 

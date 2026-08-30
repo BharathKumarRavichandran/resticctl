@@ -25,8 +25,11 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	var expression, backend string
 	var catchUp, prune bool
 	command := &cobra.Command{
-		Use:               "install <profile> [backup|forget]",
-		Short:             "Install a cron or launchd backup schedule",
+		Use:   "install <profile> [backup|forget]",
+		Short: "Install a cron or launchd backup schedule",
+		Example: `  resticctl schedule install personal
+  resticctl schedule install personal --cron "0 2 * * *" --catch-up
+  resticctl schedule install personal forget`,
 		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: cli.completeProfiles,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {

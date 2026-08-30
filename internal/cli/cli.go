@@ -56,6 +56,9 @@ func (cli *commandLine) run(ctx context.Context, arguments []string) (int, error
 		if errors.As(err, &executionErr) {
 			return 1, executionErr.cause
 		}
+		if usageErr := cli.writeUsage(root, arguments); usageErr != nil {
+			return 2, errors.Join(err, usageErr)
+		}
 		return 2, err
 	}
 	return 0, nil
@@ -192,6 +195,14 @@ func execute(action func(*cobra.Command, []string) error) func(*cobra.Command, [
 		}
 		return nil
 	}
+}
+
+func (cli *commandLine) writeUsage(root *cobra.Command, arguments []string) error {
+	command, _, err := root.Find(arguments)
+	if err != nil || command == nil {
+		command = root
+	}
+	return writeOutput(cli.stderr, "%s", command.UsageString())
 }
 
 func writeOutput(writer io.Writer, format string, arguments ...any) error {

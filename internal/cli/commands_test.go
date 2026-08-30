@@ -161,6 +161,22 @@ func TestExecutionErrorHasRuntimeStatus(t *testing.T) {
 	}
 }
 
+func TestExecutionErrorDoesNotPrintUsage(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	var stderr strings.Builder
+	cli := newCommandLine(strings.NewReader(""), io.Discard, &stderr)
+	cli.newRunner = func() (app.Runner, error) { return nil, errors.New("runner unavailable") }
+
+	status, err := cli.run(context.Background(), []string{"backup", "example", "--config-dir", directory})
+	if status != 1 || err == nil {
+		t.Fatalf("status=%d error=%v", status, err)
+	}
+	if strings.Contains(stderr.String(), "Usage:") {
+		t.Fatalf("runtime failure printed usage:\n%s", stderr.String())
+	}
+}
+
 func writeCLIProfile(t *testing.T, directory string) {
 	t.Helper()
 	files := []struct {
