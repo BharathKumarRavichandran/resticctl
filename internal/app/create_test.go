@@ -33,6 +33,16 @@ func TestCreateProfileIsPrivateAndRefusesOverwrite(t *testing.T) {
 	if !strings.Contains(string(content), "example.credentials.json") {
 		t.Fatal("profile template does not reference its credentials file")
 	}
+	credentialsContent, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(credentialsContent), `"profile", "example"`) {
+		t.Fatal("credentials template does not contain the profile name")
+	}
+	if strings.Contains(string(content), "<profile>") || strings.Contains(string(credentialsContent), "<profile>") {
+		t.Fatal("generated files contain an unresolved profile placeholder")
+	}
 	profiles, err := profile.List(directory)
 	if err != nil {
 		t.Fatal(err)

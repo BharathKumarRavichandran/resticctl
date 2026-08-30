@@ -83,6 +83,12 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 		cli.initCommand(),
 		cli.backupCommand(),
 		cli.snapshotsCommand(),
+		cli.statsCommand(),
+		cli.lsCommand(),
+		cli.findCommand(),
+		cli.diffCommand(),
+		cli.dumpCommand(),
+		cli.keyCommand(),
 		cli.checkCommand(),
 		cli.forgetCommand(),
 		cli.restoreCommand(),
@@ -144,6 +150,17 @@ func (cli *commandLine) completeRestoreArguments(
 	default:
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+}
+
+func (cli *commandLine) completeFirstProfile(
+	command *cobra.Command,
+	arguments []string,
+	toComplete string,
+) ([]string, cobra.ShellCompDirective) {
+	if len(arguments) == 0 {
+		return cli.completeProfiles(command, arguments, toComplete)
+	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
 func (cli *commandLine) resolveConfigDir() (string, error) {

@@ -118,7 +118,7 @@ file:
 ```json
 {
   "password": {
-    "command": ["security", "find-generic-password", "-a", "<DEVICE>", "-s", "restic-<profile>", "-w"]
+    "command": ["security", "find-generic-password", "-a", "<device>", "-s", "restic-<profile>", "-w"]
   }
 }
 ```
@@ -127,7 +127,7 @@ The Keychain entry must exist before running `resticctl init`. Check for it
 without printing the password:
 
 ```sh
-security find-generic-password -a "<DEVICE>" -s "restic-<profile>" >/dev/null \
+security find-generic-password -a "<device>" -s "restic-<profile>" >/dev/null \
   && echo "Keychain entry found" \
   || echo "Keychain entry not found"
 ```
@@ -135,7 +135,7 @@ security find-generic-password -a "<DEVICE>" -s "restic-<profile>" >/dev/null \
 Create the entry interactively; macOS prompts for the repository password:
 
 ```sh
-security add-generic-password -a "<DEVICE>" -s "restic-<profile>" -w
+security add-generic-password -a "<device>" -s "restic-<profile>" -w
 ```
 
 A password file also works:
@@ -162,6 +162,14 @@ resticctl list
 resticctl init <profile>
 resticctl backup <profile> [--dry-run]
 resticctl snapshots <profile>
+resticctl stats <profile> [--mode <mode>]
+resticctl ls <profile> <snapshot> [path...]
+resticctl find <profile> <pattern>...
+resticctl diff <profile> <snapshot-a> <snapshot-b>
+resticctl dump <profile> <snapshot> <path>
+resticctl key list <profile>
+resticctl key add <profile>
+resticctl key remove <profile> <key-id>
 resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
@@ -202,6 +210,24 @@ resticctl restore <profile> latest <restore-directory>
 
 Checks the repository for errors. This reads repository data but does not
 change retention or remove files.
+
+### Repository inspection
+
+`stats` and `find` restrict snapshot selection to the profile's
+`profile:<name>` tag. `ls` and `dump` use that tag when resolving `latest`;
+explicit snapshot IDs can refer to any snapshot in the repository. `diff`
+compares two explicitly selected snapshots. `dump` writes a selected file to
+standard output, or a directory as a tar archive; use `--target` to write it to
+a file and `--archive zip` for ZIP output. Run each command with `--help` for
+its filtering and formatting flags.
+
+### `key`
+
+`key list` lists the keys that can unlock the repository. `key add` uses
+the profile's configured password to unlock the repository, then securely asks
+for a new password twice. `key remove` removes the specified key; restic refuses
+to remove the key currently being used by the profile. These commands change
+repository key metadata, not snapshots or backed-up data.
 
 ### `forget`
 

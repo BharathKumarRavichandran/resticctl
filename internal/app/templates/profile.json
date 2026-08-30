@@ -1,6 +1,6 @@
 {
-    "repository": "s3:https://s3.<REGION>.backblazeb2.com/<BUCKET>/restic",
-    "credentials_file": "PROFILE.credentials.json",
+    "repository": "s3:https://s3.<region>.backblazeb2.com/<bucket>/restic",
+    "credentials_file": "<profile>.credentials.json",
     "restic_args": ["--retry-lock", "2m"],
     "backup_paths": ["~/path/to/files"],
     "backup_args": ["--exclude-caches", "--skip-if-unchanged"],

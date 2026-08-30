@@ -31,6 +31,38 @@ func TestProfileCommandDispatch(t *testing.T) {
 		},
 		{name: "check", arguments: []string{"check", "example"}, want: []string{"check"}},
 		{
+			name:      "stats",
+			arguments: []string{"stats", "example", "--mode", "raw-data"},
+			want:      []string{"stats", "--tag", "profile:example", "--mode", "raw-data"},
+		},
+		{
+			name:      "ls",
+			arguments: []string{"ls", "example", "latest", "/documents", "--long", "--recursive"},
+			want:      []string{"ls", "latest", "--tag", "profile:example", "--long", "--recursive", "/documents"},
+		},
+		{
+			name:      "find",
+			arguments: []string{"find", "example", "*.json", "*.yaml", "--ignore-case"},
+			want:      []string{"find", "--tag", "profile:example", "--ignore-case", "*.json", "*.yaml"},
+		},
+		{
+			name:      "diff",
+			arguments: []string{"diff", "example", "abc123", "def456", "--metadata"},
+			want:      []string{"diff", "abc123", "def456", "--metadata"},
+		},
+		{
+			name:      "dump",
+			arguments: []string{"dump", "example", "latest", "/documents", "--archive", "zip", "--target", "backup.zip"},
+			want:      []string{"dump", "latest", "/documents", "--tag", "profile:example", "--archive", "zip", "--target", "backup.zip"},
+		},
+		{name: "key list", arguments: []string{"key", "list", "example"}, want: []string{"key", "list"}},
+		{name: "key add", arguments: []string{"key", "add", "example"}, want: []string{"key", "add"}},
+		{
+			name:      "key remove",
+			arguments: []string{"key", "remove", "example", "abc123"},
+			want:      []string{"key", "remove", "abc123"},
+		},
+		{
 			name:      "backup flags",
 			arguments: []string{"backup", "example", "--dry-run"},
 			want: []string{
@@ -71,6 +103,42 @@ func TestProfileCommandDispatch(t *testing.T) {
 				t.Fatalf("arguments = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestKeyRemoveRejectsForceFlag(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	runner := &recordingRunner{}
+	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+
+	status, err := cli.run(context.Background(), []string{
+		"key", "remove", "example", "--force", "--config-dir", directory,
+	})
+	if status != 2 || err == nil {
+		t.Fatalf("status=%d error=%v, want usage error", status, err)
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runs = %d, want 0", len(runner.runs))
+	}
+}
+
+func TestKeyRemoveRejectsInvalidKeyID(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	runner := &recordingRunner{}
+	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+
+	status, err := cli.run(context.Background(), []string{
+		"key", "remove", "example", "--config-dir", directory, "--", "not-a-key",
+	})
+	if status != 2 || err == nil || !strings.Contains(err.Error(), "invalid key ID") {
+		t.Fatalf("status=%d error=%v, want invalid key ID error", status, err)
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("runs = %d, want 0", len(runner.runs))
 	}
 }
 

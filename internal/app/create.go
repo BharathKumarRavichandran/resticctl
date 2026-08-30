@@ -49,11 +49,11 @@ func CreateProfile(configDir, name string) (profilePath, credentialsPath string,
 			}
 		}
 	}()
-	if err = createPrivateFile(profilePath, strings.ReplaceAll(string(profileTemplate), "PROFILE", name)); err != nil {
+	if err = createPrivateFile(profilePath, strings.ReplaceAll(string(profileTemplate), "<profile>", name)); err != nil {
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
 	created = append(created, profilePath)
-	if err = createPrivateFile(credentialsPath, strings.ReplaceAll(string(credentialsTemplate), "PROFILE", name)); err != nil {
+	if err = createPrivateFile(credentialsPath, strings.ReplaceAll(string(credentialsTemplate), "<profile>", name)); err != nil {
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
 	return profilePath, credentialsPath, nil

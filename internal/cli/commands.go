@@ -79,8 +79,149 @@ func (cli *commandLine) snapshotsCommand() *cobra.Command {
 	return cli.profileCommand("snapshots", "List snapshots for a profile", app.Snapshots)
 }
 
+func (cli *commandLine) statsCommand() *cobra.Command {
+	var mode string
+	command := cli.profileCommand("stats", "Show repository statistics for a profile", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+		return app.Stats(ctx, runner, backupProfile, mode)
+	})
+	command.Flags().StringVar(&mode, "mode", "", "counting mode (restore-size, files-by-contents, blobs-per-file, or raw-data)")
+	return command
+}
+
+func (cli *commandLine) lsCommand() *cobra.Command {
+	var long, recursive, humanReadable, reverse bool
+	var sort string
+	command := &cobra.Command{
+		Use:               "ls <profile> <snapshot> [path...]",
+		Short:             "List files in a snapshot",
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return app.ListSnapshot(ctx, runner, backupProfile, arguments[1], arguments[2:], long, recursive, humanReadable, sort, reverse)
+			})
+		}),
+	}
+	command.Flags().BoolVarP(&long, "long", "l", false, "show size and mode")
+	command.Flags().BoolVar(&recursive, "recursive", false, "include files in subdirectories")
+	command.Flags().BoolVar(&humanReadable, "human-readable", false, "print human-readable sizes")
+	command.Flags().StringVarP(&sort, "sort", "s", "", "sort by name, size, time, or extension")
+	command.Flags().BoolVar(&reverse, "reverse", false, "reverse the sort order")
+	return command
+}
+
+func (cli *commandLine) findCommand() *cobra.Command {
+	var ignoreCase, long, humanReadable, reverse bool
+	command := &cobra.Command{
+		Use:               "find <profile> <pattern>...",
+		Short:             "Find files in a profile's snapshots",
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return app.Find(ctx, runner, backupProfile, arguments[1:], ignoreCase, long, humanReadable, reverse)
+			})
+		}),
+	}
+	command.Flags().BoolVarP(&ignoreCase, "ignore-case", "i", false, "ignore case in patterns")
+	command.Flags().BoolVarP(&long, "long", "l", false, "show size and mode")
+	command.Flags().BoolVar(&humanReadable, "human-readable", false, "print human-readable sizes")
+	command.Flags().BoolVarP(&reverse, "reverse", "R", false, "show oldest snapshots first")
+	return command
+}
+
+func (cli *commandLine) diffCommand() *cobra.Command {
+	var metadata bool
+	command := &cobra.Command{
+		Use:               "diff <profile> <snapshot-a> <snapshot-b>",
+		Short:             "Compare two snapshots",
+		Args:              cobra.ExactArgs(3),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return app.Diff(ctx, runner, backupProfile, arguments[1], arguments[2], metadata)
+			})
+		}),
+	}
+	command.Flags().BoolVar(&metadata, "metadata", false, "show metadata changes")
+	return command
+}
+
+func (cli *commandLine) dumpCommand() *cobra.Command {
+	var archive, target string
+	command := &cobra.Command{
+		Use:               "dump <profile> <snapshot> <path>",
+		Short:             "Extract a file or directory from a snapshot",
+		Args:              cobra.ExactArgs(3),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return app.Dump(ctx, runner, backupProfile, arguments[1], arguments[2], archive, target)
+			})
+		}),
+	}
+	command.Flags().StringVarP(&archive, "archive", "a", "", "archive format (tar or zip)")
+	command.Flags().StringVarP(&target, "target", "t", "", "write output to a file")
+	return command
+}
+
 func (cli *commandLine) checkCommand() *cobra.Command {
 	return cli.profileCommand("check", "Check a repository for errors", app.Check)
+}
+
+func (cli *commandLine) keyCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:   "key",
+		Short: "Manage repository keys",
+		Args:  cobra.NoArgs,
+	}
+	command.AddCommand(
+		cli.profileCommand("list", "List repository keys", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return runner.Run(ctx, backupProfile, []string{"key", "list"}, "")
+		}),
+		cli.profileCommand("add", "Add a repository key", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return runner.Run(ctx, backupProfile, []string{"key", "add"}, "")
+		}),
+		cli.keyRemoveCommand(),
+	)
+	return command
+}
+
+func (cli *commandLine) keyRemoveCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <profile> <key-id>",
+		Short: "Remove a repository key",
+		Args: cobra.MatchAll(cobra.ExactArgs(2), func(_ *cobra.Command, arguments []string) error {
+			if !isKeyID(arguments[1]) {
+				return fmt.Errorf("invalid key ID: %s", arguments[1])
+			}
+			return nil
+		}),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return runner.Run(ctx, backupProfile, []string{"key", "remove", arguments[1]}, "")
+			})
+		}),
+	}
+}
+
+func isKeyID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for index := range len(value) {
+		if !isHexDigit(value[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(character byte) bool {
+	return character >= '0' && character <= '9' ||
+		character >= 'a' && character <= 'f' ||
+		character >= 'A' && character <= 'F'
 }
 
 func (cli *commandLine) forgetCommand() *cobra.Command {
