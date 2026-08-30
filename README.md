@@ -86,6 +86,10 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "prune": false
   },
   "check_args": [],
+  "check_before": true,
+  "check_after": false,
+  "prune_before": false,
+  "prune_after": true,
   "schedule": {
     "backend": "auto",
     "cron": "0 2 * * *",
@@ -209,6 +213,17 @@ before the first backup.
 
 Backs up the profile's files and configured SQLite databases. `--dry-run`
 passes the option to restic without writing a snapshot.
+
+Backup orchestration is configured with `check_before`, `check_after`,
+`prune_before`, and `prune_after`. The order is check-before, prune-before,
+backup, check-after, then prune-after; execution stops at the first failure.
+Prune options apply `forget_args` to this profile and run Restic `forget
+--prune`, so they require non-empty `forget_args`. During `--dry-run`, checks
+still run and both backup and retention operations receive `--dry-run`.
+
+SQLite copies exist only for the backup step: resticctl creates consistent
+temporary snapshots immediately before Restic backup and removes the staging
+directory before any check-after or prune-after operation.
 
 ### `snapshots`
 

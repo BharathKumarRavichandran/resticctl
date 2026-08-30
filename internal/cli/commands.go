@@ -73,6 +73,7 @@ func (cli *commandLine) backupCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:               "backup <profile>",
 		Short:             "Back up a profile",
+		Long:              "Back up a profile, including its configured check and prune orchestration steps.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: cli.completeProfiles,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {

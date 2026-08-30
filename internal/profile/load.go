@@ -100,6 +100,9 @@ func Load(configDir, name string) (Profile, error) {
 			}
 		}
 	}
+	if (backupProfile.PruneBefore || backupProfile.PruneAfter) && len(backupProfile.ForgetArgs) == 0 {
+		return Profile{}, errors.New("backup pruning requires non-empty forget_args")
+	}
 	if backupProfile.Schedule != nil {
 		schedule := backupProfile.Schedule
 		if schedule.Backend == "" {

@@ -111,6 +111,21 @@ func TestLoadRejectsReservedResticEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresForgetArgsForBackupPrune(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test",
+          "credentials_file":"credentials.json",
+          "backup_paths":["files"],
+          "prune_after":true
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "requires non-empty forget_args") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func TestLoadSchedule(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)

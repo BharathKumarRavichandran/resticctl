@@ -39,6 +39,10 @@ type Profile struct {
 	Tags            []string         `json:"tags"`
 	ForgetArgs      []string         `json:"forget_args"`
 	CheckArgs       []string         `json:"check_args"`
+	CheckBefore     bool             `json:"check_before"`
+	CheckAfter      bool             `json:"check_after"`
+	PruneBefore     bool             `json:"prune_before"`
+	PruneAfter      bool             `json:"prune_after"`
 	Schedule        *Schedule        `json:"schedule,omitempty"`
 	Forget          *ForgetSchedule  `json:"forget,omitempty"`
 	Credentials     Credentials      `json:"-"`

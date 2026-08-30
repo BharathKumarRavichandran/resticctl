@@ -18,6 +18,10 @@
         "prune": false
     },
     "check_args": [],
+    "check_before": false,
+    "check_after": false,
+    "prune_before": false,
+    "prune_after": false,
     "schedule": {
         "backend": "auto",
         "cron": "0 2 * * *",

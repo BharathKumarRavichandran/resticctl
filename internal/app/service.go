@@ -16,18 +16,37 @@ type Runner interface {
 	Run(context.Context, profile.Profile, []string, string) error
 }
 
-func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (backupErr error) {
-	if len(backupProfile.BackupPaths) == 0 && len(backupProfile.SQLiteDatabases) == 0 {
-		return errors.New("profile has no backup_paths or sqlite_databases")
+func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) error {
+	if err := validateBackupSources(backupProfile); err != nil {
+		return err
 	}
-	for _, path := range backupProfile.BackupPaths {
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("backup path not found: %s", path)
-		} else if err != nil {
-			return fmt.Errorf("cannot inspect backup path %s: %w", path, err)
+	if backupProfile.CheckBefore {
+		if err := Check(ctx, runner, backupProfile); err != nil {
+			return fmt.Errorf("check before backup: %w", err)
 		}
 	}
+	if backupProfile.PruneBefore {
+		if err := Forget(ctx, runner, backupProfile, dryRun, true); err != nil {
+			return fmt.Errorf("prune before backup: %w", err)
+		}
+	}
+	if err := backup(ctx, runner, backupProfile, dryRun, output); err != nil {
+		return err
+	}
+	if backupProfile.CheckAfter {
+		if err := Check(ctx, runner, backupProfile); err != nil {
+			return fmt.Errorf("check after backup: %w", err)
+		}
+	}
+	if backupProfile.PruneAfter {
+		if err := Forget(ctx, runner, backupProfile, dryRun, true); err != nil {
+			return fmt.Errorf("prune after backup: %w", err)
+		}
+	}
+	return nil
+}
 
+func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (backupErr error) {
 	arguments := []string{"backup", "--group-by", "host,tags", "--tag", profileTag(backupProfile)}
 	for _, tag := range backupProfile.Tags {
 		arguments = append(arguments, "--tag", tag)
@@ -70,6 +89,20 @@ func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	arguments = append(arguments, backupProfile.BackupPaths...)
 	arguments = append(arguments, "databases")
 	return runner.Run(ctx, backupProfile, arguments, staging)
+}
+
+func validateBackupSources(backupProfile profile.Profile) error {
+	if len(backupProfile.BackupPaths) == 0 && len(backupProfile.SQLiteDatabases) == 0 {
+		return errors.New("profile has no backup_paths or sqlite_databases")
+	}
+	for _, path := range backupProfile.BackupPaths {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup path not found: %s", path)
+		} else if err != nil {
+			return fmt.Errorf("cannot inspect backup path %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func Snapshots(ctx context.Context, runner Runner, backupProfile profile.Profile) error {
