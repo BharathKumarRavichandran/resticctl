@@ -71,3 +71,21 @@ func (client *Client) Run(
 	}
 	return nil
 }
+
+func (client *Client) RunHook(ctx context.Context, arguments []string) error {
+	command := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
+	command.Stdin = client.stdin
+	command.Stdout = client.stdout
+	command.Stderr = client.stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return fmt.Errorf("hook exited with status %d", exitError.ExitCode())
+		}
+		return fmt.Errorf("cannot execute hook: %w", err)
+	}
+	return nil
+}

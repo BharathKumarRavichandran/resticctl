@@ -189,6 +189,129 @@ func TestBackupCleansSQLiteStagingAfterBackupFailure(t *testing.T) {
 	}
 }
 
+func TestBackupHookLifecycle(t *testing.T) {
+	runner := &hookRecordingRunner{failRestic: errors.New("backup failed")}
+	backupProfile := profile.Profile{
+		Name: "example", BackupPaths: []string{t.TempDir()},
+		RunBefore:    []profile.Hook{{Command: []string{"before", "one"}}},
+		RunAfter:     []profile.Hook{{Command: []string{"after"}}},
+		RunAfterFail: []profile.Hook{{Command: []string{"failure"}}},
+		RunFinally:   []profile.Hook{{Command: []string{"finally"}}},
+	}
+	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	if !errors.Is(err, runner.failRestic) {
+		t.Fatalf("error = %v", err)
+	}
+	want := []string{"hook:before one", "restic:backup", "hook:failure", "hook:finally"}
+	if !slices.Equal(runner.events, want) {
+		t.Fatalf("events = %v, want %v", runner.events, want)
+	}
+}
+
+func TestBackupSuccessfulHookLifecycle(t *testing.T) {
+	runner := &hookRecordingRunner{}
+	backupProfile := profile.Profile{
+		Name: "example", BackupPaths: []string{t.TempDir()},
+		RunBefore:    []profile.Hook{{Command: []string{"before"}}},
+		RunAfter:     []profile.Hook{{Command: []string{"after"}}},
+		RunAfterFail: []profile.Hook{{Command: []string{"failure"}}},
+		RunFinally:   []profile.Hook{{Command: []string{"finally"}}},
+	}
+	if err := Backup(context.Background(), runner, backupProfile, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"hook:before", "restic:backup", "hook:after", "hook:finally"}
+	if !slices.Equal(runner.events, want) {
+		t.Fatalf("events = %v, want %v", runner.events, want)
+	}
+}
+
+func TestBackupBeforeHookFailureStopsWorkflow(t *testing.T) {
+	wantErr := errors.New("before failed")
+	runner := &hookRecordingRunner{failHook: "before", hookErr: wantErr}
+	backupProfile := profile.Profile{
+		Name: "example", BackupPaths: []string{t.TempDir()},
+		RunBefore:    []profile.Hook{{Command: []string{"before"}}, {Command: []string{"skipped"}}},
+		RunAfterFail: []profile.Hook{{Command: []string{"failure"}}},
+		RunFinally:   []profile.Hook{{Command: []string{"finally"}}},
+	}
+	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "run-before hook 1") {
+		t.Fatalf("error = %v", err)
+	}
+	want := []string{"hook:before", "hook:failure", "hook:finally"}
+	if !slices.Equal(runner.events, want) {
+		t.Fatalf("events = %v, want %v", runner.events, want)
+	}
+}
+
+func TestBackupHookTimeout(t *testing.T) {
+	runner := &hookRecordingRunner{waitForCancellation: "slow"}
+	backupProfile := profile.Profile{
+		Name: "example", BackupPaths: []string{t.TempDir()},
+		RunBefore:  []profile.Hook{{Command: []string{"slow"}, Timeout: "1ms"}},
+		RunFinally: []profile.Hook{{Command: []string{"finally"}}},
+	}
+	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestBackupCleansSQLiteStagingBeforeFailureHooks(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source.sqlite3")
+	database, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("CREATE TABLE data (value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+	runner := &hookRecordingRunner{failRestic: errors.New("backup failed"), checkStagingCleanup: true}
+	backupProfile := profile.Profile{
+		Name: "example", SQLiteDatabases: []profile.SQLiteDatabase{{Name: "primary", Path: source}},
+		RunAfterFail: []profile.Hook{{Command: []string{"failure"}}},
+	}
+	if err := Backup(context.Background(), runner, backupProfile, false, io.Discard); !errors.Is(err, runner.failRestic) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+type hookRecordingRunner struct {
+	events              []string
+	failRestic          error
+	failHook            string
+	hookErr             error
+	waitForCancellation string
+	staging             string
+	checkStagingCleanup bool
+}
+
+func (runner *hookRecordingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
+	runner.events = append(runner.events, "restic:"+arguments[0])
+	runner.staging = cwd
+	return runner.failRestic
+}
+
+func (runner *hookRecordingRunner) RunHook(ctx context.Context, arguments []string) error {
+	runner.events = append(runner.events, "hook:"+strings.Join(arguments, " "))
+	if runner.checkStagingCleanup && arguments[0] == "failure" {
+		if _, err := os.Stat(runner.staging); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("staging directory still exists: %v", err)
+		}
+	}
+	if arguments[0] == runner.waitForCancellation {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if arguments[0] == runner.failHook {
+		return runner.hookErr
+	}
+	return nil
+}
+
 type failingRunner struct {
 	runs   []recordedRun
 	failAt int
@@ -203,6 +326,8 @@ func (runner *failingRunner) Run(_ context.Context, _ profile.Profile, arguments
 	return nil
 }
 
+func (runner *failingRunner) RunHook(_ context.Context, _ []string) error { return nil }
+
 type cleanupCheckingRunner struct{ staging string }
 
 func (runner *cleanupCheckingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
@@ -215,3 +340,5 @@ func (runner *cleanupCheckingRunner) Run(_ context.Context, _ profile.Profile, a
 	}
 	return nil
 }
+
+func (runner *cleanupCheckingRunner) RunHook(_ context.Context, _ []string) error { return nil }

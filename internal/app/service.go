@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"resticctl/internal/profile"
 	"resticctl/internal/sqlitebackup"
@@ -14,12 +15,31 @@ import (
 
 type Runner interface {
 	Run(context.Context, profile.Profile, []string, string) error
+	RunHook(context.Context, []string) error
 }
 
-func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) error {
+func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (runErr error) {
 	if err := validateBackupSources(backupProfile); err != nil {
 		return err
 	}
+	defer func() {
+		runErr = errors.Join(runErr, runHooks(context.WithoutCancel(ctx), runner, "run-finally", backupProfile.RunFinally))
+	}()
+	if err := runHooks(ctx, runner, "run-before", backupProfile.RunBefore); err != nil {
+		runErr = err
+	} else {
+		runErr = runBackupWorkflow(ctx, runner, backupProfile, dryRun, output)
+		if runErr == nil {
+			runErr = runHooks(ctx, runner, "run-after", backupProfile.RunAfter)
+		}
+	}
+	if runErr != nil {
+		runErr = errors.Join(runErr, runHooks(context.WithoutCancel(ctx), runner, "run-after-fail", backupProfile.RunAfterFail))
+	}
+	return runErr
+}
+
+func runBackupWorkflow(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) error {
 	if backupProfile.CheckBefore {
 		if err := Check(ctx, runner, backupProfile); err != nil {
 			return fmt.Errorf("check before backup: %w", err)
@@ -41,6 +61,29 @@ func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if backupProfile.PruneAfter {
 		if err := Forget(ctx, runner, backupProfile, dryRun, true); err != nil {
 			return fmt.Errorf("prune after backup: %w", err)
+		}
+	}
+	return nil
+}
+
+func runHooks(ctx context.Context, runner Runner, phase string, hooks []profile.Hook) error {
+	for index, hook := range hooks {
+		timeout := profile.DefaultHookTimeout
+		if hook.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(hook.Timeout)
+			if err != nil || timeout <= 0 {
+				return fmt.Errorf("%s hook %d has invalid timeout %q", phase, index+1, hook.Timeout)
+			}
+		}
+		if len(hook.Command) == 0 {
+			return fmt.Errorf("%s hook %d has an empty command", phase, index+1)
+		}
+		hookCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := runner.RunHook(hookCtx, hook.Command)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s hook %d: %w", phase, index+1, err)
 		}
 	}
 	return nil

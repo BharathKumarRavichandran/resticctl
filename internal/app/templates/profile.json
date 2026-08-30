@@ -22,6 +22,10 @@
     "check_after": false,
     "prune_before": false,
     "prune_after": false,
+    "run_before": [],
+    "run_after": [],
+    "run_after_fail": [],
+    "run_finally": [],
     "schedule": {
         "backend": "auto",
         "cron": "0 2 * * *",

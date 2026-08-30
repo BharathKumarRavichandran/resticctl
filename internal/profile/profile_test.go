@@ -126,6 +126,46 @@ func TestLoadRequiresForgetArgsForBackupPrune(t *testing.T) {
 	}
 }
 
+func TestLoadHooks(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test",
+          "credentials_file":"credentials.json",
+          "run_before":[{"command":["prepare","--quiet"],"timeout":"30s"}],
+          "run_finally":[{"command":["cleanup"]}]
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.RunBefore) != 1 || loaded.RunBefore[0].Timeout != "30s" || len(loaded.RunFinally) != 1 {
+		t.Fatalf("hooks = %#v, %#v", loaded.RunBefore, loaded.RunFinally)
+	}
+}
+
+func TestLoadRejectsInvalidHooks(t *testing.T) {
+	for _, hook := range []string{
+		`{"command":[]}`,
+		`{"command":["valid",""]}`,
+		`{"command":["valid"],"timeout":"never"}`,
+		`{"command":["valid"],"timeout":"0s"}`,
+	} {
+		t.Run(hook, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{
+              "repository":"local:test",
+              "credentials_file":"credentials.json",
+              "run_before":[`+hook+`]
+            }`)
+			if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "run_before") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadSchedule(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)

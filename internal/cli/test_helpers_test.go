@@ -22,6 +22,8 @@ func (runner *recordingRunner) Run(
 	return nil
 }
 
+func (runner *recordingRunner) RunHook(_ context.Context, _ []string) error { return nil }
+
 type errorWriter struct{ err error }
 
 func (writer errorWriter) Write([]byte) (int, error) { return 0, writer.err }

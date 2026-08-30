@@ -90,6 +90,14 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
   "check_after": false,
   "prune_before": false,
   "prune_after": true,
+  "run_before": [
+    {"command": ["/usr/local/bin/prepare-backup"], "timeout": "30s"}
+  ],
+  "run_after": [],
+  "run_after_fail": [],
+  "run_finally": [
+    {"command": ["/usr/local/bin/finish-backup"], "timeout": "30s"}
+  ],
   "schedule": {
     "backend": "auto",
     "cron": "0 2 * * *",
@@ -224,6 +232,17 @@ still run and both backup and retention operations receive `--dry-run`.
 SQLite copies exist only for the backup step: resticctl creates consistent
 temporary snapshots immediately before Restic backup and removes the staging
 directory before any check-after or prune-after operation.
+
+Backup hooks use argument vectors and never invoke a shell implicitly. Each
+hook is an object with a non-empty `command` array and an optional Go-style
+`timeout` such as `30s` or `5m`; the default timeout is five minutes. Hooks run
+in their configured order. `run_before` failures stop the backup,
+`run_after` runs only after the full backup workflow succeeds,
+`run_after_fail` runs after a before, workflow, or after failure, and
+`run_finally` runs on both success and failure. A hook failure is returned to the caller and
+stops later hooks in the same phase. Failure and finally hooks are still given
+a bounded opportunity to run after cancellation. Temporary SQLite staging and
+temporary Restic password files are cleaned before failure/finally processing.
 
 ### `snapshots`
 

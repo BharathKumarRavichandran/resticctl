@@ -1,5 +1,7 @@
 package profile
 
+import "time"
+
 type SQLiteDatabase struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -28,6 +30,13 @@ type ForgetSchedule struct {
 	Prune    bool   `json:"prune"`
 }
 
+const DefaultHookTimeout = 5 * time.Minute
+
+type Hook struct {
+	Command []string `json:"command"`
+	Timeout string   `json:"timeout,omitempty"`
+}
+
 type Profile struct {
 	Name            string           `json:"-"`
 	Repository      string           `json:"repository"`
@@ -43,6 +52,10 @@ type Profile struct {
 	CheckAfter      bool             `json:"check_after"`
 	PruneBefore     bool             `json:"prune_before"`
 	PruneAfter      bool             `json:"prune_after"`
+	RunBefore       []Hook           `json:"run_before"`
+	RunAfter        []Hook           `json:"run_after"`
+	RunAfterFail    []Hook           `json:"run_after_fail"`
+	RunFinally      []Hook           `json:"run_finally"`
 	Schedule        *Schedule        `json:"schedule,omitempty"`
 	Forget          *ForgetSchedule  `json:"forget,omitempty"`
 	Credentials     Credentials      `json:"-"`

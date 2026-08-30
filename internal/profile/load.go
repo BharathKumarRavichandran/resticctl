@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"resticctl/internal/cronexpr"
 )
@@ -102,6 +103,32 @@ func Load(configDir, name string) (Profile, error) {
 	}
 	if (backupProfile.PruneBefore || backupProfile.PruneAfter) && len(backupProfile.ForgetArgs) == 0 {
 		return Profile{}, errors.New("backup pruning requires non-empty forget_args")
+	}
+	for _, hooks := range []struct {
+		name   string
+		values []Hook
+	}{
+		{"run_before", backupProfile.RunBefore},
+		{"run_after", backupProfile.RunAfter},
+		{"run_after_fail", backupProfile.RunAfterFail},
+		{"run_finally", backupProfile.RunFinally},
+	} {
+		for index, hook := range hooks.values {
+			if len(hook.Command) == 0 {
+				return Profile{}, fmt.Errorf("%s[%d].command must contain at least one argument", hooks.name, index)
+			}
+			for _, part := range hook.Command {
+				if part == "" || strings.ContainsRune(part, 0) {
+					return Profile{}, fmt.Errorf("%s[%d].command must not contain empty arguments or NUL bytes", hooks.name, index)
+				}
+			}
+			if hook.Timeout != "" {
+				timeout, err := time.ParseDuration(hook.Timeout)
+				if err != nil || timeout <= 0 {
+					return Profile{}, fmt.Errorf("%s[%d].timeout must be a positive duration", hooks.name, index)
+				}
+			}
+		}
 	}
 	if backupProfile.Schedule != nil {
 		schedule := backupProfile.Schedule
