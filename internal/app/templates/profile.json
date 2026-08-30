@@ -1,0 +1,25 @@
+{
+    "repository": "s3:https://s3.<REGION>.backblazeb2.com/<BUCKET>/restic",
+    "credentials_file": "PROFILE.credentials.json",
+    "restic_args": ["--retry-lock", "2m"],
+    "backup_paths": ["~/path/to/files"],
+    "backup_args": ["--exclude-caches", "--skip-if-unchanged"],
+    "tags": [],
+    "forget_args": [
+        "--keep-daily", "7",
+        "--keep-weekly", "5",
+        "--keep-monthly", "12",
+        "--keep-yearly", "3"
+    ],
+    "check_args": [],
+    "sqlite_databases": [
+        {
+            "name": "primary",
+            "path": "~/path/to/application.sqlite3"
+        },
+        {
+            "name": "secondary",
+            "path": "~/path/to/another.sqlite3"
+        }
+    ]
+}
