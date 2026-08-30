@@ -1,11 +1,10 @@
 //go:build windows
 
-package app
+package profile
 
 import (
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func platformConfigDir() string {
@@ -16,5 +15,3 @@ func platformConfigDir() string {
 }
 
 func ensureFileSecurity(os.FileInfo, string, string) error { return nil }
-
-func normalizeEnvKey(key string) string { return strings.ToUpper(key) }

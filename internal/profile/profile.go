@@ -1,0 +1,30 @@
+package profile
+
+type SQLiteDatabase struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type PasswordSource struct {
+	Command []string `json:"command"`
+	File    string   `json:"file"`
+}
+
+type Credentials struct {
+	Environment map[string]string `json:"environment"`
+	Password    PasswordSource    `json:"password"`
+}
+
+type Profile struct {
+	Name            string           `json:"-"`
+	Repository      string           `json:"repository"`
+	CredentialsFile string           `json:"credentials_file"`
+	BackupPaths     []string         `json:"backup_paths"`
+	SQLiteDatabases []SQLiteDatabase `json:"sqlite_databases"`
+	ResticArgs      []string         `json:"restic_args"`
+	BackupArgs      []string         `json:"backup_args"`
+	Tags            []string         `json:"tags"`
+	ForgetArgs      []string         `json:"forget_args"`
+	CheckArgs       []string         `json:"check_args"`
+	Credentials     Credentials      `json:"-"`
+}

@@ -8,6 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"resticctl/internal/profile"
+	"resticctl/internal/restic"
 )
 
 func TestRealResticEncryptedBackupAndRestore(t *testing.T) {
@@ -18,7 +21,6 @@ func TestRealResticEncryptedBackupAndRestore(t *testing.T) {
 	if err != nil {
 		t.Skip("set RESTIC_INTEGRATION=1 and install Restic")
 	}
-	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repository")
 	sourcePath := filepath.Join(directory, "source.sqlite3")
@@ -42,33 +44,39 @@ func TestRealResticEncryptedBackupAndRestore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ordinary, "file.txt"), []byte("ordinary data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	profile := Profile{
+	passwordFile := filepath.Join(directory, "password")
+	if err := os.WriteFile(passwordFile, []byte("test-password\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupProfile := profile.Profile{
 		Name:            "example",
 		Repository:      repository,
 		BackupPaths:     []string{ordinary},
-		SQLiteDatabases: []SQLiteDatabase{{Name: "primary", Path: sourcePath}},
+		SQLiteDatabases: []profile.SQLiteDatabase{{Name: "primary", Path: sourcePath}},
 		ResticArgs:      []string{"--no-cache"},
 		BackupArgs:      []string{"--skip-if-unchanged"},
-		Credentials: Credentials{Password: PasswordSource{
-			Command: []string{os.Args[0], "-test.run=TestPasswordHelper"},
-		}},
+		Credentials:     profile.Credentials{Password: profile.PasswordSource{File: passwordFile}},
 	}
-	restic := &Restic{executable: resticPath, stdin: nil, stdout: io.Discard, stderr: io.Discard}
+	t.Setenv("RESTICCTL_RESTIC_COMMAND", resticPath)
+	client, err := restic.New(nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	if err := restic.Run(ctx, profile, []string{"init"}, ""); err != nil {
+	if err := client.Run(ctx, backupProfile, []string{"init"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := Backup(ctx, restic, profile, false, io.Discard); err != nil {
+	if err := Backup(ctx, client, backupProfile, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if err := Snapshots(ctx, restic, profile); err != nil {
+	if err := Snapshots(ctx, client, backupProfile); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(ctx, restic, profile); err != nil {
+	if err := Check(ctx, client, backupProfile); err != nil {
 		t.Fatal(err)
 	}
 	restoreTarget := filepath.Join(directory, "restore")
-	if err := Restore(ctx, restic, profile, "latest", restoreTarget, false); err != nil {
+	if err := Restore(ctx, client, backupProfile, "latest", restoreTarget, false); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := sql.Open("sqlite", filepath.Join(restoreTarget, "databases", "primary.sqlite3"))

@@ -7,13 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"resticctl/internal/profile"
 )
 
 //go:embed templates/*.json
 var templateFiles embed.FS
 
 func CreateProfile(configDir, name string) (profilePath, credentialsPath string, err error) {
-	if err := ValidateProfileName(name); err != nil {
+	if err := profile.ValidateName(name); err != nil {
 		return "", "", err
 	}
 	profilePath = filepath.Join(configDir, name+".json")

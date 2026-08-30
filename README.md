@@ -165,6 +165,7 @@ resticctl snapshots <profile>
 resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
+resticctl completion <shell>
 ```
 
 ### `create`
@@ -212,6 +213,11 @@ pruning can take a while and requires delete access to the repository.
 
 Restores a snapshot into `<target>`. Use a snapshot ID or `latest` and add
 `--dry-run` to preview the restic command.
+
+### `completion`
+
+Generates a shell completion script. Follow the instructions printed by
+`resticctl completion --help` to install it for your shell.
 
 ## SQLite backups
 

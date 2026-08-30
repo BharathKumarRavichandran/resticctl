@@ -8,10 +8,14 @@ import (
 	"os/signal"
 	"sync/atomic"
 
-	"resticctl/internal/app"
+	"resticctl/internal/cli"
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -22,11 +26,12 @@ func main() {
 	go func() {
 		sig := <-signals
 		signalCode.Store(int32(exitCodeForSignal(sig)))
+		signal.Stop(signals)
 		cancel()
 	}()
 
-	status, err := app.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
-	os.Exit(finalStatus(status, err, signalCode.Load(), os.Stderr))
+	status, err := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	return finalStatus(status, err, signalCode.Load(), os.Stderr)
 }
 
 func finalStatus(status int, err error, signalCode int32, stderr io.Writer) int {

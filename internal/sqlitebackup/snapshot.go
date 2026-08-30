@@ -1,4 +1,4 @@
-package app
+package sqlitebackup
 
 import (
 	"context"
@@ -22,13 +22,13 @@ type onlineBackupper interface {
 	NewBackup(string) (*modernsqlite.Backup, error)
 }
 
-func CreateSnapshot(ctx context.Context, database SQLiteDatabase, destination string) (finalErr error) {
-	info, err := os.Stat(database.Path)
+func Create(ctx context.Context, sourcePath, destination string) (finalErr error) {
+	info, err := os.Stat(sourcePath)
 	if err != nil || !info.Mode().IsRegular() {
 		if errors.Is(err, os.ErrNotExist) || err == nil {
-			return fmt.Errorf("SQLite database not found: %s", database.Path)
+			return fmt.Errorf("SQLite database not found: %s", sourcePath)
 		}
-		return fmt.Errorf("cannot inspect SQLite database %s: %w", database.Path, err)
+		return fmt.Errorf("cannot inspect SQLite database %s: %w", sourcePath, err)
 	}
 	if _, err := os.Lstat(destination); err == nil {
 		return fmt.Errorf("refusing to overwrite SQLite snapshot: %s", destination)
@@ -46,7 +46,7 @@ func CreateSnapshot(ctx context.Context, database SQLiteDatabase, destination st
 		}
 	}()
 
-	sourceURI, err := sqliteURI(database.Path, "mode=ro")
+	sourceURI, err := sqliteURI(sourcePath, "mode=ro")
 	if err != nil {
 		return err
 	}
@@ -56,13 +56,13 @@ func CreateSnapshot(ctx context.Context, database SQLiteDatabase, destination st
 	}
 	source, err := sql.Open("sqlite", sourceURI)
 	if err != nil {
-		return fmt.Errorf("cannot open SQLite database %s: %w", database.Path, err)
+		return fmt.Errorf("cannot open SQLite database %s: %w", sourcePath, err)
 	}
 	defer source.Close()
 	source.SetMaxOpenConns(1)
 	connection, err := source.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("cannot open SQLite database %s: %w", database.Path, err)
+		return fmt.Errorf("cannot open SQLite database %s: %w", sourcePath, err)
 	}
 	defer connection.Close()
 	if err := connection.Raw(func(driverConnection any) error {
@@ -81,7 +81,7 @@ func CreateSnapshot(ctx context.Context, database SQLiteDatabase, destination st
 		}
 		return finishErr
 	}); err != nil {
-		return fmt.Errorf("cannot snapshot SQLite database %s: %w", database.Path, err)
+		return fmt.Errorf("cannot snapshot SQLite database %s: %w", sourcePath, err)
 	}
 
 	snapshotURI, err := sqliteURI(destination, "mode=ro")
@@ -110,7 +110,7 @@ func CreateSnapshot(ctx context.Context, database SQLiteDatabase, destination st
 		return fmt.Errorf("cannot read SQLite integrity result: %w", err)
 	}
 	if len(results) != 1 || results[0] != "ok" {
-		return fmt.Errorf("SQLite integrity check failed for %s: %v", database.Path, results)
+		return fmt.Errorf("SQLite integrity check failed for %s: %v", sourcePath, results)
 	}
 	if err := os.Chmod(destination, 0o600); err != nil {
 		return fmt.Errorf("cannot protect SQLite snapshot %s: %w", destination, err)

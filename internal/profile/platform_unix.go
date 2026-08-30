@@ -1,6 +1,6 @@
 //go:build !windows
 
-package app
+package profile
 
 import (
 	"fmt"
@@ -15,8 +15,6 @@ func platformConfigDir() string {
 	}
 	return ""
 }
-
-func normalizeEnvKey(key string) string { return key }
 
 func ensureFileSecurity(info os.FileInfo, path, label string) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)

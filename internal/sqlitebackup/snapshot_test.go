@@ -1,4 +1,4 @@
-package app
+package sqlitebackup
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func TestSnapshotIsConsistentWhileSourceIsOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := CreateSnapshot(context.Background(), SQLiteDatabase{Name: "primary", Path: sourcePath}, destination); err != nil {
+	if err := Create(context.Background(), sourcePath, destination); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := sql.Open("sqlite", destination)
@@ -70,8 +70,8 @@ func TestFailedSnapshotDoesNotLeaveDestination(t *testing.T) {
 	if err := os.WriteFile(source, []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := CreateSnapshot(context.Background(), SQLiteDatabase{Name: "invalid", Path: source}, destination); err == nil {
-		t.Fatal("CreateSnapshot succeeded for an invalid database")
+	if err := Create(context.Background(), source, destination); err == nil {
+		t.Fatal("Create succeeded for an invalid database")
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("incomplete snapshot still exists: %v", err)
