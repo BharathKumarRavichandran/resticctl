@@ -7,21 +7,26 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/schedule"
 )
 
 const Version = "0.1.0"
 
 type commandLine struct {
-	configDir string
-	stdout    io.Writer
-	stderr    io.Writer
-	newRunner func() (app.Runner, error)
+	configDir          string
+	stdout             io.Writer
+	stderr             io.Writer
+	newRunner          func() (app.Runner, error)
+	newScheduleManager func() schedule.Manager
+	executable         func() (string, error)
+	now                func() time.Time
 }
 
 type profileAction func(context.Context, app.Runner, profile.Profile) error
@@ -37,6 +42,9 @@ func newCommandLine(stdin io.Reader, stdout, stderr io.Writer) *commandLine {
 		newRunner: func() (app.Runner, error) {
 			return restic.New(stdin, stdout, stderr)
 		},
+		newScheduleManager: func() schedule.Manager { return schedule.NewManager() },
+		executable:         os.Executable,
+		now:                time.Now,
 	}
 }
 
@@ -92,6 +100,8 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 		cli.checkCommand(),
 		cli.forgetCommand(),
 		cli.restoreCommand(),
+		cli.statusCommand(),
+		cli.scheduleCommand(),
 	)
 	return root
 }

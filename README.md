@@ -79,7 +79,18 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "--keep-weekly", "5",
     "--keep-monthly", "12"
   ],
+  "forget": {
+    "schedule": "@weekly",
+    "backend": "auto",
+    "catch_up": true,
+    "prune": false
+  },
   "check_args": [],
+  "schedule": {
+    "backend": "auto",
+    "cron": "0 2 * * *",
+    "catch_up": true
+  },
   "sqlite_databases": [
     {
       "name": "notes",
@@ -173,6 +184,10 @@ resticctl key remove <profile> <key-id>
 resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
+resticctl status <profile> [--action backup|forget] [--json]
+resticctl schedule install <profile> [backup|forget] [--cron "<expression>"] [--backend auto|cron|launchd] [--catch-up]
+resticctl schedule status <profile> [backup|forget] [--json]
+resticctl schedule remove <profile> [backup|forget]
 resticctl completion <shell>
 ```
 
@@ -244,6 +259,115 @@ Restores a snapshot into `<target>`. Use a snapshot ID or `latest` and add
 
 Generates a shell completion script. Follow the instructions printed by
 `resticctl completion --help` to install it for your shell.
+
+## Scheduling and status
+
+Install a daily backup at 02:00:
+
+```sh
+resticctl schedule install <profile> --cron "0 2 * * *"
+```
+
+The schedule can instead be declared in the profile:
+
+```json
+{
+  "schedule": {
+    "backend": "auto",
+    "cron": "0 2 * * *",
+    "catch_up": true
+  }
+}
+```
+
+Then install or reconcile the generated scheduler job with:
+
+```sh
+resticctl schedule install <profile>
+```
+
+Explicit command flags override the corresponding profile values.
+
+Retention can have its own independent schedule:
+
+```json
+{
+  "forget_args": ["--keep-daily", "7", "--keep-monthly", "12"],
+  "forget": {
+    "schedule": "@daily",
+    "backend": "auto",
+    "catch_up": true,
+    "prune": false
+  }
+}
+```
+
+Install and inspect that job separately:
+
+```sh
+resticctl schedule install <profile> forget
+resticctl schedule status <profile> forget
+```
+
+Set `prune` only when scheduled pruning is intentional; pruning is more
+resource-intensive and requires repository delete access.
+
+The default `auto` backend uses launchd on macOS and cron on other Unix-like
+systems. Windows scheduling is not supported yet. You can select a backend
+explicitly with `--backend cron` or `--backend launchd`.
+
+Cron accepts a standard five-field expression. The initial launchd integration
+supports a number or `*` in each field; lists, ranges, steps, and named values
+are rejected because launchd does not interpret cron syntax directly.
+The portable aliases `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, and
+`@annually` are also accepted, as are the same names without `@`. Aliases are
+normalized to five-field expressions before installation.
+
+With `catch_up` enabled, resticctl runs at most one overdue backup when its
+scheduler starts again. It compares the cron schedule with the last successful
+backup; it does not replay every missed occurrence. Cron uses an additional
+`@reboot` entry. launchd uses `RunAtLoad` after login and also coalesces calendar
+events missed while the laptop was asleep into one event after wake. A
+powered-off machine cannot run the job until cron starts during boot or the
+launchd agent loads after login.
+
+For an action with no recorded success, catch-up timing starts from the time its
+schedule was installed. Installing a launchd job therefore does not immediately
+run a new backup or retention operation merely because no prior status exists.
+
+Inspect or remove the schedule with:
+
+```sh
+resticctl schedule status <profile>
+resticctl schedule remove <profile>
+```
+
+Generated jobs contain only the absolute resticctl path, configuration
+directory, and profile name. Repository and database credentials are loaded at
+runtime and are never written into the scheduler configuration. The current
+`PATH` is captured when installing a schedule so the scheduled process can find
+restic and configured credential commands; reinstall after changing tool
+locations.
+
+On macOS, persistent plist files are installed in
+`~/Library/LaunchAgents/io.resticctl.backup.<profile>.plist`. Cron jobs remain in
+the current user's crontab. Non-secret installed-schedule metadata remains under
+`<config-dir>/schedules/`.
+
+Each non-dry-run backup records its state, start and finish times, duration, and
+last successful completion time in a private file under the configuration
+directory. Backups for the same profile are locked so overlapping manual and
+scheduled runs fail safely. View the latest result with:
+
+```sh
+resticctl status <profile>
+resticctl status <profile> --action forget
+resticctl status <profile> --json
+```
+
+Status files intentionally do not store command output or error messages, which
+could contain sensitive paths or service details. Dry runs do not replace the
+latest real backup status.
 
 ## SQLite backups
 

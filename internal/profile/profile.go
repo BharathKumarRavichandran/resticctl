@@ -15,6 +15,19 @@ type Credentials struct {
 	Password    PasswordSource    `json:"password"`
 }
 
+type Schedule struct {
+	Backend string `json:"backend"`
+	Cron    string `json:"cron"`
+	CatchUp bool   `json:"catch_up"`
+}
+
+type ForgetSchedule struct {
+	Schedule string `json:"schedule"`
+	Backend  string `json:"backend"`
+	CatchUp  bool   `json:"catch_up"`
+	Prune    bool   `json:"prune"`
+}
+
 type Profile struct {
 	Name            string           `json:"-"`
 	Repository      string           `json:"repository"`
@@ -26,5 +39,7 @@ type Profile struct {
 	Tags            []string         `json:"tags"`
 	ForgetArgs      []string         `json:"forget_args"`
 	CheckArgs       []string         `json:"check_args"`
+	Schedule        *Schedule        `json:"schedule,omitempty"`
+	Forget          *ForgetSchedule  `json:"forget,omitempty"`
 	Credentials     Credentials      `json:"-"`
 }

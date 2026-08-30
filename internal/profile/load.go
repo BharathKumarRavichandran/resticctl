@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"resticctl/internal/cronexpr"
 )
 
 func Load(configDir, name string) (Profile, error) {
@@ -97,6 +99,37 @@ func Load(configDir, name string) (Profile, error) {
 				return Profile{}, fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
 			}
 		}
+	}
+	if backupProfile.Schedule != nil {
+		schedule := backupProfile.Schedule
+		if schedule.Backend == "" {
+			schedule.Backend = "auto"
+		}
+		if schedule.Backend != "auto" && schedule.Backend != "cron" && schedule.Backend != "launchd" {
+			return Profile{}, fmt.Errorf("schedule.backend must be auto, cron, or launchd: %s", schedule.Backend)
+		}
+		normalized, err := cronexpr.Normalize(schedule.Cron)
+		if err != nil {
+			return Profile{}, fmt.Errorf("invalid schedule.cron: %w", err)
+		}
+		schedule.Cron = normalized
+	}
+	if backupProfile.Forget != nil {
+		forget := backupProfile.Forget
+		if len(backupProfile.ForgetArgs) == 0 {
+			return Profile{}, errors.New("forget schedule requires non-empty forget_args")
+		}
+		if forget.Backend == "" {
+			forget.Backend = "auto"
+		}
+		if forget.Backend != "auto" && forget.Backend != "cron" && forget.Backend != "launchd" {
+			return Profile{}, fmt.Errorf("forget.backend must be auto, cron, or launchd: %s", forget.Backend)
+		}
+		normalized, err := cronexpr.Normalize(forget.Schedule)
+		if err != nil {
+			return Profile{}, fmt.Errorf("invalid forget.schedule: %w", err)
+		}
+		forget.Schedule = normalized
 	}
 	return backupProfile, nil
 }

@@ -111,6 +111,48 @@ func TestLoadRejectsReservedResticEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadSchedule(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test",
+          "credentials_file":"credentials.json",
+          "forget_args":["--keep-daily","7"],
+          "schedule":{"cron":" 0  2 * * * ","catch_up":true},
+          "forget":{"schedule":"@daily","catch_up":true,"prune":true}
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Schedule == nil || loaded.Schedule.Backend != "auto" || loaded.Schedule.Cron != "0 2 * * *" || !loaded.Schedule.CatchUp {
+		t.Fatalf("schedule = %#v", loaded.Schedule)
+	}
+	if loaded.Forget == nil || loaded.Forget.Backend != "auto" || loaded.Forget.Schedule != "0 0 * * *" || !loaded.Forget.CatchUp || !loaded.Forget.Prune {
+		t.Fatalf("forget = %#v", loaded.Forget)
+	}
+}
+
+func TestLoadRejectsInvalidSchedule(t *testing.T) {
+	for _, configuredSchedule := range []string{
+		`{"backend":"systemd","cron":"0 2 * * *"}`,
+		`{"backend":"auto","cron":"99 2 * * *"}`,
+	} {
+		t.Run(configuredSchedule, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{
+              "repository":"local:test",
+              "credentials_file":"credentials.json",
+              "schedule":`+configuredSchedule+`
+            }`)
+			if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "schedule") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadRequiresPrivateCredentialsFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission test")

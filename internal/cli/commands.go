@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
+	"resticctl/internal/runstatus"
 )
 
 func (cli *commandLine) createCommand() *cobra.Command {
@@ -68,11 +70,42 @@ func (cli *commandLine) initCommand() *cobra.Command {
 
 func (cli *commandLine) backupCommand() *cobra.Command {
 	var dryRun bool
-	command := cli.profileCommand("backup", "Back up a profile", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
-		return app.Backup(ctx, runner, backupProfile, dryRun, cli.stdout)
-	})
+	command := &cobra.Command{
+		Use:               "backup <profile>",
+		Short:             "Back up a profile",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			return cli.runBackup(command.Context(), configDir, backupProfile, dryRun)
+		}),
+	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview the backup without writing a snapshot")
 	return command
+}
+
+func (cli *commandLine) runBackup(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun bool) error {
+	runner, err := cli.newRunner()
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		return app.Backup(ctx, runner, backupProfile, true, cli.stdout)
+	}
+	recorder, err := runstatus.Begin(configDir, backupProfile.Name, cli.now())
+	if err != nil {
+		return err
+	}
+	runErr := app.Backup(ctx, runner, backupProfile, false, cli.stdout)
+	statusErr := recorder.Finish(runErr, cli.now())
+	return errors.Join(runErr, statusErr)
 }
 
 func (cli *commandLine) snapshotsCommand() *cobra.Command {
@@ -226,12 +259,43 @@ func isHexDigit(character byte) bool {
 
 func (cli *commandLine) forgetCommand() *cobra.Command {
 	var dryRun, prune bool
-	command := cli.profileCommand("forget", "Apply a profile's retention rules", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
-		return app.Forget(ctx, runner, backupProfile, dryRun, prune)
-	})
+	command := &cobra.Command{
+		Use:               "forget <profile>",
+		Short:             "Apply a profile's retention rules",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			return cli.runForget(command.Context(), configDir, backupProfile, dryRun, prune)
+		}),
+	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview retention changes")
 	command.Flags().BoolVar(&prune, "prune", false, "remove unreferenced repository data")
 	return command
+}
+
+func (cli *commandLine) runForget(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun, prune bool) error {
+	runner, err := cli.newRunner()
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		return app.Forget(ctx, runner, backupProfile, true, prune)
+	}
+	recorder, err := runstatus.BeginAction(configDir, backupProfile.Name, "forget", cli.now())
+	if err != nil {
+		return err
+	}
+	runErr := app.Forget(ctx, runner, backupProfile, false, prune)
+	statusErr := recorder.Finish(runErr, cli.now())
+	return errors.Join(runErr, statusErr)
 }
 
 func (cli *commandLine) restoreCommand() *cobra.Command {

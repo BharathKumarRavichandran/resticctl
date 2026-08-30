@@ -11,7 +11,18 @@
         "--keep-monthly", "12",
         "--keep-yearly", "3"
     ],
+    "forget": {
+        "schedule": "weekly",
+        "backend": "auto",
+        "catch_up": true,
+        "prune": false
+    },
     "check_args": [],
+    "schedule": {
+        "backend": "auto",
+        "cron": "0 2 * * *",
+        "catch_up": true
+    },
     "sqlite_databases": [
         {
             "name": "primary",

@@ -1,0 +1,108 @@
+package schedule
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+func (manager Manager) installLaunchd(ctx context.Context, configDir string, state State, fields []string, executable string) (string, error) {
+	calendar, err := launchdCalendar(fields)
+	if err != nil {
+		return "", err
+	}
+	path, err := manager.launchdJobPath(state.Profile, state.Action)
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("cannot create schedule directory: %w", err)
+	}
+	label := launchdLabel(state.Profile, state.Action)
+	arguments := scheduledArguments(executable, configDir, state)
+	var argumentXML strings.Builder
+	for _, argument := range arguments {
+		fmt.Fprintf(&argumentXML, "<string>%s</string>", xmlText(argument))
+	}
+	content := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>` + xmlText(label) + `</string>
+<key>ProgramArguments</key><array>` + argumentXML.String() + `</array>
+` + launchdEnvironment(manager.EnvironmentPath) + `
+<key>StartCalendarInterval</key>` + calendar + `
+` + launchdRunAtLoad(state.CatchUp) + `
+<key>ProcessType</key><string>Background</string>
+</dict></plist>
+`
+	if err := writePrivateAtomic(path, []byte(content)); err != nil {
+		return "", fmt.Errorf("cannot write launchd job %s: %w", path, err)
+	}
+	domain := "gui/" + strconv.Itoa(manager.UID)
+	_, _ = manager.Executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
+	output, err := manager.Executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
+	if err != nil {
+		_ = os.Remove(path)
+		return "", commandError("install launchd job", output, err)
+	}
+	legacyPath := filepath.Join(configDir, "schedules", label+".plist")
+	if state.Action == ActionBackup && legacyPath != path {
+		_ = os.Remove(legacyPath)
+	}
+	return path, nil
+}
+
+func (manager Manager) removeLaunchd(ctx context.Context, configDir string, state State) error {
+	jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+	if err != nil {
+		return err
+	}
+	domain := "gui/" + strconv.Itoa(manager.UID)
+	output, err := manager.Executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
+	if err != nil {
+		return commandError("unload launchd job", output, err)
+	}
+	jobFiles := []string{
+		jobFile,
+		filepath.Join(configDir, "schedules", launchdLabel(state.Profile, state.Action)+".plist"),
+	}
+	for _, jobFile := range jobFiles {
+		if err := os.Remove(jobFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("cannot remove launchd job %s: %w", jobFile, err)
+		}
+	}
+	return nil
+}
+
+func (manager Manager) launchdJobPath(name, action string) (string, error) {
+	if manager.LaunchAgentsDir == "" || !filepath.IsAbs(manager.LaunchAgentsDir) {
+		return "", errors.New("cannot determine an absolute Library/LaunchAgents directory")
+	}
+	return filepath.Join(manager.LaunchAgentsDir, launchdLabel(name, action)+".plist"), nil
+}
+
+func launchdLabel(name, action string) string {
+	if action == ActionBackup {
+		return "io.resticctl.backup." + name
+	}
+	return "io.resticctl." + action + "." + name
+}
+
+func launchdEnvironment(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "<key>EnvironmentVariables</key><dict><key>PATH</key><string>" + xmlText(path) + "</string></dict>"
+}
+
+func launchdRunAtLoad(enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	return "<key>RunAtLoad</key><true/>"
+}
