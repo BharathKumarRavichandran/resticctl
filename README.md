@@ -119,6 +119,35 @@ only apply to the command named by the field.
 databases are listed separately in `sqlite_databases`; for a SQLite-only
 profile, set `backup_paths` to `[]`.
 
+### Profile inheritance
+
+A profile can inherit shared settings from another profile in the same config
+directory:
+
+```json
+{
+  "parent": "shared",
+  "repository": "local:/backups/laptop",
+  "credentials_file": "laptop.credentials.json",
+  "backup_paths": ["~/Documents"],
+  "tags": ["laptop"]
+}
+```
+
+Inheritance may be nested. Scalar fields explicitly present in a child replace
+the parent value, including boolean fields set to `false`. Lists such as
+`backup_paths`, restic argument lists, tags, and hooks are appended parent-first.
+An empty child list therefore adds nothing; it does not clear an inherited
+list. SQLite databases are merged by case-insensitive `name`: a child entry
+replaces an inherited entry with the same name and new names are appended.
+`schedule` and `forget` objects are each inherited or replaced as a whole.
+
+`credentials_file` is never inherited. Every profile used directly must name
+its own private credentials file; a profile used only as a parent may omit one.
+Parent names use the same portable-name rules as profile names. Missing or
+invalid parents and inheritance cycles are rejected, and all validation runs
+on the fully merged profile before credentials are loaded or a command runs.
+
 ## Credentials
 
 For Backblaze's S3-compatible API, put the application key in the credentials

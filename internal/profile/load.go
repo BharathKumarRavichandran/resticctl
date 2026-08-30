@@ -18,15 +18,12 @@ func Load(configDir, name string) (Profile, error) {
 	if err := ValidateName(name); err != nil {
 		return Profile{}, err
 	}
+	configured, err := resolve(configDir, name, nil)
+	if err != nil {
+		return Profile{}, err
+	}
+	backupProfile := configured.profile(name)
 	profilePath := filepath.Join(configDir, name+".json")
-	if err := ensurePrivateFile(profilePath, "profile"); err != nil {
-		return Profile{}, err
-	}
-
-	var backupProfile Profile
-	if err := decodeStrict(profilePath, "profile", &backupProfile); err != nil {
-		return Profile{}, err
-	}
 	backupProfile.Name = name
 	if backupProfile.Repository == "" {
 		return Profile{}, errors.New("repository must be a non-empty string")
@@ -162,6 +159,165 @@ func Load(configDir, name string) (Profile, error) {
 		forget.Schedule = normalized
 	}
 	return backupProfile, nil
+}
+
+// profileConfig uses pointers for scalars so inheritance can distinguish an
+// omitted value from an explicit false or empty value.
+type profileConfig struct {
+	Parent          string           `json:"parent,omitempty"`
+	Repository      *string          `json:"repository"`
+	CredentialsFile *string          `json:"credentials_file"`
+	BackupPaths     []string         `json:"backup_paths"`
+	SQLiteDatabases []SQLiteDatabase `json:"sqlite_databases"`
+	ResticArgs      []string         `json:"restic_args"`
+	BackupArgs      []string         `json:"backup_args"`
+	Tags            []string         `json:"tags"`
+	ForgetArgs      []string         `json:"forget_args"`
+	CheckArgs       []string         `json:"check_args"`
+	CheckBefore     *bool            `json:"check_before"`
+	CheckAfter      *bool            `json:"check_after"`
+	PruneBefore     *bool            `json:"prune_before"`
+	PruneAfter      *bool            `json:"prune_after"`
+	RunBefore       []Hook           `json:"run_before"`
+	RunAfter        []Hook           `json:"run_after"`
+	RunAfterFail    []Hook           `json:"run_after_fail"`
+	RunFinally      []Hook           `json:"run_finally"`
+	Schedule        *Schedule        `json:"schedule,omitempty"`
+	Forget          *ForgetSchedule  `json:"forget,omitempty"`
+}
+
+func resolve(configDir, name string, chain []string) (profileConfig, error) {
+	if err := ValidateName(name); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid parent profile %q: %w", name, err)
+	}
+	for _, ancestor := range chain {
+		if strings.EqualFold(ancestor, name) {
+			return profileConfig{}, fmt.Errorf("profile inheritance cycle: %s", strings.Join(append(chain, name), " -> "))
+		}
+	}
+	path := filepath.Join(configDir, name+".json")
+	if err := ensurePrivateFile(path, "profile"); err != nil {
+		if len(chain) > 0 {
+			return profileConfig{}, fmt.Errorf("cannot load parent profile %q: %w", name, err)
+		}
+		return profileConfig{}, err
+	}
+	var child profileConfig
+	if err := decodeStrict(path, "profile", &child); err != nil {
+		return profileConfig{}, err
+	}
+	if err := validateConfiguredDatabases(child.SQLiteDatabases); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
+	}
+	if child.Parent == "" {
+		return child, nil
+	}
+	parent, err := resolve(configDir, child.Parent, append(chain, name))
+	if err != nil {
+		return profileConfig{}, err
+	}
+	return merge(parent, child), nil
+}
+
+func validateConfiguredDatabases(databases []SQLiteDatabase) error {
+	names := make(map[string]struct{}, len(databases))
+	for _, database := range databases {
+		normalized := strings.ToLower(database.Name)
+		if _, exists := names[normalized]; exists {
+			return fmt.Errorf("duplicate SQLite backup name: %s", database.Name)
+		}
+		names[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func merge(parent, child profileConfig) profileConfig {
+	result := parent
+	result.Parent = child.Parent
+	if child.Repository != nil {
+		result.Repository = child.Repository
+	}
+	// Credentials deliberately belong to the requested profile and are never inherited.
+	result.CredentialsFile = child.CredentialsFile
+	result.BackupPaths = appendCopy(parent.BackupPaths, child.BackupPaths)
+	result.SQLiteDatabases = mergeDatabases(parent.SQLiteDatabases, child.SQLiteDatabases)
+	result.ResticArgs = appendCopy(parent.ResticArgs, child.ResticArgs)
+	result.BackupArgs = appendCopy(parent.BackupArgs, child.BackupArgs)
+	result.Tags = appendCopy(parent.Tags, child.Tags)
+	result.ForgetArgs = appendCopy(parent.ForgetArgs, child.ForgetArgs)
+	result.CheckArgs = appendCopy(parent.CheckArgs, child.CheckArgs)
+	if child.CheckBefore != nil {
+		result.CheckBefore = child.CheckBefore
+	}
+	if child.CheckAfter != nil {
+		result.CheckAfter = child.CheckAfter
+	}
+	if child.PruneBefore != nil {
+		result.PruneBefore = child.PruneBefore
+	}
+	if child.PruneAfter != nil {
+		result.PruneAfter = child.PruneAfter
+	}
+	result.RunBefore = appendCopy(parent.RunBefore, child.RunBefore)
+	result.RunAfter = appendCopy(parent.RunAfter, child.RunAfter)
+	result.RunAfterFail = appendCopy(parent.RunAfterFail, child.RunAfterFail)
+	result.RunFinally = appendCopy(parent.RunFinally, child.RunFinally)
+	if child.Schedule != nil {
+		result.Schedule = child.Schedule
+	}
+	if child.Forget != nil {
+		result.Forget = child.Forget
+	}
+	return result
+}
+
+func appendCopy[T any](parent, child []T) []T {
+	return append(append([]T(nil), parent...), child...)
+}
+
+func mergeDatabases(parent, child []SQLiteDatabase) []SQLiteDatabase {
+	result := append([]SQLiteDatabase(nil), parent...)
+	positions := make(map[string]int, len(result))
+	for index, database := range result {
+		positions[strings.ToLower(database.Name)] = index
+	}
+	for _, database := range child {
+		if index, ok := positions[strings.ToLower(database.Name)]; ok {
+			result[index] = database
+		} else {
+			positions[strings.ToLower(database.Name)] = len(result)
+			result = append(result, database)
+		}
+	}
+	return result
+}
+
+func (configured profileConfig) profile(name string) Profile {
+	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
+		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs,
+		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
+		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
+		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
+		Schedule: configured.Schedule, Forget: configured.Forget}
+	if configured.Repository != nil {
+		value.Repository = *configured.Repository
+	}
+	if configured.CredentialsFile != nil {
+		value.CredentialsFile = *configured.CredentialsFile
+	}
+	if configured.CheckBefore != nil {
+		value.CheckBefore = *configured.CheckBefore
+	}
+	if configured.CheckAfter != nil {
+		value.CheckAfter = *configured.CheckAfter
+	}
+	if configured.PruneBefore != nil {
+		value.PruneBefore = *configured.PruneBefore
+	}
+	if configured.PruneAfter != nil {
+		value.PruneAfter = *configured.PruneAfter
+	}
+	return value
 }
 
 func loadCredentials(path string) (Credentials, error) {

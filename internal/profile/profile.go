@@ -39,6 +39,7 @@ type Hook struct {
 
 type Profile struct {
 	Name            string           `json:"-"`
+	Parent          string           `json:"parent,omitempty"`
 	Repository      string           `json:"repository"`
 	CredentialsFile string           `json:"credentials_file"`
 	BackupPaths     []string         `json:"backup_paths"`

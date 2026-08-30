@@ -28,6 +28,98 @@ func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesNestedInheritance(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:base",
+          "backup_paths":["base-files"],
+          "restic_args":["--retry-lock","1m"],
+          "tags":["base"],
+          "check_before":true,
+          "run_before":[{"command":["base-hook"]}],
+          "sqlite_databases":[{"name":"main","path":"base.sqlite"}]
+        }`)
+	writePrivate(t, filepath.Join(directory, "middle.json"), `{
+          "parent":"base",
+          "backup_args":["--exclude-caches"],
+          "tags":["middle"],
+          "sqlite_databases":[{"name":"extra","path":"extra.sqlite"}]
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "parent":"middle",
+          "repository":"local:child",
+          "credentials_file":"credentials.json",
+          "backup_paths":["child-files"],
+          "tags":["child"],
+          "check_before":false,
+          "run_before":[{"command":["child-hook"]}],
+          "sqlite_databases":[{"name":"MAIN","path":"child.sqlite"}]
+        }`)
+
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Repository != "local:child" || loaded.CheckBefore {
+		t.Fatalf("scalar overrides not applied: %#v", loaded)
+	}
+	if strings.Join(loaded.Tags, ",") != "base,middle,child" || len(loaded.BackupPaths) != 2 || len(loaded.RunBefore) != 2 {
+		t.Fatalf("inherited lists not appended parent-first: %#v", loaded)
+	}
+	if len(loaded.SQLiteDatabases) != 2 || loaded.SQLiteDatabases[0].Name != "MAIN" || !strings.HasSuffix(loaded.SQLiteDatabases[0].Path, "child.sqlite") {
+		t.Fatalf("SQLite merge = %#v", loaded.SQLiteDatabases)
+	}
+	if loaded.CredentialsFile != filepath.Join(directory, "credentials.json") {
+		t.Fatalf("credentials file = %q", loaded.CredentialsFile)
+	}
+}
+
+func TestLoadRejectsInheritanceCycle(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "one.json"), `{"parent":"two"}`)
+	writePrivate(t, filepath.Join(directory, "two.json"), `{"parent":"one"}`)
+	_, err := Load(directory, "one")
+	if err == nil || !strings.Contains(err.Error(), "one -> two -> one") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadRejectsMissingAndInvalidParent(t *testing.T) {
+	for name, parent := range map[string]string{"missing": "absent", "invalid": "../escape"} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"parent":"`+parent+`"}`)
+			_, err := Load(directory, "example")
+			if err == nil || !strings.Contains(err.Error(), "parent") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadDoesNotInheritCredentialsAndValidatesResolvedProfile(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "base-credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:test",
+          "credentials_file":"base-credentials.json",
+          "backup_args":["--repo=forbidden"]
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"parent":"base"}`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "credentials_file") {
+		t.Fatalf("Load error = %v", err)
+	}
+
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "valid-child.json"), `{"parent":"base","credentials_file":"credentials.json"}`)
+	_, err = Load(directory, "valid-child")
+	if err == nil || !strings.Contains(err.Error(), "must not override") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownJSONField(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
