@@ -1,6 +1,6 @@
 # resticctl
 
-A small [restic](https://restic.net/) wrapper for personal backups.
+A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
 
 A profile keeps the repository, paths, credentials, and retention rules in one place.
 The package also supports consistent backups of live SQLite databases, adding
@@ -45,7 +45,7 @@ This creates `<profile>.json` and `<profile>.credentials.json`. On Linux and mac
 live in `~/.config/resticctl`; on Windows they live in
 `%APPDATA%\resticctl`.
 
-Edit both files, then initialise the repository:
+Edit both files, then initialize the repository:
 
 ```sh
 resticctl init <profile>
@@ -157,19 +157,61 @@ mode `0600` for the files it creates.
 ## Commands
 
 ```text
-resticctl create PROFILE
+resticctl create <profile>
 resticctl list
-resticctl init PROFILE
-resticctl backup PROFILE [--dry-run]
-resticctl snapshots PROFILE
-resticctl check PROFILE
-resticctl forget PROFILE [--dry-run] [--prune]
-resticctl restore PROFILE SNAPSHOT TARGET [--dry-run]
+resticctl init <profile>
+resticctl backup <profile> [--dry-run]
+resticctl snapshots <profile>
+resticctl check <profile>
+resticctl forget <profile> [--dry-run] [--prune]
+resticctl restore <profile> <snapshot> <target> [--dry-run]
 ```
 
-Retention only runs when `forget` is called. Use `--dry-run` before enabling it
-in a scheduled job. Pruning is separate because it can take a while and requires
-delete access to the repository.
+### `create`
+
+Creates a profile JSON file and a matching credentials file. Replace
+`<profile>` with a name for the backup.
+
+### `list`
+
+Lists the profiles found in the configuration directory.
+
+### `init`
+
+Initializes the restic repository configured by the profile. Run this once
+before the first backup.
+
+### `backup`
+
+Backs up the profile's files and configured SQLite databases. `--dry-run`
+passes the option to restic without writing a snapshot.
+
+### `snapshots`
+
+`snapshots` lists the backups stored in the repository, including their IDs,
+dates, host names, paths, and tags. Use an ID (or `latest`) with `restore` to
+retrieve one:
+
+```sh
+resticctl snapshots <profile>
+resticctl restore <profile> latest <restore-directory>
+```
+
+### `check`
+
+Checks the repository for errors. This reads repository data but does not
+change retention or remove files.
+
+### `forget`
+
+Applies the profile's retention rules to remove old snapshot references.
+`--dry-run` previews the changes. Add `--prune` to remove unreferenced data;
+pruning can take a while and requires delete access to the repository.
+
+### `restore`
+
+Restores a snapshot into `<target>`. Use a snapshot ID or `latest` and add
+`--dry-run` to preview the restic command.
 
 ## SQLite backups
 
