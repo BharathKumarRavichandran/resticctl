@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"resticctl/internal/profile"
 )
 
 type helperResult struct {
@@ -50,16 +48,14 @@ func TestResticHelper(t *testing.T) {
 func TestResticUsesAndRemovesTemporaryPasswordFile(t *testing.T) {
 	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
 	logPath := filepath.Join(t.TempDir(), "restic.json")
-	backupProfile := profile.Profile{
+	config := Config{
 		Repository: "local:repository",
-		ResticArgs: []string{"--no-cache"},
-		Credentials: profile.Credentials{
-			Environment: map[string]string{
-				"GO_WANT_RESTIC_HELPER": "1",
-				"RESTIC_HELPER_LOG":     logPath,
-			},
-			Password: profile.PasswordSource{Command: []string{os.Args[0], "-test.run=TestPasswordHelper"}},
+		Arguments:  []string{"--no-cache"},
+		Environment: map[string]string{
+			"GO_WANT_RESTIC_HELPER": "1",
+			"RESTIC_HELPER_LOG":     logPath,
 		},
+		PasswordCommand: []string{os.Args[0], "-test.run=TestPasswordHelper"},
 	}
 	client := &Client{
 		executable:      os.Args[0],
@@ -68,7 +64,7 @@ func TestResticUsesAndRemovesTemporaryPasswordFile(t *testing.T) {
 		stdout:          io.Discard,
 		stderr:          io.Discard,
 	}
-	if err := client.Run(context.Background(), backupProfile, []string{"snapshots"}, ""); err != nil {
+	if err := client.Run(context.Background(), config, []string{"snapshots"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(logPath)

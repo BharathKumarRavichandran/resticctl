@@ -44,21 +44,62 @@ func (OSExecutor) Run(ctx context.Context, input []byte, name string, arguments 
 }
 
 type Manager struct {
-	Executor        Executor
-	GOOS            string
-	UID             int
-	EnvironmentPath string
-	LaunchAgentsDir string
-	Now             func() time.Time
+	executor        Executor
+	goos            string
+	uid             int
+	environmentPath string
+	launchAgentsDir string
+	now             func() time.Time
 }
 
-func NewManager() Manager {
-	home, _ := os.UserHomeDir()
-	return Manager{
-		Executor: OSExecutor{}, GOOS: runtime.GOOS, UID: platformUID(),
-		EnvironmentPath: os.Getenv("PATH"), LaunchAgentsDir: filepath.Join(home, "Library", "LaunchAgents"),
-		Now: time.Now,
+// Option customizes a Manager constructed by NewManager.
+type Option func(*Manager)
+
+// WithExecutor replaces the operating-system command executor.
+func WithExecutor(executor Executor) Option {
+	return func(manager *Manager) {
+		if executor != nil {
+			manager.executor = executor
+		}
 	}
+}
+
+// WithPlatform overrides the operating system and user ID used by scheduler backends.
+func WithPlatform(goos string, uid int) Option {
+	return func(manager *Manager) { manager.goos, manager.uid = goos, uid }
+}
+
+// WithEnvironmentPath sets the PATH recorded in installed jobs.
+func WithEnvironmentPath(path string) Option {
+	return func(manager *Manager) { manager.environmentPath = path }
+}
+
+// WithLaunchAgentsDir sets the macOS LaunchAgents directory.
+func WithLaunchAgentsDir(path string) Option {
+	return func(manager *Manager) { manager.launchAgentsDir = path }
+}
+
+// WithClock replaces the clock used for installation timestamps.
+func WithClock(now func() time.Time) Option {
+	return func(manager *Manager) {
+		if now != nil {
+			manager.now = now
+		}
+	}
+}
+
+// NewManager constructs a scheduler manager for the current process.
+func NewManager(options ...Option) Manager {
+	home, _ := os.UserHomeDir()
+	manager := Manager{
+		executor: OSExecutor{}, goos: runtime.GOOS, uid: platformUID(),
+		environmentPath: os.Getenv("PATH"), launchAgentsDir: filepath.Join(home, "Library", "LaunchAgents"),
+		now: time.Now,
+	}
+	for _, option := range options {
+		option(&manager)
+	}
+	return manager
 }
 
 func (manager Manager) Install(ctx context.Context, configDir, name, expression, backend, executable string, catchUp bool) (State, error) {
@@ -102,7 +143,7 @@ func (manager Manager) InstallAction(ctx context.Context, configDir, name, actio
 	}
 	state := State{
 		Profile: name, Backend: backend, Expression: normalized,
-		Installed: manager.Now().UTC(), CatchUp: catchUp, Action: action, Prune: prune,
+		Installed: manager.now().UTC(), CatchUp: catchUp, Action: action, Prune: prune,
 	}
 	if backend == BackendLaunchd {
 		state.JobFile, err = manager.launchdJobPath(name, action)
@@ -211,8 +252,8 @@ func (manager Manager) Verify(ctx context.Context, state State) error {
 	case BackendCron:
 		return nil
 	case BackendLaunchd:
-		domain := "gui/" + strconv.Itoa(manager.UID)
-		output, err := manager.Executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
+		domain := "gui/" + strconv.Itoa(manager.uid)
+		output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
 		}
@@ -261,10 +302,10 @@ func definitionHash(definition []byte) string {
 
 func (manager Manager) resolveBackend(backend string) (string, error) {
 	if backend == "" || backend == BackendAuto {
-		if manager.GOOS == "darwin" {
+		if manager.goos == "darwin" {
 			return BackendLaunchd, nil
 		}
-		if manager.GOOS == "windows" {
+		if manager.goos == "windows" {
 			return "", errors.New("automatic scheduling is not supported on Windows")
 		}
 		return BackendCron, nil
@@ -272,10 +313,10 @@ func (manager Manager) resolveBackend(backend string) (string, error) {
 	if backend != BackendCron && backend != BackendLaunchd {
 		return "", fmt.Errorf("unsupported schedule backend %q", backend)
 	}
-	if backend == BackendLaunchd && manager.GOOS != "darwin" {
+	if backend == BackendLaunchd && manager.goos != "darwin" {
 		return "", errors.New("launchd scheduling is only available on macOS")
 	}
-	if backend == BackendCron && manager.GOOS == "windows" {
+	if backend == BackendCron && manager.goos == "windows" {
 		return "", errors.New("cron scheduling is not available on Windows")
 	}
 	return backend, nil
@@ -287,8 +328,8 @@ func shellQuote(value string) string {
 
 func (manager Manager) jobArguments(executable, configDir string, state State) []string {
 	arguments := scheduledArguments(executable, configDir, state)
-	if manager.EnvironmentPath != "" {
-		arguments = append([]string{"/usr/bin/env", "PATH=" + manager.EnvironmentPath}, arguments...)
+	if manager.environmentPath != "" {
+		arguments = append([]string{"/usr/bin/env", "PATH=" + manager.environmentPath}, arguments...)
 	}
 	return arguments
 }

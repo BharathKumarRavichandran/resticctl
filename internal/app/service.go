@@ -12,11 +12,12 @@ import (
 
 	"resticctl/internal/databasebackup"
 	"resticctl/internal/profile"
+	"resticctl/internal/restic"
 )
 
-// ResticRunner executes a Restic argument vector for a profile.
+// ResticRunner executes a Restic argument vector for a repository.
 type ResticRunner interface {
-	Run(context.Context, profile.Profile, []string, string) error
+	Run(context.Context, restic.Config, []string, string) error
 }
 
 // HookRunner executes a lifecycle hook without invoking a shell.
@@ -29,6 +30,16 @@ type Runner interface {
 	ResticRunner
 	HookRunner
 	RunDatabase(context.Context, []string, map[string]string, string) error
+}
+
+func resticConfig(backupProfile profile.Profile) restic.Config {
+	return restic.Config{
+		Repository:      backupProfile.Repository,
+		Arguments:       backupProfile.ResticArgs,
+		Environment:     backupProfile.Credentials.Environment,
+		PasswordCommand: backupProfile.Credentials.Password.Command,
+		PasswordFile:    backupProfile.Credentials.Password.File,
+	}
 }
 
 func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (runErr error) {
@@ -122,7 +133,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if len(backupProfile.SQLiteDatabases) == 0 && len(backupProfile.PostgreSQLDatabases) == 0 && len(backupProfile.MongoDBDatabases) == 0 {
 		arguments = append(arguments, "--")
 		arguments = append(arguments, backupProfile.BackupPaths...)
-		return runner.Run(ctx, backupProfile, arguments, "")
+		return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
 	}
 
 	staging, err := os.MkdirTemp("", "resticctl-"+backupProfile.Name+"-")
@@ -157,7 +168,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	arguments = append(arguments, "--")
 	arguments = append(arguments, backupProfile.BackupPaths...)
 	arguments = append(arguments, "databases")
-	return runner.Run(ctx, backupProfile, arguments, staging)
+	return runner.Run(ctx, resticConfig(backupProfile), arguments, staging)
 }
 
 func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, staging string, backupProfile profile.Profile, providers []databasebackup.Provider, output io.Writer) error {

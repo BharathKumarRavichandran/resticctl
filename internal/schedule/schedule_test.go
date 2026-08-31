@@ -46,7 +46,7 @@ func TestCronInstallReplaceAndRemove(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{crontab: "MAILTO=user@example.com\n"}
 	now := time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC)
-	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: func() time.Time { return now }}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: func() time.Time { return now }}
 
 	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendAuto, "/usr/local/bin/resticctl", false)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
 	launchAgents := filepath.Join(directory, "Library", "LaunchAgents")
-	manager := Manager{Executor: executor, GOOS: "darwin", UID: 501, LaunchAgentsDir: launchAgents, Now: time.Now}
+	manager := Manager{executor: executor, goos: "darwin", uid: 501, launchAgentsDir: launchAgents, now: time.Now}
 	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendAuto, "/Applications/Restic Tools/resticctl", true)
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +135,8 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 func TestVerifyLaunchdScheduleDetectsMissingJob(t *testing.T) {
 	directory := t.TempDir()
 	manager := Manager{
-		Executor: &fakeExecutor{}, GOOS: "darwin", UID: 501,
-		LaunchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), Now: time.Now,
+		executor: &fakeExecutor{}, goos: "darwin", uid: 501,
+		launchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), now: time.Now,
 	}
 	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendLaunchd, "/bin/resticctl", false)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestVerifyLaunchdScheduleDetectsMissingJob(t *testing.T) {
 func TestBackupAndForgetSchedulesAreIndependent(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
-	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: time.Now}
 	if _, err := manager.Install(context.Background(), directory, "example", "0 2 * * *", BackendCron, "/bin/resticctl", false); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestBackupAndForgetSchedulesAreIndependent(t *testing.T) {
 }
 
 func TestScheduleValidation(t *testing.T) {
-	manager := Manager{Executor: &fakeExecutor{}, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := Manager{executor: &fakeExecutor{}, goos: "linux", uid: 1000, now: time.Now}
 	for _, expression := range []string{"", "0 1 * *", "0 1 * * *\n* * * * *", "0 1 $ * *"} {
 		if _, err := manager.Install(context.Background(), t.TempDir(), "example", expression, BackendCron, "/bin/resticctl", false); err == nil {
 			t.Fatalf("expression %q was accepted", expression)
@@ -195,7 +195,7 @@ func TestScheduleValidation(t *testing.T) {
 func TestVerifyCronScheduleDetectsDrift(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
-	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: time.Now}
 	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendCron, "/bin/resticctl", false)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestVerifyCronScheduleDetectsDrift(t *testing.T) {
 func TestVerifyCronSchedulePreservesReadError(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
-	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: time.Now}
 	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendCron, "/bin/resticctl", false)
 	if err != nil {
 		t.Fatal(err)
@@ -228,8 +228,8 @@ func TestRemoveLaunchdScheduleAlreadyUnloaded(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
 	manager := Manager{
-		Executor: executor, GOOS: "darwin", UID: 501,
-		LaunchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), Now: time.Now,
+		executor: executor, goos: "darwin", uid: 501,
+		launchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), now: time.Now,
 	}
 	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendLaunchd, "/bin/resticctl", false)
 	if err != nil {
@@ -262,7 +262,7 @@ func TestNoCrontabDetectionRequiresExpectedDiagnostic(t *testing.T) {
 }
 
 func TestLaunchdRejectsUnsupportedCronSyntax(t *testing.T) {
-	manager := Manager{Executor: &fakeExecutor{}, GOOS: "darwin", UID: 501, LaunchAgentsDir: t.TempDir(), Now: time.Now}
+	manager := Manager{executor: &fakeExecutor{}, goos: "darwin", uid: 501, launchAgentsDir: t.TempDir(), now: time.Now}
 	if _, err := manager.Install(context.Background(), t.TempDir(), "example", "*/5 * * * *", BackendLaunchd, "/bin/resticctl", false); err == nil {
 		t.Fatal("launchd accepted a step expression")
 	}

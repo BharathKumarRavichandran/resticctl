@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"resticctl/internal/profile"
+	"resticctl/internal/restic"
 )
 
 func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
@@ -146,6 +147,30 @@ func TestRunResticPassesArgumentsThrough(t *testing.T) {
 	want := []string{"tag", "--add", "old", "new"}
 	if !slices.Equal(runner.runs[0].arguments, want) {
 		t.Fatalf("arguments = %v, want %v", runner.runs[0].arguments, want)
+	}
+}
+
+func TestResticRunnerReceivesOnlyRepositoryConfiguration(t *testing.T) {
+	runner := &recordingRunner{}
+	backupProfile := profile.Profile{
+		Name:       "example",
+		Repository: "local:repository",
+		ResticArgs: []string{"--no-cache"},
+		Credentials: profile.Credentials{
+			Environment:         map[string]string{"AWS_ACCESS_KEY_ID": "key"},
+			DatabaseEnvironment: map[string]string{"PGPASSWORD": "database-secret"},
+			Password:            profile.PasswordSource{File: "/private/password"},
+		},
+	}
+	if err := Snapshots(context.Background(), runner, backupProfile); err != nil {
+		t.Fatal(err)
+	}
+	config := runner.runs[0].config
+	if config.Repository != backupProfile.Repository || config.PasswordFile != "/private/password" {
+		t.Fatalf("Restic config = %#v", config)
+	}
+	if _, exists := config.Environment["PGPASSWORD"]; exists {
+		t.Fatal("database credentials were passed to the Restic runner")
 	}
 }
 
@@ -403,7 +428,7 @@ type hookRecordingRunner struct {
 	createPath          string
 }
 
-func (runner *hookRecordingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
+func (runner *hookRecordingRunner) Run(_ context.Context, _ restic.Config, arguments []string, cwd string) error {
 	runner.events = append(runner.events, "restic:"+arguments[0])
 	runner.staging = cwd
 	return runner.failRestic
@@ -440,7 +465,7 @@ type failingRunner struct {
 	err    error
 }
 
-func (runner *failingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
+func (runner *failingRunner) Run(_ context.Context, _ restic.Config, arguments []string, cwd string) error {
 	runner.runs = append(runner.runs, recordedRun{arguments: append([]string(nil), arguments...), cwd: cwd})
 	if len(runner.runs) == runner.failAt {
 		return runner.err
@@ -464,7 +489,7 @@ type concurrentDatabaseRunner struct {
 	passwords map[string]string
 }
 
-func (runner *concurrentDatabaseRunner) Run(_ context.Context, _ profile.Profile, _ []string, _ string) error {
+func (runner *concurrentDatabaseRunner) Run(_ context.Context, _ restic.Config, _ []string, _ string) error {
 	return nil
 }
 
@@ -488,7 +513,7 @@ func (runner *concurrentDatabaseRunner) RunDatabase(_ context.Context, arguments
 	return nil
 }
 
-func (runner *cleanupCheckingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
+func (runner *cleanupCheckingRunner) Run(_ context.Context, _ restic.Config, arguments []string, cwd string) error {
 	if arguments[0] == "backup" {
 		runner.staging = cwd
 		return nil

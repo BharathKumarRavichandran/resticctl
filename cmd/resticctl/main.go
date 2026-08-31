@@ -12,6 +12,8 @@ import (
 
 	"resticctl/internal/app"
 	"resticctl/internal/cli"
+	"resticctl/internal/process"
+	"resticctl/internal/profile"
 	"resticctl/internal/restic"
 	"resticctl/internal/schedule"
 )
@@ -38,13 +40,29 @@ func run() int {
 	}()
 
 	status, err := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, cli.Dependencies{
-		NewRunner:          func() (app.Runner, error) { return restic.New(os.Stdin, os.Stdout, os.Stderr) },
+		NewRunner:          newRunner,
 		NewScheduleManager: func() schedule.Manager { return schedule.NewManager() },
 		Executable:         os.Executable,
 		Now:                time.Now,
 		Version:            buildVersion(),
 	})
 	return finalStatus(status, err, signalCode.Load(), os.Stderr)
+}
+
+type applicationRunner struct {
+	*restic.Client
+	*process.Executor
+}
+
+func newRunner() (app.Runner, error) {
+	client, err := restic.New(os.Stdin, os.Stdout, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	return &applicationRunner{
+		Client:   client,
+		Executor: process.NewExecutor(os.Stdin, os.Stdout, os.Stderr, profile.IsReservedEnvironment),
+	}, nil
 }
 
 func buildVersion() string {

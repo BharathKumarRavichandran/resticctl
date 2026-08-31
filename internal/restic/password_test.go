@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"resticctl/internal/profile"
 )
 
 func TestPasswordHelper(t *testing.T) {
@@ -25,8 +23,8 @@ func TestPasswordHelper(t *testing.T) {
 
 func TestTemporaryPasswordFileIsPrivate(t *testing.T) {
 	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
-	credentials := profile.Credentials{Password: profile.PasswordSource{Command: []string{os.Args[0], "-test.run=TestPasswordHelper"}}}
-	path, temporary, err := preparePasswordFile(context.Background(), credentials)
+	config := Config{PasswordCommand: []string{os.Args[0], "-test.run=TestPasswordHelper"}}
+	path, temporary, err := preparePasswordFile(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +51,8 @@ func TestTemporaryPasswordFileIsPrivate(t *testing.T) {
 }
 
 func TestPasswordCommandErrorDoesNotRevealArguments(t *testing.T) {
-	credentials := profile.Credentials{Password: profile.PasswordSource{Command: []string{"command-that-does-not-exist", "super-secret"}}}
-	_, _, err := preparePasswordFile(context.Background(), credentials)
+	config := Config{PasswordCommand: []string{"command-that-does-not-exist", "super-secret"}}
+	_, _, err := preparePasswordFile(context.Background(), config)
 	if err == nil || strings.Contains(err.Error(), "super-secret") {
 		t.Fatalf("error = %v", err)
 	}
@@ -63,8 +61,8 @@ func TestPasswordCommandErrorDoesNotRevealArguments(t *testing.T) {
 func TestPasswordCommandErrorDoesNotRevealStderr(t *testing.T) {
 	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
 	t.Setenv("PASSWORD_HELPER_FAIL", "1")
-	credentials := profile.Credentials{Password: profile.PasswordSource{Command: []string{os.Args[0], "-test.run=TestPasswordHelper"}}}
-	_, _, err := preparePasswordFile(context.Background(), credentials)
+	config := Config{PasswordCommand: []string{os.Args[0], "-test.run=TestPasswordHelper"}}
+	_, _, err := preparePasswordFile(context.Background(), config)
 	if err == nil || strings.Contains(err.Error(), "secret from stderr") {
 		t.Fatalf("error = %v", err)
 	}

@@ -73,12 +73,9 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	executor := &recordingScheduleExecutor{}
-	manager := schedule.Manager{
-		Executor: executor,
-		GOOS:     "linux",
-		UID:      1000,
-		Now:      func() time.Time { return time.Date(2026, 8, 30, 2, 0, 0, 0, time.UTC) },
-	}
+	manager := newCronManager(executor, func() time.Time {
+		return time.Date(2026, 8, 30, 2, 0, 0, 0, time.UTC)
+	})
 	var output bytes.Buffer
 	cli := newTestCommandLine(&output, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
@@ -154,7 +151,7 @@ func TestScheduleInstallUsesProfileConfiguration(t *testing.T) {
 	writeCLIProfile(t, directory)
 	setCLIProfileSchedule(t, directory, &profile.Schedule{Backend: "cron", Cron: "0 4 * * *", CatchUp: true})
 	executor := &recordingScheduleExecutor{}
-	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := newCronManager(executor, time.Now)
 	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
@@ -200,7 +197,7 @@ func TestScheduleInstallRejectsMissingDatabaseClient(t *testing.T) {
 	}
 
 	executor := &recordingScheduleExecutor{}
-	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	manager := newCronManager(executor, time.Now)
 	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
@@ -218,7 +215,7 @@ func TestScheduleRunSkipsCurrentAndRunsOverdueBackup(t *testing.T) {
 	writeCLIProfile(t, directory)
 	executor := &recordingScheduleExecutor{}
 	installedAt := time.Date(2026, 8, 30, 3, 0, 0, 0, time.Local)
-	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: func() time.Time { return installedAt }}
+	manager := newCronManager(executor, func() time.Time { return installedAt })
 	if _, err := manager.Install(context.Background(), directory, "example", "0 2 * * *", schedule.BackendCron, "/usr/local/bin/resticctl", true); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +260,7 @@ func TestScheduledForgetUsesProfileAliasAndPrune(t *testing.T) {
 	})
 	executor := &recordingScheduleExecutor{}
 	now := time.Date(2026, 8, 30, 3, 0, 0, 0, time.Local)
-	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: func() time.Time { return now }}
+	manager := newCronManager(executor, func() time.Time { return now })
 	runner := &recordingRunner{}
 	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
@@ -294,6 +291,15 @@ func TestScheduledForgetUsesProfileAliasAndPrune(t *testing.T) {
 	if status.State != "succeeded" || status.Action != "forget" {
 		t.Fatalf("forget status = %#v", status)
 	}
+}
+
+func newCronManager(executor schedule.Executor, now func() time.Time) schedule.Manager {
+	return schedule.NewManager(
+		schedule.WithExecutor(executor),
+		schedule.WithPlatform("linux", 1000),
+		schedule.WithEnvironmentPath(""),
+		schedule.WithClock(now),
+	)
 }
 
 func setCLIProfileSchedule(t *testing.T, directory string, configured *profile.Schedule) {

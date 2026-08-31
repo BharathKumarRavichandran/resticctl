@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"resticctl/internal/app"
-	"resticctl/internal/profile"
+	"resticctl/internal/restic"
 	"resticctl/internal/schedule"
 )
 
@@ -39,7 +39,7 @@ type recordingRunner struct{ runs []recordedRun }
 
 func (runner *recordingRunner) Run(
 	_ context.Context,
-	_ profile.Profile,
+	_ restic.Config,
 	arguments []string,
 	_ string,
 ) error {

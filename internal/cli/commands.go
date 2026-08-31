@@ -62,7 +62,7 @@ func (cli *commandLine) listCommand() *cobra.Command {
 
 func (cli *commandLine) initCommand() *cobra.Command {
 	return cli.profileCommand("init", "Initialize a restic repository", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
-		return runner.Run(ctx, backupProfile, []string{"init"}, "")
+		return app.RunRestic(ctx, runner, backupProfile, "init", nil)
 	})
 }
 
@@ -233,10 +233,10 @@ func (cli *commandLine) keyCommand() *cobra.Command {
 	}
 	command.AddCommand(
 		cli.profileCommand("list", "List repository keys", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
-			return runner.Run(ctx, backupProfile, []string{"key", "list"}, "")
+			return app.RunRestic(ctx, runner, backupProfile, "key", []string{"list"})
 		}),
 		cli.profileCommand("add", "Add a repository key", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
-			return runner.Run(ctx, backupProfile, []string{"key", "add"}, "")
+			return app.RunRestic(ctx, runner, backupProfile, "key", []string{"add"})
 		}),
 		cli.keyRemoveCommand(),
 	)
@@ -256,7 +256,7 @@ func (cli *commandLine) keyRemoveCommand() *cobra.Command {
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
 			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
-				return runner.Run(ctx, backupProfile, []string{"key", "remove", arguments[1]}, "")
+				return app.RunRestic(ctx, runner, backupProfile, "key", []string{"remove", arguments[1]})
 			})
 		}),
 	}

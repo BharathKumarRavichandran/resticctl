@@ -8,15 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
-
-	"resticctl/internal/profile"
 )
 
-func preparePasswordFile(ctx context.Context, credentials profile.Credentials) (path string, temporary bool, err error) {
-	if credentials.Password.File != "" {
-		return credentials.Password.File, false, nil
+func preparePasswordFile(ctx context.Context, config Config) (path string, temporary bool, err error) {
+	if config.PasswordFile != "" {
+		return config.PasswordFile, false, nil
 	}
-	commandParts := credentials.Password.Command
+	commandParts := config.PasswordCommand
 	if len(commandParts) == 0 {
 		return "", false, errors.New("password source is not configured")
 	}

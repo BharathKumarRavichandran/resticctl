@@ -36,7 +36,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 <plist version="1.0"><dict>
 <key>Label</key><string>` + xmlText(label) + `</string>
 <key>ProgramArguments</key><array>` + argumentXML.String() + `</array>
-` + launchdEnvironment(manager.EnvironmentPath) + `
+` + launchdEnvironment(manager.environmentPath) + `
 <key>StartCalendarInterval</key>` + calendar + `
 ` + launchdRunAtLoad(state.CatchUp) + `
 <key>ProcessType</key><string>Background</string>
@@ -45,9 +45,9 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 	if err := securefile.WriteAtomic(path, []byte(content)); err != nil {
 		return "", fmt.Errorf("cannot write launchd job %s: %w", path, err)
 	}
-	domain := "gui/" + strconv.Itoa(manager.UID)
-	_, _ = manager.Executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
-	output, err := manager.Executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
+	domain := "gui/" + strconv.Itoa(manager.uid)
+	_, _ = manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
 	if err != nil {
 		_ = os.Remove(path)
 		return "", commandError("install launchd job", output, err)
@@ -64,8 +64,8 @@ func (manager Manager) removeLaunchd(ctx context.Context, configDir string, stat
 	if err != nil {
 		return err
 	}
-	domain := "gui/" + strconv.Itoa(manager.UID)
-	output, err := manager.Executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
+	domain := "gui/" + strconv.Itoa(manager.uid)
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
 	if err != nil && !launchdJobNotLoaded(output) {
 		return commandError("unload launchd job", output, err)
 	}
@@ -89,10 +89,10 @@ func launchdJobNotLoaded(output []byte) bool {
 }
 
 func (manager Manager) launchdJobPath(name, action string) (string, error) {
-	if manager.LaunchAgentsDir == "" || !filepath.IsAbs(manager.LaunchAgentsDir) {
+	if manager.launchAgentsDir == "" || !filepath.IsAbs(manager.launchAgentsDir) {
 		return "", errors.New("cannot determine an absolute Library/LaunchAgents directory")
 	}
-	return filepath.Join(manager.LaunchAgentsDir, launchdLabel(name, action)+".plist"), nil
+	return filepath.Join(manager.launchAgentsDir, launchdLabel(name, action)+".plist"), nil
 }
 
 func launchdLabel(name, action string) string {

@@ -35,7 +35,7 @@ func (manager Manager) installCron(ctx context.Context, state State, executable,
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		current += "\n"
 	}
-	output, err := manager.Executor.Run(ctx, []byte(current+entry), "crontab", "-")
+	output, err := manager.executor.Run(ctx, []byte(current+entry), "crontab", "-")
 	if err != nil {
 		return commandError("install crontab", output, err)
 	}
@@ -51,7 +51,7 @@ func (manager Manager) removeCron(ctx context.Context, name, action string) erro
 	if err != nil {
 		return err
 	}
-	output, err := manager.Executor.Run(ctx, []byte(updated), "crontab", "-")
+	output, err := manager.executor.Run(ctx, []byte(updated), "crontab", "-")
 	if err != nil {
 		return commandError("update crontab", output, err)
 	}
@@ -59,7 +59,7 @@ func (manager Manager) removeCron(ctx context.Context, name, action string) erro
 }
 
 func (manager Manager) crontab(ctx context.Context) (string, error) {
-	output, err := manager.Executor.Run(ctx, nil, "crontab", "-l")
+	output, err := manager.executor.Run(ctx, nil, "crontab", "-l")
 	if err == nil {
 		return string(output), nil
 	}

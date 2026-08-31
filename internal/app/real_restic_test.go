@@ -9,9 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"resticctl/internal/process"
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
 )
+
+type integrationRunner struct {
+	*restic.Client
+	*process.Executor
+}
 
 func TestRealResticEncryptedBackupAndRestore(t *testing.T) {
 	if os.Getenv("RESTIC_INTEGRATION") != "1" {
@@ -62,21 +68,25 @@ func TestRealResticEncryptedBackupAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runner := &integrationRunner{
+		Client:   client,
+		Executor: process.NewExecutor(nil, io.Discard, io.Discard, profile.IsReservedEnvironment),
+	}
 	ctx := context.Background()
-	if err := client.Run(ctx, backupProfile, []string{"init"}, ""); err != nil {
+	if err := RunRestic(ctx, runner, backupProfile, "init", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := Backup(ctx, client, backupProfile, false, io.Discard); err != nil {
+	if err := Backup(ctx, runner, backupProfile, false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if err := Snapshots(ctx, client, backupProfile); err != nil {
+	if err := Snapshots(ctx, runner, backupProfile); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(ctx, client, backupProfile); err != nil {
+	if err := Check(ctx, runner, backupProfile); err != nil {
 		t.Fatal(err)
 	}
 	restoreTarget := filepath.Join(directory, "restore")
-	if err := Restore(ctx, client, backupProfile, "latest", restoreTarget, false); err != nil {
+	if err := Restore(ctx, runner, backupProfile, "latest", restoreTarget, false); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := sql.Open("sqlite", filepath.Join(restoreTarget, "databases", "primary.sqlite3"))
