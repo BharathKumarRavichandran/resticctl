@@ -12,7 +12,7 @@
         "--keep-yearly", "3"
     ],
     "forget": {
-        "schedule": "weekly",
+        "cron": "weekly",
         "backend": "auto",
         "catch_up": true,
         "prune": false
@@ -39,6 +39,30 @@
         {
             "name": "secondary",
             "path": "~/path/to/another.sqlite3"
+        }
+    ],
+    "postgresql_databases": [
+        {
+            "name": "application",
+            "database": "application",
+            "host": "localhost",
+            "port": 5432,
+            "username": "backup",
+            "executable": "pg_dump",
+            "globals": false,
+            "globals_executable": "pg_dumpall",
+            "args": ["--no-owner"]
+        }
+    ],
+    "mongodb_databases": [
+        {
+            "name": "events",
+            "database": "events",
+            "host": "localhost",
+            "port": 27017,
+            "executable": "mongodump",
+            "config_file": "mongo-backup.yml",
+            "args": []
         }
     ]
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"resticctl/internal/app"
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 	"resticctl/internal/runstatus"
@@ -45,6 +46,11 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if action == schedule.ActionBackup {
+				if err := app.ValidateDatabaseTools(backupProfile); err != nil {
+					return err
+				}
+			}
 			if action == schedule.ActionBackup && backupProfile.Schedule != nil {
 				if !command.Flags().Changed("cron") {
 					expression = backupProfile.Schedule.Cron
@@ -58,7 +64,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			}
 			if action == schedule.ActionForget && backupProfile.Forget != nil {
 				if !command.Flags().Changed("cron") {
-					expression = backupProfile.Forget.Schedule
+					expression = backupProfile.Forget.Cron
 				}
 				if !command.Flags().Changed("backend") {
 					backend = backupProfile.Forget.Backend

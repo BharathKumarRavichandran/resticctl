@@ -77,6 +77,9 @@ func Load(configDir, name string) (Profile, error) {
 			return Profile{}, fmt.Errorf("invalid SQLite database path: %w", err)
 		}
 	}
+	if err := validateExternalDatabases(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
 
 	argumentLists := []struct {
 		name   string
@@ -152,11 +155,19 @@ func Load(configDir, name string) (Profile, error) {
 		if forget.Backend != "auto" && forget.Backend != "cron" && forget.Backend != "launchd" {
 			return Profile{}, fmt.Errorf("forget.backend must be auto, cron, or launchd: %s", forget.Backend)
 		}
-		normalized, err := cronexpr.Normalize(forget.Schedule)
-		if err != nil {
-			return Profile{}, fmt.Errorf("invalid forget.schedule: %w", err)
+		if forget.Cron != "" && forget.Schedule != "" {
+			return Profile{}, errors.New("forget must not set both cron and deprecated schedule")
 		}
-		forget.Schedule = normalized
+		expression := forget.Cron
+		if expression == "" {
+			expression = forget.Schedule
+		}
+		normalized, err := cronexpr.Normalize(expression)
+		if err != nil {
+			return Profile{}, fmt.Errorf("invalid forget.cron: %w", err)
+		}
+		forget.Cron = normalized
+		forget.Schedule = ""
 	}
 	return backupProfile, nil
 }
@@ -164,26 +175,28 @@ func Load(configDir, name string) (Profile, error) {
 // profileConfig uses pointers for scalars so inheritance can distinguish an
 // omitted value from an explicit false or empty value.
 type profileConfig struct {
-	Parent          string           `json:"parent,omitempty"`
-	Repository      *string          `json:"repository"`
-	CredentialsFile *string          `json:"credentials_file"`
-	BackupPaths     []string         `json:"backup_paths"`
-	SQLiteDatabases []SQLiteDatabase `json:"sqlite_databases"`
-	ResticArgs      []string         `json:"restic_args"`
-	BackupArgs      []string         `json:"backup_args"`
-	Tags            []string         `json:"tags"`
-	ForgetArgs      []string         `json:"forget_args"`
-	CheckArgs       []string         `json:"check_args"`
-	CheckBefore     *bool            `json:"check_before"`
-	CheckAfter      *bool            `json:"check_after"`
-	PruneBefore     *bool            `json:"prune_before"`
-	PruneAfter      *bool            `json:"prune_after"`
-	RunBefore       []Hook           `json:"run_before"`
-	RunAfter        []Hook           `json:"run_after"`
-	RunAfterFail    []Hook           `json:"run_after_fail"`
-	RunFinally      []Hook           `json:"run_finally"`
-	Schedule        *Schedule        `json:"schedule,omitempty"`
-	Forget          *ForgetSchedule  `json:"forget,omitempty"`
+	Parent              string               `json:"parent,omitempty"`
+	Repository          *string              `json:"repository"`
+	CredentialsFile     *string              `json:"credentials_file"`
+	BackupPaths         []string             `json:"backup_paths"`
+	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
+	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
+	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	ResticArgs          []string             `json:"restic_args"`
+	BackupArgs          []string             `json:"backup_args"`
+	Tags                []string             `json:"tags"`
+	ForgetArgs          []string             `json:"forget_args"`
+	CheckArgs           []string             `json:"check_args"`
+	CheckBefore         *bool                `json:"check_before"`
+	CheckAfter          *bool                `json:"check_after"`
+	PruneBefore         *bool                `json:"prune_before"`
+	PruneAfter          *bool                `json:"prune_after"`
+	RunBefore           []Hook               `json:"run_before"`
+	RunAfter            []Hook               `json:"run_after"`
+	RunAfterFail        []Hook               `json:"run_after_fail"`
+	RunFinally          []Hook               `json:"run_finally"`
+	Schedule            *Schedule            `json:"schedule,omitempty"`
+	Forget              *ForgetSchedule      `json:"forget,omitempty"`
 }
 
 func resolve(configDir, name string, chain []string) (profileConfig, error) {
@@ -209,6 +222,12 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 	if err := validateConfiguredDatabases(child.SQLiteDatabases); err != nil {
 		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
 	}
+	if err := validateConfiguredNames(child.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name }); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s PostgreSQL databases: %w", name, err)
+	}
+	if err := validateConfiguredNames(child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s MongoDB databases: %w", name, err)
+	}
 	if child.Parent == "" {
 		return child, nil
 	}
@@ -217,6 +236,18 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 		return profileConfig{}, err
 	}
 	return merge(parent, child), nil
+}
+
+func validateConfiguredNames[T any](values []T, name func(T) string) error {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		key := strings.ToLower(name(value))
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("duplicate backup name: %s", name(value))
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 func validateConfiguredDatabases(databases []SQLiteDatabase) error {
@@ -231,6 +262,103 @@ func validateConfiguredDatabases(databases []SQLiteDatabase) error {
 	return nil
 }
 
+func validateExternalDatabases(p *Profile, base string) error {
+	seen := make(map[string]struct{})
+	checkName := func(backend, name string) error {
+		if !isPortableName(name) {
+			return fmt.Errorf("invalid %s backup name: %s", backend, name)
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("duplicate database backup name: %s", name)
+		}
+		seen[key] = struct{}{}
+		return nil
+	}
+	for _, db := range p.SQLiteDatabases {
+		seen[strings.ToLower(db.Name)] = struct{}{}
+	}
+	for i := range p.PostgreSQLDatabases {
+		db := &p.PostgreSQLDatabases[i]
+		if err := checkName("PostgreSQL", db.Name); err != nil {
+			return err
+		}
+		if db.Database == "" {
+			return fmt.Errorf("PostgreSQL database is missing: %s", db.Name)
+		}
+		if strings.Contains(db.Database, "://") || strings.Contains(strings.ToLower(db.Database), "password=") {
+			return fmt.Errorf("PostgreSQL database for %s must be a name, not a credential-bearing connection string", db.Name)
+		}
+		if db.Port < 0 || db.Port > 65535 {
+			return fmt.Errorf("invalid PostgreSQL port for %s", db.Name)
+		}
+		if db.Executable == "" {
+			db.Executable = "pg_dump"
+		}
+		if db.GlobalsExecutable == "" {
+			db.GlobalsExecutable = "pg_dumpall"
+		}
+		if hasNUL(db.Database, db.Host, db.Username, db.Executable, db.GlobalsExecutable) {
+			return fmt.Errorf("PostgreSQL configuration for %s must not contain NUL bytes", db.Name)
+		}
+		if err := validateDatabaseArgs("PostgreSQL", db.Args, "--file", "-f", "--password", "--dbname", "-d", "--host", "-h", "--port", "-p", "--username", "-U"); err != nil {
+			return err
+		}
+	}
+	for i := range p.MongoDBDatabases {
+		db := &p.MongoDBDatabases[i]
+		if err := checkName("MongoDB", db.Name); err != nil {
+			return err
+		}
+		if db.Port < 0 || db.Port > 65535 {
+			return fmt.Errorf("invalid MongoDB port for %s", db.Name)
+		}
+		if db.Executable == "" {
+			db.Executable = "mongodump"
+		}
+		if hasNUL(db.Database, db.Host, db.Executable, db.ConfigFile) {
+			return fmt.Errorf("MongoDB configuration for %s must not contain NUL bytes", db.Name)
+		}
+		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d"); err != nil {
+			return err
+		}
+		if db.ConfigFile != "" {
+			path, err := expandPath(db.ConfigFile, base)
+			if err != nil {
+				return fmt.Errorf("invalid MongoDB config_file: %w", err)
+			}
+			if err := ensurePrivateFile(path, "MongoDB config"); err != nil {
+				return err
+			}
+			db.ConfigFile = path
+		}
+	}
+	return nil
+}
+
+func hasNUL(values ...string) bool {
+	for _, value := range values {
+		if strings.ContainsRune(value, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateDatabaseArgs(backend string, args []string, forbidden ...string) error {
+	for _, arg := range args {
+		if arg == "" || strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("%s args must not contain empty strings or NUL bytes", backend)
+		}
+		for _, option := range forbidden {
+			if arg == option || strings.HasPrefix(arg, option+"=") || (len(option) == 2 && strings.HasPrefix(arg, option) && len(arg) > 2) {
+				return fmt.Errorf("%s args must not contain unsafe option %s", backend, option)
+			}
+		}
+	}
+	return nil
+}
+
 func merge(parent, child profileConfig) profileConfig {
 	result := parent
 	result.Parent = child.Parent
@@ -241,6 +369,8 @@ func merge(parent, child profileConfig) profileConfig {
 	result.CredentialsFile = child.CredentialsFile
 	result.BackupPaths = appendCopy(parent.BackupPaths, child.BackupPaths)
 	result.SQLiteDatabases = mergeDatabases(parent.SQLiteDatabases, child.SQLiteDatabases)
+	result.PostgreSQLDatabases = mergeNamed(parent.PostgreSQLDatabases, child.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name })
+	result.MongoDBDatabases = mergeNamed(parent.MongoDBDatabases, child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name })
 	result.ResticArgs = appendCopy(parent.ResticArgs, child.ResticArgs)
 	result.BackupArgs = appendCopy(parent.BackupArgs, child.BackupArgs)
 	result.Tags = appendCopy(parent.Tags, child.Tags)
@@ -292,9 +422,28 @@ func mergeDatabases(parent, child []SQLiteDatabase) []SQLiteDatabase {
 	return result
 }
 
+func mergeNamed[T any](parent, child []T, name func(T) string) []T {
+	result := append([]T(nil), parent...)
+	positions := make(map[string]int, len(result))
+	for i, item := range result {
+		positions[strings.ToLower(name(item))] = i
+	}
+	for _, item := range child {
+		key := strings.ToLower(name(item))
+		if i, ok := positions[key]; ok {
+			result[i] = item
+		} else {
+			positions[key] = len(result)
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 func (configured profileConfig) profile(name string) Profile {
 	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
 		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs,
+		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases,
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
@@ -334,6 +483,11 @@ func loadCredentials(path string) (Credentials, error) {
 		}
 		if IsReservedEnvironment(key) {
 			return Credentials{}, fmt.Errorf("credentials.environment must not set %s", key)
+		}
+	}
+	for key, value := range credentials.DatabaseEnvironment {
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
+			return Credentials{}, fmt.Errorf("invalid database_environment entry in credentials: %q", key)
 		}
 	}
 

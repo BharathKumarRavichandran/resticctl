@@ -51,6 +51,21 @@ func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
 	}
 }
 
+func TestBackupPreflightRunsBeforeHooks(t *testing.T) {
+	runner := &hookRecordingRunner{}
+	backupProfile := profile.Profile{
+		Name: "example", PostgreSQLDatabases: []profile.PostgreSQLDatabase{{Name: "main", Database: "app", Executable: "resticctl-definitely-missing-pg-dump"}},
+		RunBefore: []profile.Hook{{Command: []string{"must-not-run"}}},
+	}
+	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "resticctl-definitely-missing-pg-dump") {
+		t.Fatalf("Backup error = %v", err)
+	}
+	if len(runner.events) != 0 {
+		t.Fatalf("events = %v, want none", runner.events)
+	}
+}
+
 func TestSnapshotFilterDoesNotIncludeCustomTags(t *testing.T) {
 	runner := &recordingRunner{}
 	backupProfile := profile.Profile{Name: "example", Tags: []string{"database"}}
@@ -311,6 +326,9 @@ func (runner *hookRecordingRunner) RunHook(ctx context.Context, arguments []stri
 	}
 	return nil
 }
+func (runner *hookRecordingRunner) RunDatabase(_ context.Context, _ []string, _ map[string]string, _ string) error {
+	return nil
+}
 
 type failingRunner struct {
 	runs   []recordedRun
@@ -327,6 +345,9 @@ func (runner *failingRunner) Run(_ context.Context, _ profile.Profile, arguments
 }
 
 func (runner *failingRunner) RunHook(_ context.Context, _ []string) error { return nil }
+func (runner *failingRunner) RunDatabase(_ context.Context, _ []string, _ map[string]string, _ string) error {
+	return nil
+}
 
 type cleanupCheckingRunner struct{ staging string }
 
@@ -342,3 +363,6 @@ func (runner *cleanupCheckingRunner) Run(_ context.Context, _ profile.Profile, a
 }
 
 func (runner *cleanupCheckingRunner) RunHook(_ context.Context, _ []string) error { return nil }
+func (runner *cleanupCheckingRunner) RunDatabase(_ context.Context, _ []string, _ map[string]string, _ string) error {
+	return nil
+}

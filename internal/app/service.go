@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"resticctl/internal/databasebackup"
 	"resticctl/internal/profile"
 	"resticctl/internal/sqlitebackup"
 )
@@ -16,9 +17,13 @@ import (
 type Runner interface {
 	Run(context.Context, profile.Profile, []string, string) error
 	RunHook(context.Context, []string) error
+	RunDatabase(context.Context, []string, map[string]string, string) error
 }
 
 func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (runErr error) {
+	if err := ValidateDatabaseTools(backupProfile); err != nil {
+		return err
+	}
 	if err := validateBackupSources(backupProfile); err != nil {
 		return err
 	}
@@ -37,6 +42,13 @@ func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 		runErr = errors.Join(runErr, runHooks(context.WithoutCancel(ctx), runner, "run-after-fail", backupProfile.RunAfterFail))
 	}
 	return runErr
+}
+
+func ValidateDatabaseTools(backupProfile profile.Profile) error {
+	if err := databasebackup.Preflight(backupProfile); err != nil {
+		return fmt.Errorf("database client preflight: %w", err)
+	}
+	return nil
 }
 
 func runBackupWorkflow(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) error {
@@ -98,7 +110,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if dryRun {
 		arguments = append(arguments, "--dry-run")
 	}
-	if len(backupProfile.SQLiteDatabases) == 0 {
+	if len(backupProfile.SQLiteDatabases) == 0 && len(backupProfile.PostgreSQLDatabases) == 0 && len(backupProfile.MongoDBDatabases) == 0 {
 		arguments = append(arguments, "--")
 		arguments = append(arguments, backupProfile.BackupPaths...)
 		return runner.Run(ctx, backupProfile, arguments, "")
@@ -106,11 +118,11 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 
 	staging, err := os.MkdirTemp("", "resticctl-"+backupProfile.Name+"-")
 	if err != nil {
-		return fmt.Errorf("cannot create SQLite staging directory: %w", err)
+		return fmt.Errorf("cannot create database staging directory: %w", err)
 	}
 	defer func() {
 		if err := os.RemoveAll(staging); err != nil {
-			backupErr = errors.Join(backupErr, fmt.Errorf("cannot remove SQLite staging directory %s: %w", staging, err))
+			backupErr = errors.Join(backupErr, fmt.Errorf("cannot remove database staging directory %s: %w", staging, err))
 		}
 	}()
 	if err := os.Chmod(staging, 0o700); err != nil {
@@ -128,6 +140,18 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 			return err
 		}
 	}
+	providers := make([]databasebackup.Provider, 0, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
+	for _, database := range backupProfile.PostgreSQLDatabases {
+		providers = append(providers, databasebackup.PostgreSQL{Database: database})
+	}
+	for _, database := range backupProfile.MongoDBDatabases {
+		providers = append(providers, databasebackup.MongoDB{Database: database})
+	}
+	for _, provider := range providers {
+		if err := provider.Stage(ctx, runner, staging, backupProfile.Credentials.DatabaseEnvironment); err != nil {
+			return err
+		}
+	}
 	arguments = append(arguments, "--")
 	arguments = append(arguments, backupProfile.BackupPaths...)
 	arguments = append(arguments, "databases")
@@ -135,8 +159,8 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 }
 
 func validateBackupSources(backupProfile profile.Profile) error {
-	if len(backupProfile.BackupPaths) == 0 && len(backupProfile.SQLiteDatabases) == 0 {
-		return errors.New("profile has no backup_paths or sqlite_databases")
+	if len(backupProfile.BackupPaths) == 0 && len(backupProfile.SQLiteDatabases) == 0 && len(backupProfile.PostgreSQLDatabases) == 0 && len(backupProfile.MongoDBDatabases) == 0 {
+		return errors.New("profile has no backup paths or databases")
 	}
 	for _, path := range backupProfile.BackupPaths {
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {

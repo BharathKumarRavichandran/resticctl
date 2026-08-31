@@ -80,7 +80,7 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "--keep-monthly", "12"
   ],
   "forget": {
-    "schedule": "@weekly",
+    "cron": "@weekly",
     "backend": "auto",
     "catch_up": true,
     "prune": false
@@ -118,6 +118,50 @@ only apply to the command named by the field.
 `backup_paths` contains ordinary files and directories to include. SQLite
 databases are listed separately in `sqlite_databases`; for a SQLite-only
 profile, set `backup_paths` to `[]`.
+
+PostgreSQL and MongoDB can be staged by client programs installed on the
+machine running `resticctl`:
+
+```json
+{
+  "postgresql_databases": [{
+    "name": "accounts",
+    "database": "app",
+    "host": "db.example.net",
+    "port": 5432,
+    "username": "backup",
+    "globals": true,
+    "args": ["--no-owner"]
+  }],
+  "mongodb_databases": [{
+    "name": "events",
+    "database": "events",
+    "host": "mongo.example.net",
+    "config_file": "mongo-backup.yml",
+    "args": ["--oplog"]
+  }]
+}
+```
+
+`pg_dump`, `pg_dumpall`, and `mongodump` are resolved on the local `PATH` by
+default. Set `executable` or `globals_executable` to an explicit client path.
+Hosts may be localhost, remote DNS/IP endpoints, or a supported Unix-socket
+path. Client arguments are passed directly without a shell; output, archive,
+URI, and password options are reserved so profiles cannot bypass secure
+staging or place credentials in process arguments.
+
+Check configuration and database-client availability without connecting to a
+database:
+
+```sh
+resticctl validate <profile>
+```
+
+The same preflight runs before every backup and before installing a backup
+schedule. Scheduled jobs still check again when they execute, since their
+`PATH` or installed tools may differ later. Explicit absolute client paths are
+recommended for scheduled database backups. Forget-only schedules do not
+require database clients.
 
 ### Profile inheritance
 
@@ -357,7 +401,7 @@ Retention can have its own independent schedule:
 {
   "forget_args": ["--keep-daily", "7", "--keep-monthly", "12"],
   "forget": {
-    "schedule": "@daily",
+    "cron": "@daily",
     "backend": "auto",
     "catch_up": true,
     "prune": false
@@ -374,6 +418,9 @@ resticctl schedule status <profile> forget
 
 Set `prune` only when scheduled pruning is intentional; pruning is more
 resource-intensive and requires repository delete access.
+The older `forget.schedule` field remains accepted as an input alias for
+compatibility, but new and generated profiles should use `forget.cron`. Setting
+both fields is rejected.
 
 The default `auto` backend uses launchd on macOS and cron on other Unix-like
 systems. Windows scheduling is not supported yet. You can select a backend
@@ -432,7 +479,7 @@ Status files intentionally do not store command output or error messages, which
 could contain sensitive paths or service details. Dry runs do not replace the
 latest real backup status.
 
-## SQLite backups
+## Database backups
 
 Each entry in `sqlite_databases` is copied with SQLite's online backup API and
 checked with `PRAGMA integrity_check`. The copies appear in the snapshot as:
@@ -443,6 +490,37 @@ databases/<name>.sqlite3
 
 The temporary copies are removed when restic finishes or the process receives a
 termination signal. A dry run still creates them, but does not keep them.
+
+PostgreSQL custom-format dumps are stored as `databases/<name>.dump`. When
+`globals` is enabled, roles and other cluster-wide objects are stored as
+`databases/<name>-globals.sql`. After restoring a restic snapshot, restore them
+with client tools appropriate to the target server, for example:
+
+```sh
+psql --file databases/accounts-globals.sql postgres
+pg_restore --dbname app --clean --if-exists databases/accounts.dump
+```
+
+MongoDB dumps are stored below `databases/<name>/` and can be restored with:
+
+```sh
+mongorestore --config /private/mongo-restore.yml --drop databases/events
+```
+
+Database credentials belong in `database_environment` in the private profile
+credentials file (for example `{"PGPASSWORD":"..."}` or PostgreSQL service
+configuration variables) or, for
+MongoDB, in the private YAML file named by `config_file`. They are never added
+to generated schedules or client argument values. The MongoDB config file must
+be mode 0600 (or otherwise private under the platform checks used for profile
+credentials).
+
+`pg_dump` provides a transactionally consistent view of one PostgreSQL
+database, but globals are dumped separately and are not atomic with it.
+`mongodump` consistency depends on deployment topology: use `--oplog` for a
+replica set when a point-in-time dump is required, and consult MongoDB's
+requirements and restrictions for sharded clusters. `resticctl` does not
+coordinate application writes or transactions across multiple databases.
 
 ## Support
 

@@ -28,6 +28,43 @@ func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
 	}
 }
 
+func TestLoadExternalDatabases(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"database_environment":{"PGPASSWORD":"private"},"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "mongo.yml"), "password: private\n")
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "postgresql_databases":[{"name":"accounts","database":"app","host":"db.example","globals":true}],
+          "mongodb_databases":[{"name":"events","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}]
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PostgreSQLDatabases[0].Executable != "pg_dump" || loaded.PostgreSQLDatabases[0].GlobalsExecutable != "pg_dumpall" {
+		t.Fatalf("PostgreSQL defaults = %#v", loaded.PostgreSQLDatabases[0])
+	}
+	if loaded.MongoDBDatabases[0].ConfigFile != filepath.Join(directory, "mongo.yml") {
+		t.Fatalf("MongoDB config = %#v", loaded.MongoDBDatabases[0])
+	}
+	if loaded.Credentials.DatabaseEnvironment["PGPASSWORD"] != "private" {
+		t.Fatal("database environment not loaded")
+	}
+}
+
+func TestLoadRejectsDatabaseCredentialArguments(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "mongodb_databases":[{"name":"events","args":["--password=exposed"]}]
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "unsafe option --password") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func TestLoadResolvesNestedInheritance(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
@@ -266,7 +303,7 @@ func TestLoadSchedule(t *testing.T) {
           "credentials_file":"credentials.json",
           "forget_args":["--keep-daily","7"],
           "schedule":{"cron":" 0  2 * * * ","catch_up":true},
-          "forget":{"schedule":"@daily","catch_up":true,"prune":true}
+		  "forget":{"cron":"@daily","catch_up":true,"prune":true}
         }`)
 	loaded, err := Load(directory, "example")
 	if err != nil {
@@ -275,8 +312,37 @@ func TestLoadSchedule(t *testing.T) {
 	if loaded.Schedule == nil || loaded.Schedule.Backend != "auto" || loaded.Schedule.Cron != "0 2 * * *" || !loaded.Schedule.CatchUp {
 		t.Fatalf("schedule = %#v", loaded.Schedule)
 	}
-	if loaded.Forget == nil || loaded.Forget.Backend != "auto" || loaded.Forget.Schedule != "0 0 * * *" || !loaded.Forget.CatchUp || !loaded.Forget.Prune {
+	if loaded.Forget == nil || loaded.Forget.Backend != "auto" || loaded.Forget.Cron != "0 0 * * *" || !loaded.Forget.CatchUp || !loaded.Forget.Prune {
 		t.Fatalf("forget = %#v", loaded.Forget)
+	}
+}
+
+func TestLoadAcceptsDeprecatedForgetScheduleAlias(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "forget_args":["--keep-last","1"], "forget":{"schedule":"weekly"}
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Forget.Cron != "0 0 * * 0" || loaded.Forget.Schedule != "" {
+		t.Fatalf("forget = %#v", loaded.Forget)
+	}
+}
+
+func TestLoadRejectsBothForgetScheduleFields(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "forget_args":["--keep-last","1"], "forget":{"cron":"daily","schedule":"weekly"}
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "both cron") {
+		t.Fatalf("Load error = %v", err)
 	}
 }
 

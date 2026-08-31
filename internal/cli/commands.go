@@ -92,7 +92,31 @@ func (cli *commandLine) backupCommand() *cobra.Command {
 	return command
 }
 
+func (cli *commandLine) validateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "validate <profile>", Short: "Validate a profile and its database clients",
+		Args: cobra.ExactArgs(1), ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			if err := app.ValidateDatabaseTools(backupProfile); err != nil {
+				return err
+			}
+			return writeOutput(cli.stdout, "Profile %s is valid\n", arguments[0])
+		}),
+	}
+}
+
 func (cli *commandLine) runBackup(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun bool) error {
+	if err := app.ValidateDatabaseTools(backupProfile); err != nil {
+		return err
+	}
 	runner, err := cli.newRunner()
 	if err != nil {
 		return err

@@ -7,14 +7,37 @@ type SQLiteDatabase struct {
 	Path string `json:"path"`
 }
 
+type PostgreSQLDatabase struct {
+	Name              string   `json:"name"`
+	Database          string   `json:"database"`
+	Host              string   `json:"host,omitempty"`
+	Port              int      `json:"port,omitempty"`
+	Username          string   `json:"username,omitempty"`
+	Executable        string   `json:"executable,omitempty"`
+	Args              []string `json:"args,omitempty"`
+	Globals           bool     `json:"globals,omitempty"`
+	GlobalsExecutable string   `json:"globals_executable,omitempty"`
+}
+
+type MongoDBDatabase struct {
+	Name       string   `json:"name"`
+	Database   string   `json:"database,omitempty"`
+	Host       string   `json:"host,omitempty"`
+	Port       int      `json:"port,omitempty"`
+	Executable string   `json:"executable,omitempty"`
+	ConfigFile string   `json:"config_file,omitempty"`
+	Args       []string `json:"args,omitempty"`
+}
+
 type PasswordSource struct {
 	Command []string `json:"command"`
 	File    string   `json:"file"`
 }
 
 type Credentials struct {
-	Environment map[string]string `json:"environment"`
-	Password    PasswordSource    `json:"password"`
+	Environment         map[string]string `json:"environment"`
+	DatabaseEnvironment map[string]string `json:"database_environment,omitempty"`
+	Password            PasswordSource    `json:"password"`
 }
 
 type Schedule struct {
@@ -24,7 +47,8 @@ type Schedule struct {
 }
 
 type ForgetSchedule struct {
-	Schedule string `json:"schedule"`
+	Cron     string `json:"cron,omitempty"`
+	Schedule string `json:"schedule,omitempty"` // Deprecated input alias for cron.
 	Backend  string `json:"backend"`
 	CatchUp  bool   `json:"catch_up"`
 	Prune    bool   `json:"prune"`
@@ -38,26 +62,28 @@ type Hook struct {
 }
 
 type Profile struct {
-	Name            string           `json:"-"`
-	Parent          string           `json:"parent,omitempty"`
-	Repository      string           `json:"repository"`
-	CredentialsFile string           `json:"credentials_file"`
-	BackupPaths     []string         `json:"backup_paths"`
-	SQLiteDatabases []SQLiteDatabase `json:"sqlite_databases"`
-	ResticArgs      []string         `json:"restic_args"`
-	BackupArgs      []string         `json:"backup_args"`
-	Tags            []string         `json:"tags"`
-	ForgetArgs      []string         `json:"forget_args"`
-	CheckArgs       []string         `json:"check_args"`
-	CheckBefore     bool             `json:"check_before"`
-	CheckAfter      bool             `json:"check_after"`
-	PruneBefore     bool             `json:"prune_before"`
-	PruneAfter      bool             `json:"prune_after"`
-	RunBefore       []Hook           `json:"run_before"`
-	RunAfter        []Hook           `json:"run_after"`
-	RunAfterFail    []Hook           `json:"run_after_fail"`
-	RunFinally      []Hook           `json:"run_finally"`
-	Schedule        *Schedule        `json:"schedule,omitempty"`
-	Forget          *ForgetSchedule  `json:"forget,omitempty"`
-	Credentials     Credentials      `json:"-"`
+	Name                string               `json:"-"`
+	Parent              string               `json:"parent,omitempty"`
+	Repository          string               `json:"repository"`
+	CredentialsFile     string               `json:"credentials_file"`
+	BackupPaths         []string             `json:"backup_paths"`
+	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
+	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
+	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	ResticArgs          []string             `json:"restic_args"`
+	BackupArgs          []string             `json:"backup_args"`
+	Tags                []string             `json:"tags"`
+	ForgetArgs          []string             `json:"forget_args"`
+	CheckArgs           []string             `json:"check_args"`
+	CheckBefore         bool                 `json:"check_before"`
+	CheckAfter          bool                 `json:"check_after"`
+	PruneBefore         bool                 `json:"prune_before"`
+	PruneAfter          bool                 `json:"prune_after"`
+	RunBefore           []Hook               `json:"run_before"`
+	RunAfter            []Hook               `json:"run_after"`
+	RunAfterFail        []Hook               `json:"run_after_fail"`
+	RunFinally          []Hook               `json:"run_finally"`
+	Schedule            *Schedule            `json:"schedule,omitempty"`
+	Forget              *ForgetSchedule      `json:"forget,omitempty"`
+	Credentials         Credentials          `json:"-"`
 }

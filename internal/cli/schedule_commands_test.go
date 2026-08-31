@@ -169,6 +169,42 @@ func TestScheduleInstallUsesProfileConfiguration(t *testing.T) {
 	}
 }
 
+func TestScheduleInstallRejectsMissingDatabaseClient(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	setCLIProfileSchedule(t, directory, &profile.Schedule{Cron: "0 2 * * *", Backend: "cron"})
+	path := filepath.Join(directory, "example.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value profile.Profile
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatal(err)
+	}
+	value.PostgreSQLDatabases = []profile.PostgreSQLDatabase{{Name: "main", Database: "app", Executable: "resticctl-definitely-missing-pg-dump"}}
+	data, err = json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &recordingScheduleExecutor{}
+	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+	statusCode, runErr := cli.run(context.Background(), []string{"schedule", "install", "example", "--config-dir", directory})
+	if statusCode != 1 || runErr == nil || !strings.Contains(runErr.Error(), "resticctl-definitely-missing-pg-dump") {
+		t.Fatalf("status=%d error=%v", statusCode, runErr)
+	}
+	if executor.crontab != "" {
+		t.Fatalf("schedule was installed: %s", executor.crontab)
+	}
+}
+
 func TestScheduleRunSkipsCurrentAndRunsOverdueBackup(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
@@ -214,7 +250,7 @@ func TestScheduledForgetUsesProfileAliasAndPrune(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	setCLIProfileForget(t, directory, &profile.ForgetSchedule{
-		Schedule: "@daily", Backend: "cron", CatchUp: true, Prune: true,
+		Cron: "@daily", Backend: "cron", CatchUp: true, Prune: true,
 	})
 	executor := &recordingScheduleExecutor{}
 	now := time.Date(2026, 8, 30, 3, 0, 0, 0, time.Local)

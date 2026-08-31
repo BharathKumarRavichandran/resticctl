@@ -89,3 +89,21 @@ func (client *Client) RunHook(ctx context.Context, arguments []string) error {
 	}
 	return nil
 }
+
+func (client *Client) RunDatabase(ctx context.Context, arguments []string, environment map[string]string, cwd string) error {
+	command := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
+	command.Dir = cwd
+	command.Env = mergeEnvironment(os.Environ(), environment)
+	command.Stdin, command.Stdout, command.Stderr = client.stdin, client.stdout, client.stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return fmt.Errorf("database client exited with status %d", exitError.ExitCode())
+		}
+		return fmt.Errorf("cannot execute database client: %w", err)
+	}
+	return nil
+}
