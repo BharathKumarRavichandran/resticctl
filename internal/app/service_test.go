@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"resticctl/internal/profile"
 )
@@ -51,18 +53,76 @@ func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
 	}
 }
 
-func TestBackupPreflightRunsBeforeHooks(t *testing.T) {
+func TestBackupStagesExternalDatabasesWithBoundedConcurrencyAndIsolatedEnvironments(t *testing.T) {
+	runner := &concurrentDatabaseRunner{started: make(chan struct{}, 2), release: make(chan struct{})}
+	backupProfile := profile.Profile{
+		Name:                "example",
+		DatabaseConcurrency: 2,
+		PostgreSQLDatabases: []profile.PostgreSQLDatabase{
+			{Name: "accounts", Database: "accounts", Executable: os.Args[0]},
+			{Name: "events", Database: "events", Executable: os.Args[0]},
+		},
+		Credentials: profile.Credentials{DatabaseEnvironments: map[string]map[string]string{
+			"accounts": {"PGPASSWORD": "accounts-secret"},
+			"events":   {"PGPASSWORD": "events-secret"},
+		}},
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	}()
+	for range 2 {
+		select {
+		case <-runner.started:
+		case <-time.After(time.Second):
+			t.Fatal("database dumps did not run concurrently")
+		}
+	}
+	close(runner.release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if runner.maximum != 2 {
+		t.Fatalf("maximum concurrency = %d, want 2", runner.maximum)
+	}
+	if runner.passwords["accounts"] != "accounts-secret" || runner.passwords["events"] != "events-secret" {
+		t.Fatalf("database environments = %v", runner.passwords)
+	}
+}
+
+func TestBackupPreflightFailureRunsLifecycleHooks(t *testing.T) {
 	runner := &hookRecordingRunner{}
 	backupProfile := profile.Profile{
 		Name: "example", PostgreSQLDatabases: []profile.PostgreSQLDatabase{{Name: "main", Database: "app", Executable: "resticctl-definitely-missing-pg-dump"}},
-		RunBefore: []profile.Hook{{Command: []string{"must-not-run"}}},
+		RunBefore:    []profile.Hook{{Command: []string{"before"}}},
+		RunAfterFail: []profile.Hook{{Command: []string{"failure"}}},
+		RunFinally:   []profile.Hook{{Command: []string{"finally"}}},
 	}
 	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "resticctl-definitely-missing-pg-dump") {
 		t.Fatalf("Backup error = %v", err)
 	}
-	if len(runner.events) != 0 {
-		t.Fatalf("events = %v, want none", runner.events)
+	want := []string{"hook:before", "hook:failure", "hook:finally"}
+	if !slices.Equal(runner.events, want) {
+		t.Fatalf("events = %v, want %v", runner.events, want)
+	}
+}
+
+func TestBackupBeforeHookCanPrepareSource(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "mounted")
+	runner := &hookRecordingRunner{createPath: source}
+	backupProfile := profile.Profile{
+		Name:        "example",
+		BackupPaths: []string{source},
+		RunBefore:   []profile.Hook{{Command: []string{"prepare"}}},
+		RunFinally:  []profile.Hook{{Command: []string{"finally"}}},
+	}
+	if err := Backup(context.Background(), runner, backupProfile, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"hook:prepare", "restic:backup", "hook:finally"}
+	if !slices.Equal(runner.events, want) {
+		t.Fatalf("events = %v, want %v", runner.events, want)
 	}
 }
 
@@ -90,13 +150,29 @@ func TestRunResticPassesArgumentsThrough(t *testing.T) {
 }
 
 func TestRunResticRejectsReservedArgumentsAndUnknownCommands(t *testing.T) {
-	for _, argument := range []string{"--repo", "--repo=/tmp/repo", "--password-file", "--password-file=/tmp/pw"} {
+	for _, argument := range []string{
+		"-r", "-r/tmp/repo", "-r=/tmp/repo", "--repo", "--repo=/tmp/repo",
+		"--repository-file", "--repository-file=/tmp/repo",
+		"-p", "-p/tmp/pw", "-p=/tmp/pw", "--password-file", "--password-file=/tmp/pw",
+	} {
 		if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, "snapshots", []string{argument}); err == nil {
 			t.Fatalf("reserved argument %q accepted", argument)
 		}
 	}
 	if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, "not-a-command", nil); err == nil {
 		t.Fatal("unknown command accepted")
+	}
+}
+
+func TestRunResticStopsOptionValidationAfterSeparator(t *testing.T) {
+	runner := &recordingRunner{}
+	arguments := []string{"--", "--repo", "-psecret"}
+	if err := RunRestic(context.Background(), runner, profile.Profile{}, "backup", arguments); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]string{"backup"}, arguments...)
+	if !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("arguments = %v, want %v", runner.runs[0].arguments, want)
 	}
 }
 
@@ -324,6 +400,7 @@ type hookRecordingRunner struct {
 	waitForCancellation string
 	staging             string
 	checkStagingCleanup bool
+	createPath          string
 }
 
 func (runner *hookRecordingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
@@ -334,6 +411,11 @@ func (runner *hookRecordingRunner) Run(_ context.Context, _ profile.Profile, arg
 
 func (runner *hookRecordingRunner) RunHook(ctx context.Context, arguments []string) error {
 	runner.events = append(runner.events, "hook:"+strings.Join(arguments, " "))
+	if arguments[0] == "prepare" && runner.createPath != "" {
+		if err := os.Mkdir(runner.createPath, 0o700); err != nil {
+			return err
+		}
+	}
 	if runner.checkStagingCleanup && arguments[0] == "failure" {
 		if _, err := os.Stat(runner.staging); !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("staging directory still exists: %v", err)
@@ -372,6 +454,39 @@ func (runner *failingRunner) RunDatabase(_ context.Context, _ []string, _ map[st
 }
 
 type cleanupCheckingRunner struct{ staging string }
+
+type concurrentDatabaseRunner struct {
+	mutex     sync.Mutex
+	active    int
+	maximum   int
+	started   chan struct{}
+	release   chan struct{}
+	passwords map[string]string
+}
+
+func (runner *concurrentDatabaseRunner) Run(_ context.Context, _ profile.Profile, _ []string, _ string) error {
+	return nil
+}
+
+func (runner *concurrentDatabaseRunner) RunHook(_ context.Context, _ []string) error { return nil }
+
+func (runner *concurrentDatabaseRunner) RunDatabase(_ context.Context, arguments []string, environment map[string]string, _ string) error {
+	database := arguments[len(arguments)-1]
+	runner.mutex.Lock()
+	if runner.passwords == nil {
+		runner.passwords = make(map[string]string)
+	}
+	runner.passwords[database] = environment["PGPASSWORD"]
+	runner.active++
+	runner.maximum = max(runner.maximum, runner.active)
+	runner.mutex.Unlock()
+	runner.started <- struct{}{}
+	<-runner.release
+	runner.mutex.Lock()
+	runner.active--
+	runner.mutex.Unlock()
+	return nil
+}
 
 func (runner *cleanupCheckingRunner) Run(_ context.Context, _ profile.Profile, arguments []string, cwd string) error {
 	if arguments[0] == "backup" {

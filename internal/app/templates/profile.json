@@ -26,6 +26,7 @@
     "run_after": [],
     "run_after_fail": [],
     "run_finally": [],
+    "database_concurrency": 1,
     "schedule": {
         "backend": "auto",
         "cron": "0 2 * * *",

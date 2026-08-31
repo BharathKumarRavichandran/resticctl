@@ -1,9 +1,9 @@
 //go:build !windows
 
-package runstatus
+package securefile
 
 import "os"
 
-func replaceFile(source, destination string) error {
+func replace(source, destination string) error {
 	return os.Rename(source, destination)
 }

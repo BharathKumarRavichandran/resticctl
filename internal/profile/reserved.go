@@ -2,11 +2,13 @@ package profile
 
 import "strings"
 
-func isReservedOption(argument string) bool {
-	if argument == "--" || strings.HasPrefix(argument, "-r") {
+// IsReservedOption reports whether an argument could override the repository
+// or password source managed by resticctl.
+func IsReservedOption(argument string) bool {
+	if argument == "--" || strings.HasPrefix(argument, "-r") || strings.HasPrefix(argument, "-p") {
 		return true
 	}
-	for _, option := range []string{"--repo", "--repository-file", "--password-file", "--password-command"} {
+	for _, option := range []string{"--repo", "--repository", "--repository-file", "--password", "--password-file", "--password-command"} {
 		if argument == option || strings.HasPrefix(argument, option+"=") {
 			return true
 		}

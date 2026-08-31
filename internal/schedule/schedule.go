@@ -3,6 +3,7 @@ package schedule
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
+	"resticctl/internal/securefile"
 )
 
 const (
@@ -28,16 +30,20 @@ const (
 )
 
 var ErrNotInstalled = errors.New("schedule is not installed")
+var ErrDrift = errors.New("installed schedule differs from recorded state")
+
+var errDefinitionDrift = errors.New("installed schedule definition is missing or invalid")
 
 type State struct {
-	Profile    string    `json:"profile"`
-	Backend    string    `json:"backend"`
-	Expression string    `json:"expression"`
-	Installed  time.Time `json:"installed_at"`
-	JobFile    string    `json:"job_file,omitempty"`
-	CatchUp    bool      `json:"catch_up"`
-	Action     string    `json:"action,omitempty"`
-	Prune      bool      `json:"prune,omitempty"`
+	Profile        string    `json:"profile"`
+	Backend        string    `json:"backend"`
+	Expression     string    `json:"expression"`
+	Installed      time.Time `json:"installed_at"`
+	JobFile        string    `json:"job_file,omitempty"`
+	CatchUp        bool      `json:"catch_up"`
+	Action         string    `json:"action,omitempty"`
+	Prune          bool      `json:"prune,omitempty"`
+	DefinitionHash string    `json:"definition_hash,omitempty"`
 }
 
 type Executor interface {
@@ -119,15 +125,28 @@ func (manager Manager) InstallAction(ctx context.Context, configDir, name, actio
 			return State{}, err
 		}
 	}
-	if err := writeState(configDir, state); err != nil {
-		return State{}, err
-	}
 	err = manager.apply(ctx, configDir, &state, fields, executable)
 	if err != nil {
 		if existing != nil {
-			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable), writeState(configDir, *existing))
+			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
+		}
+		return State{}, err
+	}
+	definition, err := manager.installedDefinition(ctx, state)
+	if err != nil {
+		if existing != nil {
+			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
 		} else {
-			err = errors.Join(err, removeState(configDir, name, action))
+			err = errors.Join(err, manager.removeApplied(ctx, configDir, state))
+		}
+		return State{}, err
+	}
+	state.DefinitionHash = definitionHash(definition)
+	if err := writeState(configDir, state); err != nil {
+		if existing != nil {
+			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
+		} else {
+			err = errors.Join(err, manager.removeApplied(ctx, configDir, state))
 		}
 		return State{}, err
 	}
@@ -152,6 +171,17 @@ func (manager Manager) restore(ctx context.Context, configDir string, state Stat
 		return fmt.Errorf("cannot restore previous schedule: %w", err)
 	}
 	return nil
+}
+
+func (manager Manager) removeApplied(ctx context.Context, configDir string, state State) error {
+	switch state.Backend {
+	case BackendCron:
+		return manager.removeCron(ctx, state.Profile, state.Action)
+	case BackendLaunchd:
+		return manager.removeLaunchd(ctx, configDir, state)
+	default:
+		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	}
 }
 
 func (manager Manager) Remove(ctx context.Context, configDir, name string) error {
@@ -227,6 +257,70 @@ func LoadAction(configDir, name, action string) (State, error) {
 	return state, nil
 }
 
+// Verify checks that the scheduler still contains the job described by state.
+func (manager Manager) Verify(ctx context.Context, state State) error {
+	definition, err := manager.installedDefinition(ctx, state)
+	if err != nil {
+		if errors.Is(err, errDefinitionDrift) {
+			return fmt.Errorf("%w: %v", ErrDrift, err)
+		}
+		return err
+	}
+	if state.DefinitionHash != "" && definitionHash(definition) != state.DefinitionHash {
+		return fmt.Errorf("%w: scheduler job content changed", ErrDrift)
+	}
+	switch state.Backend {
+	case BackendCron:
+		return nil
+	case BackendLaunchd:
+		domain := "gui/" + strconv.Itoa(manager.UID)
+		output, err := manager.Executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	}
+}
+
+func (manager Manager) installedDefinition(ctx context.Context, state State) ([]byte, error) {
+	switch state.Backend {
+	case BackendCron:
+		current, err := manager.crontab(ctx)
+		if err != nil {
+			return nil, err
+		}
+		definition, err := cronJobDefinition(current, state)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errDefinitionDrift, err)
+		}
+		return []byte(definition), nil
+	case BackendLaunchd:
+		jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(jobFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: launchd job file is missing: %s", errDefinitionDrift, jobFile)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("cannot inspect launchd job %s: %w", jobFile, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: launchd job is not a regular file: %s", errDefinitionDrift, jobFile)
+		}
+		return os.ReadFile(jobFile)
+	default:
+		return nil, fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	}
+}
+
+func definitionHash(definition []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(definition))
+}
+
 func (manager Manager) resolveBackend(backend string) (string, error) {
 	if backend == "" || backend == BackendAuto {
 		if manager.GOOS == "darwin" {
@@ -278,36 +372,7 @@ func writeState(configDir string, state State) error {
 	}
 	data = append(data, '\n')
 	path := statePath(configDir, state.Profile, state.Action)
-	return writePrivateAtomic(path, data)
-}
-
-func writePrivateAtomic(path string, data []byte) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".resticctl-*")
-	if err != nil {
-		return fmt.Errorf("cannot create temporary file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	ok := false
-	defer func() {
-		_ = temporary.Close()
-		if !ok {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("cannot protect temporary file: %w", err)
-	}
-	if _, err := temporary.Write(data); err != nil {
-		return fmt.Errorf("cannot write temporary file: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("cannot close temporary file: %w", err)
-	}
-	if err := replaceFile(temporaryPath, path); err != nil {
-		return fmt.Errorf("cannot replace %s: %w", path, err)
-	}
-	ok = true
-	return nil
+	return securefile.WriteAtomic(path, data)
 }
 
 func shellQuote(value string) string {

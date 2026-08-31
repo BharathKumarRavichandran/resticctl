@@ -63,7 +63,7 @@ func (cli *commandLine) listCommand() *cobra.Command {
 }
 
 func (cli *commandLine) initCommand() *cobra.Command {
-	return cli.profileCommand("init", "Initialize a restic repository", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+	return cli.profileCommand("init", "Initialize a restic repository", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 		return runner.Run(ctx, backupProfile, []string{"init"}, "")
 	})
 }
@@ -114,9 +114,6 @@ func (cli *commandLine) validateCommand() *cobra.Command {
 }
 
 func (cli *commandLine) runBackup(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun bool) error {
-	if err := app.ValidateDatabaseTools(backupProfile); err != nil {
-		return err
-	}
 	runner, err := cli.newRunner()
 	if err != nil {
 		return err
@@ -139,7 +136,7 @@ func (cli *commandLine) snapshotsCommand() *cobra.Command {
 
 func (cli *commandLine) statsCommand() *cobra.Command {
 	var mode string
-	command := cli.profileCommand("stats", "Show repository statistics for a profile", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+	command := cli.profileCommand("stats", "Show repository statistics for a profile", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 		return app.Stats(ctx, runner, backupProfile, mode)
 	})
 	command.Flags().StringVar(&mode, "mode", "", "counting mode (restore-size, files-by-contents, blobs-per-file, or raw-data)")
@@ -155,7 +152,7 @@ func (cli *commandLine) lsCommand() *cobra.Command {
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.ListSnapshot(ctx, runner, backupProfile, arguments[1], arguments[2:], long, recursive, humanReadable, sort, reverse)
 			})
 		}),
@@ -176,7 +173,7 @@ func (cli *commandLine) findCommand() *cobra.Command {
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.Find(ctx, runner, backupProfile, arguments[1:], ignoreCase, long, humanReadable, reverse)
 			})
 		}),
@@ -196,7 +193,7 @@ func (cli *commandLine) diffCommand() *cobra.Command {
 		Args:              cobra.ExactArgs(3),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.Diff(ctx, runner, backupProfile, arguments[1], arguments[2], metadata)
 			})
 		}),
@@ -213,7 +210,7 @@ func (cli *commandLine) dumpCommand() *cobra.Command {
 		Args:              cobra.ExactArgs(3),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.Dump(ctx, runner, backupProfile, arguments[1], arguments[2], archive, target)
 			})
 		}),
@@ -235,7 +232,7 @@ func (cli *commandLine) runCommand() *cobra.Command {
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.RunRestic(ctx, runner, backupProfile, arguments[1], arguments[2:])
 			})
 		}),
@@ -250,10 +247,10 @@ func (cli *commandLine) keyCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 	}
 	command.AddCommand(
-		cli.profileCommand("list", "List repository keys", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+		cli.profileCommand("list", "List repository keys", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 			return runner.Run(ctx, backupProfile, []string{"key", "list"}, "")
 		}),
-		cli.profileCommand("add", "Add a repository key", func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+		cli.profileCommand("add", "Add a repository key", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 			return runner.Run(ctx, backupProfile, []string{"key", "add"}, "")
 		}),
 		cli.keyRemoveCommand(),
@@ -273,7 +270,7 @@ func (cli *commandLine) keyRemoveCommand() *cobra.Command {
 		}),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return runner.Run(ctx, backupProfile, []string{"key", "remove", arguments[1]}, "")
 			})
 		}),
@@ -347,7 +344,7 @@ func (cli *commandLine) restoreCommand() *cobra.Command {
 		Args:              cobra.ExactArgs(3),
 		ValidArgsFunction: cli.completeRestoreArguments,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 				return app.Restore(ctx, runner, backupProfile, arguments[1], arguments[2], dryRun)
 			})
 		}),

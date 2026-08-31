@@ -1,12 +1,8 @@
 package profile
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -80,6 +76,12 @@ func Load(configDir, name string) (Profile, error) {
 	if err := validateExternalDatabases(&backupProfile, base); err != nil {
 		return Profile{}, err
 	}
+	if backupProfile.DatabaseConcurrency <= 0 {
+		return Profile{}, errors.New("database_concurrency must be a positive integer")
+	}
+	if err := validateDatabaseEnvironmentNames(backupProfile); err != nil {
+		return Profile{}, err
+	}
 
 	argumentLists := []struct {
 		name   string
@@ -96,7 +98,7 @@ func Load(configDir, name string) (Profile, error) {
 			if value == "" || strings.ContainsRune(value, 0) {
 				return Profile{}, fmt.Errorf("%s must not contain empty strings or NUL bytes", list.name)
 			}
-			if isReservedOption(value) {
+			if IsReservedOption(value) {
 				return Profile{}, fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
 			}
 		}
@@ -176,12 +178,14 @@ func Load(configDir, name string) (Profile, error) {
 // omitted value from an explicit false or empty value.
 type profileConfig struct {
 	Parent              string               `json:"parent,omitempty"`
+	ReplaceInherited    []string             `json:"replace_inherited,omitempty"`
 	Repository          *string              `json:"repository"`
 	CredentialsFile     *string              `json:"credentials_file"`
 	BackupPaths         []string             `json:"backup_paths"`
 	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
 	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	DatabaseConcurrency *int                 `json:"database_concurrency,omitempty"`
 	ResticArgs          []string             `json:"restic_args"`
 	BackupArgs          []string             `json:"backup_args"`
 	Tags                []string             `json:"tags"`
@@ -218,6 +222,9 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 	var child profileConfig
 	if err := decodeStrict(path, "profile", &child); err != nil {
 		return profileConfig{}, err
+	}
+	if err := validateReplaceInherited(child.ReplaceInherited); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
 	}
 	if err := validateConfiguredDatabases(child.SQLiteDatabases); err != nil {
 		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
@@ -355,184 +362,6 @@ func validateDatabaseArgs(backend string, args []string, forbidden ...string) er
 				return fmt.Errorf("%s args must not contain unsafe option %s", backend, option)
 			}
 		}
-	}
-	return nil
-}
-
-func merge(parent, child profileConfig) profileConfig {
-	result := parent
-	result.Parent = child.Parent
-	if child.Repository != nil {
-		result.Repository = child.Repository
-	}
-	// Credentials deliberately belong to the requested profile and are never inherited.
-	result.CredentialsFile = child.CredentialsFile
-	result.BackupPaths = appendCopy(parent.BackupPaths, child.BackupPaths)
-	result.SQLiteDatabases = mergeDatabases(parent.SQLiteDatabases, child.SQLiteDatabases)
-	result.PostgreSQLDatabases = mergeNamed(parent.PostgreSQLDatabases, child.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name })
-	result.MongoDBDatabases = mergeNamed(parent.MongoDBDatabases, child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name })
-	result.ResticArgs = appendCopy(parent.ResticArgs, child.ResticArgs)
-	result.BackupArgs = appendCopy(parent.BackupArgs, child.BackupArgs)
-	result.Tags = appendCopy(parent.Tags, child.Tags)
-	result.ForgetArgs = appendCopy(parent.ForgetArgs, child.ForgetArgs)
-	result.CheckArgs = appendCopy(parent.CheckArgs, child.CheckArgs)
-	if child.CheckBefore != nil {
-		result.CheckBefore = child.CheckBefore
-	}
-	if child.CheckAfter != nil {
-		result.CheckAfter = child.CheckAfter
-	}
-	if child.PruneBefore != nil {
-		result.PruneBefore = child.PruneBefore
-	}
-	if child.PruneAfter != nil {
-		result.PruneAfter = child.PruneAfter
-	}
-	result.RunBefore = appendCopy(parent.RunBefore, child.RunBefore)
-	result.RunAfter = appendCopy(parent.RunAfter, child.RunAfter)
-	result.RunAfterFail = appendCopy(parent.RunAfterFail, child.RunAfterFail)
-	result.RunFinally = appendCopy(parent.RunFinally, child.RunFinally)
-	if child.Schedule != nil {
-		result.Schedule = child.Schedule
-	}
-	if child.Forget != nil {
-		result.Forget = child.Forget
-	}
-	return result
-}
-
-func appendCopy[T any](parent, child []T) []T {
-	return append(append([]T(nil), parent...), child...)
-}
-
-func mergeDatabases(parent, child []SQLiteDatabase) []SQLiteDatabase {
-	result := append([]SQLiteDatabase(nil), parent...)
-	positions := make(map[string]int, len(result))
-	for index, database := range result {
-		positions[strings.ToLower(database.Name)] = index
-	}
-	for _, database := range child {
-		if index, ok := positions[strings.ToLower(database.Name)]; ok {
-			result[index] = database
-		} else {
-			positions[strings.ToLower(database.Name)] = len(result)
-			result = append(result, database)
-		}
-	}
-	return result
-}
-
-func mergeNamed[T any](parent, child []T, name func(T) string) []T {
-	result := append([]T(nil), parent...)
-	positions := make(map[string]int, len(result))
-	for i, item := range result {
-		positions[strings.ToLower(name(item))] = i
-	}
-	for _, item := range child {
-		key := strings.ToLower(name(item))
-		if i, ok := positions[key]; ok {
-			result[i] = item
-		} else {
-			positions[key] = len(result)
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-func (configured profileConfig) profile(name string) Profile {
-	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
-		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs,
-		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases,
-		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
-		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
-		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
-		Schedule: configured.Schedule, Forget: configured.Forget}
-	if configured.Repository != nil {
-		value.Repository = *configured.Repository
-	}
-	if configured.CredentialsFile != nil {
-		value.CredentialsFile = *configured.CredentialsFile
-	}
-	if configured.CheckBefore != nil {
-		value.CheckBefore = *configured.CheckBefore
-	}
-	if configured.CheckAfter != nil {
-		value.CheckAfter = *configured.CheckAfter
-	}
-	if configured.PruneBefore != nil {
-		value.PruneBefore = *configured.PruneBefore
-	}
-	if configured.PruneAfter != nil {
-		value.PruneAfter = *configured.PruneAfter
-	}
-	return value
-}
-
-func loadCredentials(path string) (Credentials, error) {
-	if err := ensurePrivateFile(path, "credentials"); err != nil {
-		return Credentials{}, err
-	}
-	var credentials Credentials
-	if err := decodeStrict(path, "credentials", &credentials); err != nil {
-		return Credentials{}, err
-	}
-	for key, value := range credentials.Environment {
-		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
-			return Credentials{}, fmt.Errorf("invalid environment entry in credentials: %q", key)
-		}
-		if IsReservedEnvironment(key) {
-			return Credentials{}, fmt.Errorf("credentials.environment must not set %s", key)
-		}
-	}
-	for key, value := range credentials.DatabaseEnvironment {
-		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
-			return Credentials{}, fmt.Errorf("invalid database_environment entry in credentials: %q", key)
-		}
-	}
-
-	hasCommand := credentials.Password.Command != nil
-	hasFile := credentials.Password.File != ""
-	if hasCommand == hasFile {
-		return Credentials{}, errors.New("set exactly one of password.command or password.file")
-	}
-	if hasCommand {
-		if len(credentials.Password.Command) == 0 {
-			return Credentials{}, errors.New("password.command must contain non-empty arguments")
-		}
-		for _, part := range credentials.Password.Command {
-			if part == "" || strings.ContainsRune(part, 0) {
-				return Credentials{}, errors.New("password.command must contain non-empty arguments without NUL bytes")
-			}
-		}
-	} else {
-		expanded, err := expandPath(credentials.Password.File, filepath.Dir(path))
-		if err != nil {
-			return Credentials{}, fmt.Errorf("invalid password.file: %w", err)
-		}
-		credentials.Password.File = expanded
-		if err := ensurePrivateFile(expanded, "password"); err != nil {
-			return Credentials{}, err
-		}
-	}
-	return credentials, nil
-}
-
-func decodeStrict(path, label string, destination any) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot load %s %s: %w", label, path, err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("cannot load %s %s: %w", label, path, err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("cannot load %s %s: %w", label, path, err)
 	}
 	return nil
 }

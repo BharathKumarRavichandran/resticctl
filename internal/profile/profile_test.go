@@ -65,6 +65,39 @@ func TestLoadRejectsDatabaseCredentialArguments(t *testing.T) {
 	}
 }
 
+func TestDatabaseEnvironmentForUsesOnlySharedAndNamedValues(t *testing.T) {
+	credentials := Credentials{
+		DatabaseEnvironment: map[string]string{"SHARED": "value", "OVERRIDE": "shared"},
+		DatabaseEnvironments: map[string]map[string]string{
+			"accounts": {"PGPASSWORD": "private", "OVERRIDE": "specific"},
+			"events":   {"MONGO_TOKEN": "private"},
+		},
+	}
+	environment := credentials.DatabaseEnvironmentFor("ACCOUNTS")
+	if environment["SHARED"] != "value" || environment["PGPASSWORD"] != "private" || environment["OVERRIDE"] != "specific" {
+		t.Fatalf("environment = %v", environment)
+	}
+	if _, exists := environment["MONGO_TOKEN"]; exists {
+		t.Fatal("environment leaked credentials from another database")
+	}
+}
+
+func TestLoadRejectsUnknownNamedDatabaseEnvironment(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
+          "database_environments":{"missing":{"PASSWORD":"private"}},
+          "password":{"command":["password-command"]}
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "postgresql_databases":[{"name":"accounts","database":"app"}]
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "unknown database") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func TestLoadResolvesNestedInheritance(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
@@ -154,6 +187,65 @@ func TestLoadDoesNotInheritCredentialsAndValidatesResolvedProfile(t *testing.T) 
 	_, err = Load(directory, "valid-child")
 	if err == nil || !strings.Contains(err.Error(), "must not override") {
 		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadCanReplaceOrClearInheritedCollections(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:test",
+          "backup_paths":["base-files"],
+          "tags":["base"],
+          "run_before":[{"command":["base-hook"]}],
+          "sqlite_databases":[{"name":"base","path":"base.sqlite"}],
+          "schedule":{"cron":"0 2 * * *"}
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "parent":"base",
+          "credentials_file":"credentials.json",
+          "replace_inherited":["backup_paths","tags","run_before","sqlite_databases","schedule"],
+          "backup_paths":["child-files"],
+          "tags":[],
+          "run_before":[],
+          "sqlite_databases":[]
+        }`)
+
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.BackupPaths) != 1 || !strings.HasSuffix(loaded.BackupPaths[0], "child-files") {
+		t.Fatalf("backup paths = %v", loaded.BackupPaths)
+	}
+	if len(loaded.Tags) != 0 || len(loaded.RunBefore) != 0 || len(loaded.SQLiteDatabases) != 0 || loaded.Schedule != nil {
+		t.Fatalf("inherited values were not cleared: %#v", loaded)
+	}
+}
+
+func TestLoadRejectsInvalidReplaceInheritedFields(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"replace_inherited":["tags","tags","unknown"]}`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "replace_inherited") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadRejectsNonPositiveDatabaseConcurrency(t *testing.T) {
+	for _, concurrency := range []string{"0", "-1"} {
+		t.Run(concurrency, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{
+              "repository":"local:test", "credentials_file":"credentials.json",
+              "database_concurrency":`+concurrency+`
+            }`)
+			_, err := Load(directory, "example")
+			if err == nil || !strings.Contains(err.Error(), "database_concurrency") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
 	}
 }
 

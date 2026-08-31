@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"resticctl/internal/profile"
+	"resticctl/internal/securefile"
 )
 
 var ErrNotRecorded = errors.New("backup status has not been recorded")
@@ -156,30 +157,8 @@ func write(path string, status Status) error {
 		return fmt.Errorf("cannot encode backup status: %w", err)
 	}
 	data = append(data, '\n')
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".status-*")
-	if err != nil {
-		return fmt.Errorf("cannot create temporary status file: %w", err)
+	if err := securefile.WriteAtomic(path, data); err != nil {
+		return fmt.Errorf("cannot write backup status %s: %w", path, err)
 	}
-	temporaryPath := temporary.Name()
-	ok := false
-	defer func() {
-		_ = temporary.Close()
-		if !ok {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return fmt.Errorf("cannot protect temporary status file: %w", err)
-	}
-	if _, err := temporary.Write(data); err != nil {
-		return fmt.Errorf("cannot write backup status: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("cannot close backup status: %w", err)
-	}
-	if err := replaceFile(temporaryPath, path); err != nil {
-		return fmt.Errorf("cannot replace backup status %s: %w", path, err)
-	}
-	ok = true
 	return nil
 }

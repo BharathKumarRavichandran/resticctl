@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,17 +18,26 @@ type execution struct {
 }
 
 type fakeExecutor struct {
-	executions []execution
-	crontab    string
+	executions      []execution
+	crontab         string
+	crontabError    error
+	launchctlOutput []byte
+	launchctlError  error
 }
 
 func (executor *fakeExecutor) Run(_ context.Context, input []byte, name string, arguments ...string) ([]byte, error) {
 	executor.executions = append(executor.executions, execution{input: string(input), name: name, arguments: append([]string(nil), arguments...)})
 	if name == "crontab" && slices.Equal(arguments, []string{"-l"}) {
+		if executor.crontabError != nil {
+			return []byte("permission denied"), executor.crontabError
+		}
 		return []byte(executor.crontab), nil
 	}
 	if name == "crontab" && slices.Equal(arguments, []string{"-"}) {
 		executor.crontab = string(input)
+	}
+	if name == "launchctl" && executor.launchctlError != nil {
+		return executor.launchctlOutput, executor.launchctlError
 	}
 	return nil, nil
 }
@@ -122,6 +132,27 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 	}
 }
 
+func TestVerifyLaunchdScheduleDetectsMissingJob(t *testing.T) {
+	directory := t.TempDir()
+	manager := Manager{
+		Executor: &fakeExecutor{}, GOOS: "darwin", UID: 501,
+		LaunchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), Now: time.Now,
+	}
+	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendLaunchd, "/bin/resticctl", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Verify(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state.JobFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Verify(context.Background(), state); !errors.Is(err, ErrDrift) {
+		t.Fatalf("Verify error = %v, want drift", err)
+	}
+}
+
 func TestBackupAndForgetSchedulesAreIndependent(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}
@@ -157,6 +188,75 @@ func TestScheduleValidation(t *testing.T) {
 	for _, expression := range []string{"", "0 1 * *", "0 1 * * *\n* * * * *", "0 1 $ * *"} {
 		if _, err := manager.Install(context.Background(), t.TempDir(), "example", expression, BackendCron, "/bin/resticctl", false); err == nil {
 			t.Fatalf("expression %q was accepted", expression)
+		}
+	}
+}
+
+func TestVerifyCronScheduleDetectsDrift(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{}
+	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendCron, "/bin/resticctl", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Verify(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	executor.crontab = strings.Replace(executor.crontab, "'backup'", "'forget'", 1)
+	if err := manager.Verify(context.Background(), state); !errors.Is(err, ErrDrift) {
+		t.Fatalf("Verify error = %v, want drift", err)
+	}
+}
+
+func TestVerifyCronSchedulePreservesReadError(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{}
+	manager := Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
+	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendCron, "/bin/resticctl", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.crontabError = errors.New("crontab unavailable")
+	err = manager.Verify(context.Background(), state)
+	if err == nil || errors.Is(err, ErrDrift) || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Verify error = %v, want operational read error", err)
+	}
+}
+
+func TestRemoveLaunchdScheduleAlreadyUnloaded(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{}
+	manager := Manager{
+		Executor: executor, GOOS: "darwin", UID: 501,
+		LaunchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), Now: time.Now,
+	}
+	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendLaunchd, "/bin/resticctl", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.launchctlOutput = []byte("Boot-out failed: 3: No such process")
+	executor.launchctlError = errors.New("exit status 3")
+	if err := manager.Remove(context.Background(), directory, "mac"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{state.JobFile, statePath(directory, "mac", ActionBackup)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("schedule file still exists at %s: %v", path, err)
+		}
+	}
+}
+
+func TestNoCrontabDetectionRequiresExpectedDiagnostic(t *testing.T) {
+	if !isNoCrontab(1, []byte("no crontab for user")) {
+		t.Fatal("expected missing crontab diagnostic was rejected")
+	}
+	for _, test := range []struct {
+		code   int
+		output string
+	}{{1, "permission denied"}, {1, ""}, {2, "no crontab for user"}} {
+		if isNoCrontab(test.code, []byte(test.output)) {
+			t.Fatalf("exit %d output %q was treated as a missing crontab", test.code, test.output)
 		}
 	}
 }

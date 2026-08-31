@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,6 +109,13 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 	}
 	if result.Schedule.Backend != schedule.BackendCron || result.LastRun != nil {
 		t.Fatalf("result = %#v", result)
+	}
+	executor.crontab = ""
+	statusCode, err = cli.run(context.Background(), []string{
+		"schedule", "status", "example", "--config-dir", directory,
+	})
+	if statusCode != 1 || !errors.Is(err, schedule.ErrDrift) {
+		t.Fatalf("drift status=%d error=%v", statusCode, err)
 	}
 }
 
@@ -225,6 +233,7 @@ func TestScheduleRunSkipsCurrentAndRunsOverdueBackup(t *testing.T) {
 	var output bytes.Buffer
 	cli := newCommandLine(strings.NewReader(""), &output, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.now = func() time.Time { return installedAt.Add(time.Hour) }
 
 	statusCode, err := cli.run(context.Background(), []string{"schedule", "run", "example", "--config-dir", directory})

@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+	"sync"
 	"time"
 
 	"resticctl/internal/databasebackup"
@@ -15,23 +15,32 @@ import (
 	"resticctl/internal/sqlitebackup"
 )
 
-type Runner interface {
+// ResticRunner executes a Restic argument vector for a profile.
+type ResticRunner interface {
 	Run(context.Context, profile.Profile, []string, string) error
+}
+
+// HookRunner executes a lifecycle hook without invoking a shell.
+type HookRunner interface {
 	RunHook(context.Context, []string) error
+}
+
+// Runner provides every subprocess operation required by a backup workflow.
+type Runner interface {
+	ResticRunner
+	HookRunner
 	RunDatabase(context.Context, []string, map[string]string, string) error
 }
 
 func Backup(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) (runErr error) {
-	if err := ValidateDatabaseTools(backupProfile); err != nil {
-		return err
-	}
-	if err := validateBackupSources(backupProfile); err != nil {
-		return err
-	}
 	defer func() {
 		runErr = errors.Join(runErr, runHooks(context.WithoutCancel(ctx), runner, "run-finally", backupProfile.RunFinally))
 	}()
 	if err := runHooks(ctx, runner, "run-before", backupProfile.RunBefore); err != nil {
+		runErr = err
+	} else if err := ValidateDatabaseTools(backupProfile); err != nil {
+		runErr = err
+	} else if err := validateBackupSources(backupProfile); err != nil {
 		runErr = err
 	} else {
 		runErr = runBackupWorkflow(ctx, runner, backupProfile, dryRun, output)
@@ -79,7 +88,7 @@ func runBackupWorkflow(ctx context.Context, runner Runner, backupProfile profile
 	return nil
 }
 
-func runHooks(ctx context.Context, runner Runner, phase string, hooks []profile.Hook) error {
+func runHooks(ctx context.Context, runner HookRunner, phase string, hooks []profile.Hook) error {
 	for index, hook := range hooks {
 		timeout := profile.DefaultHookTimeout
 		if hook.Timeout != "" {
@@ -141,22 +150,77 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 			return err
 		}
 	}
-	providers := make([]databasebackup.Provider, 0, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
+	providers := make([]stagedProvider, 0, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
 	for _, database := range backupProfile.PostgreSQLDatabases {
-		providers = append(providers, databasebackup.PostgreSQL{Database: database})
+		providers = append(providers, stagedProvider{name: database.Name, provider: databasebackup.PostgreSQL{Database: database}})
 	}
 	for _, database := range backupProfile.MongoDBDatabases {
-		providers = append(providers, databasebackup.MongoDB{Database: database})
+		providers = append(providers, stagedProvider{name: database.Name, provider: databasebackup.MongoDB{Database: database}})
 	}
-	for _, provider := range providers {
-		if err := provider.Stage(ctx, runner, staging, backupProfile.Credentials.DatabaseEnvironment); err != nil {
-			return err
-		}
+	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers); err != nil {
+		return err
 	}
 	arguments = append(arguments, "--")
 	arguments = append(arguments, backupProfile.BackupPaths...)
 	arguments = append(arguments, "databases")
 	return runner.Run(ctx, backupProfile, arguments, staging)
+}
+
+type stagedProvider struct {
+	name     string
+	provider databasebackup.Provider
+}
+
+func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, staging string, backupProfile profile.Profile, providers []stagedProvider) error {
+	if len(providers) == 0 {
+		return nil
+	}
+	concurrency := backupProfile.DatabaseConcurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	concurrency = min(concurrency, len(providers))
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan stagedProvider)
+	var workers sync.WaitGroup
+	var firstErr error
+	var recordError sync.Once
+	workers.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer workers.Done()
+			for provider := range jobs {
+				if workerCtx.Err() != nil {
+					return
+				}
+				environment := backupProfile.Credentials.DatabaseEnvironmentFor(provider.name)
+				if err := provider.provider.Stage(workerCtx, runner, staging, environment); err != nil {
+					recordError.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+			}
+		}()
+	}
+
+enqueue:
+	for _, provider := range providers {
+		select {
+		case jobs <- provider:
+		case <-workerCtx.Done():
+			break enqueue
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 func validateBackupSources(backupProfile profile.Profile) error {
@@ -171,139 +235,4 @@ func validateBackupSources(backupProfile profile.Profile) error {
 		}
 	}
 	return nil
-}
-
-func Snapshots(ctx context.Context, runner Runner, backupProfile profile.Profile) error {
-	return runner.Run(ctx, backupProfile, []string{"snapshots", "--tag", profileTag(backupProfile)}, "")
-}
-
-func Stats(ctx context.Context, runner Runner, backupProfile profile.Profile, mode string) error {
-	arguments := []string{"stats", "--tag", profileTag(backupProfile)}
-	if mode != "" {
-		arguments = append(arguments, "--mode", mode)
-	}
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func ListSnapshot(ctx context.Context, runner Runner, backupProfile profile.Profile, snapshot string, paths []string, long, recursive, humanReadable bool, sort string, reverse bool) error {
-	arguments := []string{"ls", snapshot, "--tag", profileTag(backupProfile)}
-	if long {
-		arguments = append(arguments, "--long")
-	}
-	if recursive {
-		arguments = append(arguments, "--recursive")
-	}
-	if humanReadable {
-		arguments = append(arguments, "--human-readable")
-	}
-	if sort != "" {
-		arguments = append(arguments, "--sort", sort)
-	}
-	if reverse {
-		arguments = append(arguments, "--reverse")
-	}
-	arguments = append(arguments, paths...)
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func Find(ctx context.Context, runner Runner, backupProfile profile.Profile, patterns []string, ignoreCase, long, humanReadable, reverse bool) error {
-	arguments := []string{"find", "--tag", profileTag(backupProfile)}
-	if ignoreCase {
-		arguments = append(arguments, "--ignore-case")
-	}
-	if long {
-		arguments = append(arguments, "--long")
-	}
-	if humanReadable {
-		arguments = append(arguments, "--human-readable")
-	}
-	if reverse {
-		arguments = append(arguments, "--reverse")
-	}
-	arguments = append(arguments, patterns...)
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func Diff(ctx context.Context, runner Runner, backupProfile profile.Profile, first, second string, metadata bool) error {
-	arguments := []string{"diff", first, second}
-	if metadata {
-		arguments = append(arguments, "--metadata")
-	}
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func Dump(ctx context.Context, runner Runner, backupProfile profile.Profile, snapshot, path, archive, target string) error {
-	arguments := []string{"dump", snapshot, path, "--tag", profileTag(backupProfile)}
-	if archive != "" {
-		arguments = append(arguments, "--archive", archive)
-	}
-	if target != "" {
-		arguments = append(arguments, "--target", target)
-	}
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func Check(ctx context.Context, runner Runner, backupProfile profile.Profile) error {
-	return runner.Run(ctx, backupProfile, append([]string{"check"}, backupProfile.CheckArgs...), "")
-}
-
-// RunRestic executes a supported restic command with profile-independent
-// arguments. Repository and credential flags remain controlled by the client.
-func RunRestic(ctx context.Context, runner Runner, backupProfile profile.Profile, command string, arguments []string) error {
-	if !supportedResticCommand(command) {
-		return fmt.Errorf("unsupported restic command %q", command)
-	}
-	if err := validateResticArguments(arguments); err != nil {
-		return err
-	}
-	return runner.Run(ctx, backupProfile, append([]string{command}, arguments...), "")
-}
-
-func supportedResticCommand(command string) bool {
-	switch command {
-	case "backup", "cache", "cat", "check", "copy", "diff", "dump", "find", "forget", "init", "key", "list", "ls", "migrate", "prune", "rebuild-index", "recover", "repair", "restore", "self-update", "snapshots", "stats", "tag", "unlock":
-		return true
-	default:
-		return false
-	}
-}
-
-func validateResticArguments(arguments []string) error {
-	for _, argument := range arguments {
-		if argument == "-r" || argument == "--repo" || argument == "--repository" || argument == "-p" ||
-			argument == "--password" || argument == "--password-file" || argument == "--password-command" ||
-			strings.HasPrefix(argument, "--repo=") || strings.HasPrefix(argument, "--repository=") ||
-			strings.HasPrefix(argument, "--password=") || strings.HasPrefix(argument, "--password-file=") ||
-			strings.HasPrefix(argument, "--password-command=") {
-			return fmt.Errorf("restic argument %q is reserved by resticctl", argument)
-		}
-	}
-	return nil
-}
-
-func Forget(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun, prune bool) error {
-	if len(backupProfile.ForgetArgs) == 0 {
-		return errors.New("profile has no forget_args")
-	}
-	arguments := []string{"forget", "--tag", profileTag(backupProfile), "--group-by", "host,tags"}
-	arguments = append(arguments, backupProfile.ForgetArgs...)
-	if prune {
-		arguments = append(arguments, "--prune")
-	}
-	if dryRun {
-		arguments = append(arguments, "--dry-run")
-	}
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func Restore(ctx context.Context, runner Runner, backupProfile profile.Profile, snapshot, target string, dryRun bool) error {
-	arguments := []string{"restore", snapshot, "--tag", profileTag(backupProfile), "--target", target}
-	if dryRun {
-		arguments = append(arguments, "--dry-run", "--verbose=2")
-	}
-	return runner.Run(ctx, backupProfile, arguments, "")
-}
-
-func profileTag(backupProfile profile.Profile) string {
-	return "profile:" + backupProfile.Name
 }

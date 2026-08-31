@@ -29,7 +29,7 @@ type commandLine struct {
 	now                func() time.Time
 }
 
-type profileAction func(context.Context, app.Runner, profile.Profile) error
+type profileAction func(context.Context, app.ResticRunner, profile.Profile) error
 
 func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) (int, error) {
 	return newCommandLine(os.Stdin, stdout, stderr).run(ctx, arguments)

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"resticctl/internal/securefile"
 )
 
 func (manager Manager) installLaunchd(ctx context.Context, configDir string, state State, fields []string, executable string) (string, error) {
@@ -40,7 +42,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 <key>ProcessType</key><string>Background</string>
 </dict></plist>
 `
-	if err := writePrivateAtomic(path, []byte(content)); err != nil {
+	if err := securefile.WriteAtomic(path, []byte(content)); err != nil {
 		return "", fmt.Errorf("cannot write launchd job %s: %w", path, err)
 	}
 	domain := "gui/" + strconv.Itoa(manager.UID)
@@ -64,7 +66,7 @@ func (manager Manager) removeLaunchd(ctx context.Context, configDir string, stat
 	}
 	domain := "gui/" + strconv.Itoa(manager.UID)
 	output, err := manager.Executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
-	if err != nil {
+	if err != nil && !launchdJobNotLoaded(output) {
 		return commandError("unload launchd job", output, err)
 	}
 	jobFiles := []string{
@@ -77,6 +79,13 @@ func (manager Manager) removeLaunchd(ctx context.Context, configDir string, stat
 		}
 	}
 	return nil
+}
+
+func launchdJobNotLoaded(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such process") ||
+		strings.Contains(message, "could not find specified service") ||
+		strings.Contains(message, "service not found")
 }
 
 func (manager Manager) launchdJobPath(name, action string) (string, error) {

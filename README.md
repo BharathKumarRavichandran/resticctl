@@ -124,6 +124,7 @@ machine running `resticctl`:
 
 ```json
 {
+  "database_concurrency": 2,
   "postgresql_databases": [{
     "name": "accounts",
     "database": "app",
@@ -161,7 +162,10 @@ The same preflight runs before every backup and before installing a backup
 schedule. Scheduled jobs still check again when they execute, since their
 `PATH` or installed tools may differ later. Explicit absolute client paths are
 recommended for scheduled database backups. Forget-only schedules do not
-require database clients.
+require database clients. External database dumps run sequentially by default.
+Set `database_concurrency` to a positive value greater than one to run at most
+that many PostgreSQL or MongoDB dumps concurrently; choose a limit that the
+database servers and backup host can sustain.
 
 ### Profile inheritance
 
@@ -185,6 +189,26 @@ An empty child list therefore adds nothing; it does not clear an inherited
 list. SQLite databases are merged by case-insensitive `name`: a child entry
 replaces an inherited entry with the same name and new names are appended.
 `schedule` and `forget` objects are each inherited or replaced as a whole.
+
+To replace or clear inherited collections explicitly, list their JSON field
+names in `replace_inherited`. The child value then replaces the parent instead
+of being appended; an empty child list clears it. Listing `schedule` or `forget`
+clears an inherited schedule when the child omits that object. For example:
+
+```json
+{
+  "parent": "shared",
+  "credentials_file": "laptop.credentials.json",
+  "replace_inherited": ["backup_paths", "tags", "run_before", "schedule"],
+  "backup_paths": ["~/Documents"],
+  "tags": [],
+  "run_before": []
+}
+```
+
+Supported replacement fields are the backup paths, all three database lists,
+Restic argument lists, tags, hook lists, and the `schedule` and `forget`
+objects. Unknown or duplicate names are rejected.
 
 `credentials_file` is never inherited. Every profile used directly must name
 its own private credentials file; a profile used only as a parent may omit one.
@@ -309,13 +333,15 @@ directory before any check-after or prune-after operation.
 Backup hooks use argument vectors and never invoke a shell implicitly. Each
 hook is an object with a non-empty `command` array and an optional Go-style
 `timeout` such as `30s` or `5m`; the default timeout is five minutes. Hooks run
-in their configured order. `run_before` failures stop the backup,
-`run_after` runs only after the full backup workflow succeeds,
-`run_after_fail` runs after a before, workflow, or after failure, and
-`run_finally` runs on both success and failure. A hook failure is returned to the caller and
-stops later hooks in the same phase. Failure and finally hooks are still given
-a bounded opportunity to run after cancellation. Temporary SQLite staging and
-temporary Restic password files are cleaned before failure/finally processing.
+in their configured order. Runtime source and database-client checks happen
+after `run_before`, allowing it to mount or create a configured source.
+`run_before` failures stop the backup, `run_after` runs only after the full
+backup workflow succeeds, `run_after_fail` runs when a before hook, runtime
+validation, workflow, or after hook fails, and `run_finally` runs on both
+success and failure. A hook failure is returned to the caller and stops later
+hooks in the same phase. Failure and finally hooks are still given a bounded
+opportunity to run after cancellation. Temporary SQLite staging and temporary
+Restic password files are cleaned before failure/finally processing.
 
 ### `snapshots`
 
@@ -452,6 +478,10 @@ resticctl schedule status <profile>
 resticctl schedule remove <profile>
 ```
 
+`schedule status` verifies that the recorded cron entry or loaded launchd job
+still exists and reports drift instead of trusting its state file alone. Run
+`schedule install` again to reconcile a missing or edited job.
+
 Generated jobs contain only the absolute resticctl path, configuration
 directory, and profile name. Repository and database credentials are loaded at
 runtime and are never written into the scheduler configuration. The current
@@ -507,13 +537,25 @@ MongoDB dumps are stored below `databases/<name>/` and can be restored with:
 mongorestore --config /private/mongo-restore.yml --drop databases/events
 ```
 
-Database credentials belong in `database_environment` in the private profile
-credentials file (for example `{"PGPASSWORD":"..."}` or PostgreSQL service
-configuration variables) or, for
-MongoDB, in the private YAML file named by `config_file`. They are never added
-to generated schedules or client argument values. The MongoDB config file must
-be mode 0600 (or otherwise private under the platform checks used for profile
-credentials).
+Database credentials should be scoped by configured database name in
+`database_environments` in the private credentials file:
+
+```json
+{
+  "database_environments": {
+    "accounts": {"PGPASSWORD": "..."},
+    "events": {"MONGO_TOKEN": "..."}
+  }
+}
+```
+
+Each named environment is sent only to that database subprocess. The older
+`database_environment` field remains available for values intentionally shared
+by every database client; named values override shared values. MongoDB secrets
+may instead live in the private YAML file named by `config_file`. Credentials
+are never added to generated schedules or client argument values. The MongoDB
+config file must be mode 0600 (or otherwise private under the platform checks
+used for profile credentials).
 
 `pg_dump` provides a transactionally consistent view of one PostgreSQL
 database, but globals are dumped separately and are not atomic with it.
@@ -536,8 +578,10 @@ resticctl run <profile> unlock --remove-all
 Supported commands are `backup`, `cache`, `cat`, `check`, `copy`, `diff`,
 `dump`, `find`, `forget`, `init`, `key`, `list`, `ls`, `migrate`, `prune`,
 `rebuild-index`, `recover`, `repair`, `restore`, `self-update`, `snapshots`,
-`stats`, `tag`, and `unlock`. Repository and password-file options are
-reserved and cannot be passed through; `resticctl` supplies them securely.
+`stats`, `tag`, and `unlock`. Repository and password-source options, including
+attached short forms such as `-r/path` and `-p/path`, are reserved and cannot be
+passed through; `resticctl` supplies them securely. Arguments after `--` are
+treated as positional values.
 Profile `restic_args` remain global options, while command-specific profile
 options and orchestration defaults continue to be applied by their dedicated
 commands.

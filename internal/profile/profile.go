@@ -1,6 +1,9 @@
 package profile
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type SQLiteDatabase struct {
 	Name string `json:"name"`
@@ -35,9 +38,33 @@ type PasswordSource struct {
 }
 
 type Credentials struct {
-	Environment         map[string]string `json:"environment"`
-	DatabaseEnvironment map[string]string `json:"database_environment,omitempty"`
-	Password            PasswordSource    `json:"password"`
+	Environment          map[string]string            `json:"environment"`
+	DatabaseEnvironment  map[string]string            `json:"database_environment,omitempty"`
+	DatabaseEnvironments map[string]map[string]string `json:"database_environments,omitempty"`
+	Password             PasswordSource               `json:"password"`
+}
+
+// DatabaseEnvironmentFor returns shared database values overlaid with values
+// scoped to name. The returned map does not alias the credential maps.
+func (credentials Credentials) DatabaseEnvironmentFor(name string) map[string]string {
+	var specific map[string]string
+	for configuredName, environment := range credentials.DatabaseEnvironments {
+		if strings.EqualFold(configuredName, name) {
+			specific = environment
+			break
+		}
+	}
+	if len(credentials.DatabaseEnvironment) == 0 && len(specific) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(credentials.DatabaseEnvironment)+len(specific))
+	for key, value := range credentials.DatabaseEnvironment {
+		result[key] = value
+	}
+	for key, value := range specific {
+		result[key] = value
+	}
+	return result
 }
 
 type Schedule struct {
@@ -70,6 +97,7 @@ type Profile struct {
 	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
 	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	DatabaseConcurrency int                  `json:"database_concurrency,omitempty"`
 	ResticArgs          []string             `json:"restic_args"`
 	BackupArgs          []string             `json:"backup_args"`
 	Tags                []string             `json:"tags"`

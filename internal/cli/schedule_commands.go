@@ -121,6 +121,9 @@ func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := cli.newScheduleManager().Verify(command.Context(), state); err != nil {
+				return err
+			}
 			var lastSuccess *time.Time
 			status, statusErr := runstatus.LoadAction(configDir, arguments[0], action)
 			if statusErr == nil {
@@ -181,7 +184,7 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 		Short:             "Show schedule and latest backup status",
 		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: cli.completeProfiles,
-		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
 			action, err := scheduledAction(arguments)
 			if err != nil {
 				return err
@@ -192,6 +195,9 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 			}
 			state, err := schedule.LoadAction(configDir, arguments[0], action)
 			if err != nil {
+				return err
+			}
+			if err := cli.newScheduleManager().Verify(command.Context(), state); err != nil {
 				return err
 			}
 			status, statusErr := runstatus.LoadAction(configDir, arguments[0], action)

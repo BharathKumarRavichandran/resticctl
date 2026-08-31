@@ -64,10 +64,15 @@ func (manager Manager) crontab(ctx context.Context) (string, error) {
 		return string(output), nil
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if errors.As(err, &exitErr) && isNoCrontab(exitErr.ExitCode(), output) {
 		return "", nil
 	}
 	return "", commandError("read crontab", output, err)
+}
+
+func isNoCrontab(exitCode int, output []byte) bool {
+	message := strings.ToLower(string(output))
+	return exitCode == 1 && strings.Contains(message, "no crontab")
 }
 
 func cronMarkers(name, action string) (string, string) {
@@ -106,6 +111,51 @@ func withoutCronJob(content, name, action string) (string, error) {
 		return "", errors.New("resticctl crontab start marker has no matching end")
 	}
 	return output.String(), nil
+}
+
+func cronJobDefinition(content string, state State) (string, error) {
+	begin, end := cronMarkers(state.Profile, state.Action)
+	inJob := false
+	found := false
+	expressionFound := false
+	var definition strings.Builder
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == begin:
+			if inJob || found {
+				return "", errors.New("duplicate or nested crontab marker")
+			}
+			inJob = true
+			found = true
+			definition.WriteString(trimmed)
+			definition.WriteByte('\n')
+		case trimmed == end:
+			if !inJob {
+				return "", errors.New("crontab end marker has no matching start")
+			}
+			definition.WriteString(trimmed)
+			definition.WriteByte('\n')
+			inJob = false
+		case inJob && strings.HasPrefix(trimmed, state.Expression+" "):
+			expressionFound = true
+			definition.WriteString(trimmed)
+			definition.WriteByte('\n')
+		case inJob:
+			definition.WriteString(trimmed)
+			definition.WriteByte('\n')
+		}
+	}
+	if inJob {
+		return "", errors.New("crontab start marker has no matching end")
+	}
+	if !found {
+		return "", errors.New("crontab job is missing")
+	}
+	if !expressionFound {
+		return "", fmt.Errorf("crontab job does not contain expression %q", state.Expression)
+	}
+	return definition.String(), nil
 }
 
 func commandError(action string, output []byte, err error) error {
