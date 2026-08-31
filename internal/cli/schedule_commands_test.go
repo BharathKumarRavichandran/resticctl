@@ -48,7 +48,7 @@ func TestBackupRecordsStatusAndStatusCommandReadsIt(t *testing.T) {
 	writeCLIProfile(t, directory)
 	runner := &recordingRunner{}
 	var output bytes.Buffer
-	cli := newCommandLine(strings.NewReader(""), &output, io.Discard)
+	cli := newTestCommandLine(&output, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
 
 	statusCode, err := cli.run(context.Background(), []string{"backup", "example", "--config-dir", directory})
@@ -80,7 +80,7 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 		Now:      func() time.Time { return time.Date(2026, 8, 30, 2, 0, 0, 0, time.UTC) },
 	}
 	var output bytes.Buffer
-	cli := newCommandLine(strings.NewReader(""), &output, io.Discard)
+	cli := newTestCommandLine(&output, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
 
@@ -134,7 +134,7 @@ func TestDryRunDoesNotReplaceLastBackupStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
 	statusCode, err := cli.run(context.Background(), []string{"backup", "example", "--dry-run", "--config-dir", directory})
 	if err != nil || statusCode != 0 {
@@ -155,7 +155,7 @@ func TestScheduleInstallUsesProfileConfiguration(t *testing.T) {
 	setCLIProfileSchedule(t, directory, &profile.Schedule{Backend: "cron", Cron: "0 4 * * *", CatchUp: true})
 	executor := &recordingScheduleExecutor{}
 	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
 
@@ -201,7 +201,7 @@ func TestScheduleInstallRejectsMissingDatabaseClient(t *testing.T) {
 
 	executor := &recordingScheduleExecutor{}
 	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: time.Now}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
 	statusCode, runErr := cli.run(context.Background(), []string{"schedule", "install", "example", "--config-dir", directory})
@@ -231,7 +231,7 @@ func TestScheduleRunSkipsCurrentAndRunsOverdueBackup(t *testing.T) {
 	}
 	runner := &recordingRunner{}
 	var output bytes.Buffer
-	cli := newCommandLine(strings.NewReader(""), &output, io.Discard)
+	cli := newTestCommandLine(&output, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.now = func() time.Time { return installedAt.Add(time.Hour) }
@@ -265,7 +265,7 @@ func TestScheduledForgetUsesProfileAliasAndPrune(t *testing.T) {
 	now := time.Date(2026, 8, 30, 3, 0, 0, 0, time.Local)
 	manager := schedule.Manager{Executor: executor, GOOS: "linux", UID: 1000, Now: func() time.Time { return now }}
 	runner := &recordingRunner{}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newScheduleManager = func() schedule.Manager { return manager }
 	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }

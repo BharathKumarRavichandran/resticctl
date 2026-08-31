@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -13,11 +12,17 @@ import (
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
-	"resticctl/internal/restic"
 	"resticctl/internal/schedule"
 )
 
-const Version = "0.1.0"
+// Dependencies contains process-level services supplied by the executable.
+type Dependencies struct {
+	NewRunner          func() (app.Runner, error)
+	NewScheduleManager func() schedule.Manager
+	Executable         func() (string, error)
+	Now                func() time.Time
+	Version            string
+}
 
 type commandLine struct {
 	configDir          string
@@ -27,24 +32,25 @@ type commandLine struct {
 	newScheduleManager func() schedule.Manager
 	executable         func() (string, error)
 	now                func() time.Time
+	version            string
 }
 
 type profileAction func(context.Context, app.ResticRunner, profile.Profile) error
 
-func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer) (int, error) {
-	return newCommandLine(os.Stdin, stdout, stderr).run(ctx, arguments)
+// Run executes the command line and returns its process status.
+func Run(ctx context.Context, arguments []string, stdout, stderr io.Writer, dependencies Dependencies) (int, error) {
+	return newCommandLine(stdout, stderr, dependencies).run(ctx, arguments)
 }
 
-func newCommandLine(stdin io.Reader, stdout, stderr io.Writer) *commandLine {
+func newCommandLine(stdout, stderr io.Writer, dependencies Dependencies) *commandLine {
 	return &commandLine{
-		stdout: stdout,
-		stderr: stderr,
-		newRunner: func() (app.Runner, error) {
-			return restic.New(stdin, stdout, stderr)
-		},
-		newScheduleManager: func() schedule.Manager { return schedule.NewManager() },
-		executable:         os.Executable,
-		now:                time.Now,
+		stdout:             stdout,
+		stderr:             stderr,
+		newRunner:          dependencies.NewRunner,
+		newScheduleManager: dependencies.NewScheduleManager,
+		executable:         dependencies.Executable,
+		now:                dependencies.Now,
+		version:            dependencies.Version,
 	}
 }
 
@@ -68,7 +74,7 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "resticctl",
 		Short:         "Manage profile-based restic backups",
-		Version:       Version,
+		Version:       cli.version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Args:          cobra.NoArgs,

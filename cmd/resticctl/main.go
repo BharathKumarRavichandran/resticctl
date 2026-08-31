@@ -6,10 +6,17 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync/atomic"
+	"time"
 
+	"resticctl/internal/app"
 	"resticctl/internal/cli"
+	"resticctl/internal/restic"
+	"resticctl/internal/schedule"
 )
+
+var version = "dev"
 
 func main() {
 	os.Exit(run())
@@ -30,8 +37,24 @@ func run() int {
 		cancel()
 	}()
 
-	status, err := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	status, err := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, cli.Dependencies{
+		NewRunner:          func() (app.Runner, error) { return restic.New(os.Stdin, os.Stdout, os.Stderr) },
+		NewScheduleManager: func() schedule.Manager { return schedule.NewManager() },
+		Executable:         os.Executable,
+		Now:                time.Now,
+		Version:            buildVersion(),
+	})
 	return finalStatus(status, err, signalCode.Load(), os.Stderr)
+}
+
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }
 
 func finalStatus(status int, err error, signalCode int32, stderr io.Writer) int {

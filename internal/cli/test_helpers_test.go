@@ -2,9 +2,34 @@ package cli
 
 import (
 	"context"
+	"io"
+	"os"
+	"time"
 
+	"resticctl/internal/app"
 	"resticctl/internal/profile"
+	"resticctl/internal/schedule"
 )
+
+const testVersion = "0.1.0-test"
+
+func testDependencies() Dependencies {
+	return Dependencies{
+		NewRunner:          func() (app.Runner, error) { return &recordingRunner{}, nil },
+		NewScheduleManager: func() schedule.Manager { return schedule.NewManager() },
+		Executable:         os.Executable,
+		Now:                time.Now,
+		Version:            testVersion,
+	}
+}
+
+func runForTest(ctx context.Context, arguments []string, stdout, stderr io.Writer) (int, error) {
+	return Run(ctx, arguments, stdout, stderr, testDependencies())
+}
+
+func newTestCommandLine(stdout, stderr io.Writer) *commandLine {
+	return newCommandLine(stdout, stderr, testDependencies())
+}
 
 type recordedRun struct {
 	arguments []string

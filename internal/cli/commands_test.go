@@ -88,7 +88,7 @@ func TestProfileCommandDispatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &recordingRunner{}
-			cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+			cli := newTestCommandLine(io.Discard, io.Discard)
 			cli.newRunner = func() (app.Runner, error) { return runner, nil }
 			arguments := append(append([]string(nil), test.arguments...), "--config-dir", directory)
 
@@ -110,7 +110,7 @@ func TestKeyRemoveRejectsForceFlag(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	runner := &recordingRunner{}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
 
 	status, err := cli.run(context.Background(), []string{
@@ -128,7 +128,7 @@ func TestKeyRemoveRejectsInvalidKeyID(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	runner := &recordingRunner{}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return runner, nil }
 
 	status, err := cli.run(context.Background(), []string{
@@ -146,7 +146,7 @@ func TestExecutionErrorHasRuntimeStatus(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	wantErr := errors.New("runner unavailable")
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.newRunner = func() (app.Runner, error) { return nil, wantErr }
 
 	status, err := cli.run(
@@ -165,7 +165,7 @@ func TestExecutionErrorDoesNotPrintUsage(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	var stderr strings.Builder
-	cli := newCommandLine(strings.NewReader(""), io.Discard, &stderr)
+	cli := newTestCommandLine(io.Discard, &stderr)
 	cli.newRunner = func() (app.Runner, error) { return nil, errors.New("runner unavailable") }
 
 	status, err := cli.run(context.Background(), []string{"backup", "example", "--config-dir", directory})

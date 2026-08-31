@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -10,7 +9,6 @@ import (
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
-	"resticctl/internal/runstatus"
 )
 
 func (cli *commandLine) createCommand() *cobra.Command {
@@ -114,20 +112,7 @@ func (cli *commandLine) validateCommand() *cobra.Command {
 }
 
 func (cli *commandLine) runBackup(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun bool) error {
-	runner, err := cli.newRunner()
-	if err != nil {
-		return err
-	}
-	if dryRun {
-		return app.Backup(ctx, runner, backupProfile, true, cli.stdout)
-	}
-	recorder, err := runstatus.Begin(configDir, backupProfile.Name, cli.now())
-	if err != nil {
-		return err
-	}
-	runErr := app.Backup(ctx, runner, backupProfile, false, cli.stdout)
-	statusErr := recorder.Finish(runErr, cli.now())
-	return errors.Join(runErr, statusErr)
+	return app.RunBackup(ctx, cli.newRunner, configDir, backupProfile, dryRun, cli.stdout, cli.now)
 }
 
 func (cli *commandLine) snapshotsCommand() *cobra.Command {
@@ -320,20 +305,7 @@ func (cli *commandLine) forgetCommand() *cobra.Command {
 }
 
 func (cli *commandLine) runForget(ctx context.Context, configDir string, backupProfile profile.Profile, dryRun, prune bool) error {
-	runner, err := cli.newRunner()
-	if err != nil {
-		return err
-	}
-	if dryRun {
-		return app.Forget(ctx, runner, backupProfile, true, prune)
-	}
-	recorder, err := runstatus.BeginAction(configDir, backupProfile.Name, "forget", cli.now())
-	if err != nil {
-		return err
-	}
-	runErr := app.Forget(ctx, runner, backupProfile, false, prune)
-	statusErr := recorder.Finish(runErr, cli.now())
-	return errors.Join(runErr, statusErr)
+	return app.RunForget(ctx, cli.newRunner, configDir, backupProfile, dryRun, prune, cli.now)
 }
 
 func (cli *commandLine) restoreCommand() *cobra.Command {

@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"resticctl/internal/app"
-	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 	"resticctl/internal/runstatus"
 	"resticctl/internal/schedule"
@@ -117,37 +116,14 @@ func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, err := schedule.LoadAction(configDir, arguments[0], action)
-			if err != nil {
-				return err
-			}
-			if err := cli.newScheduleManager().Verify(command.Context(), state); err != nil {
-				return err
-			}
-			var lastSuccess *time.Time
-			status, statusErr := runstatus.LoadAction(configDir, arguments[0], action)
-			if statusErr == nil {
-				lastSuccess = status.LastSuccessAt
-				if lastSuccess == nil && status.State == "succeeded" {
-					lastSuccess = status.FinishedAt
-				}
-			} else if !errors.Is(statusErr, runstatus.ErrNotRecorded) {
-				return statusErr
-			}
-			if lastSuccess == nil {
-				lastSuccess = &state.Installed
-			}
-			due, err := cronexpr.Due(state.Expression, lastSuccess, cli.now())
+			due, err := app.ScheduledRun(command.Context(), cli.newRunner, cli.newScheduleManager(), configDir, backupProfile, action, cli.now, cli.stdout)
 			if err != nil {
 				return err
 			}
 			if !due {
 				return writeOutput(cli.stdout, "Scheduled backup for %s is not due\n", arguments[0])
 			}
-			if action == schedule.ActionForget {
-				return cli.runForget(command.Context(), configDir, backupProfile, false, state.Prune)
-			}
-			return cli.runBackup(command.Context(), configDir, backupProfile, false)
+			return nil
 		}),
 	}
 	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "scheduled action")

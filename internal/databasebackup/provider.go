@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"resticctl/internal/profile"
+	"resticctl/internal/sqlitebackup"
 )
 
 // Runner executes a database client locally. Arguments are always passed as an
@@ -17,10 +18,30 @@ type Runner interface {
 
 // Provider stages a consistent database dump below a backup staging directory.
 type Provider interface {
+	Name() string
+	Progress() string
 	Stage(context.Context, Runner, string, map[string]string) error
 }
 
+type SQLite struct{ Database profile.SQLiteDatabase }
+
+func (s SQLite) Name() string { return s.Database.Name }
+
+func (s SQLite) Progress() string { return "Snapshotting SQLite database: " + s.Database.Name }
+
+func (s SQLite) Stage(ctx context.Context, _ Runner, directory string, _ map[string]string) error {
+	destination := filepath.Join(directory, "databases", s.Database.Name+".sqlite3")
+	if err := sqlitebackup.Create(ctx, s.Database.Path, destination); err != nil {
+		return fmt.Errorf("snapshot SQLite database %s: %w", s.Database.Name, err)
+	}
+	return nil
+}
+
 type PostgreSQL struct{ Database profile.PostgreSQLDatabase }
+
+func (p PostgreSQL) Name() string { return p.Database.Name }
+
+func (p PostgreSQL) Progress() string { return "" }
 
 func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := p.Database
@@ -55,6 +76,10 @@ func appendConnection(args []string, host string, port int, username string) []s
 }
 
 type MongoDB struct{ Database profile.MongoDBDatabase }
+
+func (m MongoDB) Name() string { return m.Database.Name }
+
+func (m MongoDB) Progress() string { return "" }
 
 func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := m.Database

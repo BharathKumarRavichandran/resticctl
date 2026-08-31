@@ -13,12 +13,6 @@ Restic handles the backup, encryption, restore, and repository maintenance.
 - restic
 - Go 1.25 or newer to build from source
 
-Build it from the repository root:
-
-```sh
-go build -o resticctl ./cmd/resticctl
-```
-
 Install the binary in a directory on your `PATH`, for example:
 
 ```sh
@@ -594,6 +588,8 @@ request, open an issue in this repository.
 
 ## Development
 
+Use Go 1.25 or newer. Run the checks from the repository root:
+
 ```sh
 go test ./...
 go vet ./...
@@ -605,3 +601,19 @@ the end-to-end test against an actual temporary restic repository:
 ```sh
 RESTIC_INTEGRATION=1 go test ./internal/app -run TestRealRestic -v
 ```
+
+Build a development binary with:
+
+```sh
+go build -o resticctl ./cmd/resticctl
+```
+
+Development builds report the version as `dev`. Release builds can inject a
+version at link time:
+
+```sh
+go build -ldflags "-X main.version=v0.1.0" -o resticctl ./cmd/resticctl
+```
+
+When installed from a tagged Go module version, `resticctl` also reads the
+version from Go build metadata.

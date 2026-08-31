@@ -17,12 +17,12 @@ import (
 func TestCreateAndListCommands(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "config")
 	var output, stderr bytes.Buffer
-	status, err := Run(context.Background(), []string{"create", "example", "--config-dir", directory}, &output, &stderr)
+	status, err := runForTest(context.Background(), []string{"create", "example", "--config-dir", directory}, &output, &stderr)
 	if err != nil || status != 0 {
 		t.Fatalf("create status=%d error=%v stderr=%s", status, err, stderr.String())
 	}
 	output.Reset()
-	status, err = Run(context.Background(), []string{"list", "--config-dir", directory}, &output, &stderr)
+	status, err = runForTest(context.Background(), []string{"list", "--config-dir", directory}, &output, &stderr)
 	if err != nil || status != 0 {
 		t.Fatalf("list status=%d error=%v stderr=%s", status, err, stderr.String())
 	}
@@ -33,7 +33,7 @@ func TestCreateAndListCommands(t *testing.T) {
 
 func TestCommandHelp(t *testing.T) {
 	var output, stderr bytes.Buffer
-	status, err := Run(context.Background(), []string{"backup", "--help"}, &output, &stderr)
+	status, err := runForTest(context.Background(), []string{"backup", "--help"}, &output, &stderr)
 	if err != nil || status != 0 {
 		t.Fatalf("help status=%d error=%v stderr=%s", status, err, stderr.String())
 	}
@@ -46,7 +46,7 @@ func TestCommandHelp(t *testing.T) {
 
 func TestCommandArgumentErrorHasUsageStatus(t *testing.T) {
 	var stderr bytes.Buffer
-	status, err := Run(
+	status, err := runForTest(
 		context.Background(),
 		[]string{"restore", "example", "latest"},
 		&bytes.Buffer{},
@@ -65,7 +65,7 @@ func TestCommandArgumentErrorHasUsageStatus(t *testing.T) {
 
 func TestScheduleInstallArgumentErrorShowsExamples(t *testing.T) {
 	var stderr bytes.Buffer
-	status, err := Run(context.Background(), []string{"schedule", "install"}, io.Discard, &stderr)
+	status, err := runForTest(context.Background(), []string{"schedule", "install"}, io.Discard, &stderr)
 	if status != 2 || err == nil {
 		t.Fatalf("status=%d error=%v, want usage error", status, err)
 	}
@@ -78,18 +78,18 @@ func TestScheduleInstallArgumentErrorShowsExamples(t *testing.T) {
 
 func TestVersionFlag(t *testing.T) {
 	var output bytes.Buffer
-	status, err := Run(context.Background(), []string{"--version"}, &output, &bytes.Buffer{})
+	status, err := runForTest(context.Background(), []string{"--version"}, &output, &bytes.Buffer{})
 	if err != nil || status != 0 {
 		t.Fatalf("version status=%d error=%v", status, err)
 	}
-	if output.String() != "resticctl "+Version+"\n" {
+	if output.String() != "resticctl "+testVersion+"\n" {
 		t.Fatalf("version output = %q", output.String())
 	}
 }
 
 func TestCompletionCommand(t *testing.T) {
 	var output bytes.Buffer
-	status, err := Run(context.Background(), []string{"completion", "zsh"}, &output, &bytes.Buffer{})
+	status, err := runForTest(context.Background(), []string{"completion", "zsh"}, &output, &bytes.Buffer{})
 	if err != nil || status != 0 {
 		t.Fatalf("completion status=%d error=%v", status, err)
 	}
@@ -104,7 +104,7 @@ func TestListReturnsOutputError(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("write failed")
-	cli := newCommandLine(strings.NewReader(""), errorWriter{err: wantErr}, io.Discard)
+	cli := newTestCommandLine(errorWriter{err: wantErr}, io.Discard)
 
 	status, err := cli.run(context.Background(), []string{"list", "--config-dir", directory})
 	if status != 1 {
@@ -122,7 +122,7 @@ func TestProfileCompletionUsesConfigDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cli := newCommandLine(strings.NewReader(""), io.Discard, io.Discard)
+	cli := newTestCommandLine(io.Discard, io.Discard)
 	cli.configDir = directory
 
 	got, directive := cli.completeProfiles(nil, nil, "ex")

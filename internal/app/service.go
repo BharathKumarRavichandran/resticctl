@@ -12,7 +12,6 @@ import (
 
 	"resticctl/internal/databasebackup"
 	"resticctl/internal/profile"
-	"resticctl/internal/sqlitebackup"
 )
 
 // ResticRunner executes a Restic argument vector for a profile.
@@ -136,28 +135,23 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 		}
 	}()
 	if err := os.Chmod(staging, 0o700); err != nil {
-		return fmt.Errorf("cannot protect SQLite staging directory: %w", err)
+		return fmt.Errorf("cannot protect database staging directory: %w", err)
 	}
 	databaseDir := filepath.Join(staging, "databases")
 	if err := os.Mkdir(databaseDir, 0o700); err != nil {
-		return fmt.Errorf("cannot create SQLite staging directory: %w", err)
+		return fmt.Errorf("cannot create database staging directory: %w", err)
 	}
+	providers := make([]databasebackup.Provider, 0, len(backupProfile.SQLiteDatabases)+len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
 	for _, database := range backupProfile.SQLiteDatabases {
-		if _, err := fmt.Fprintf(output, "==> Snapshotting SQLite database: %s\n", database.Name); err != nil {
-			return fmt.Errorf("cannot write backup progress: %w", err)
-		}
-		if err := sqlitebackup.Create(ctx, database.Path, filepath.Join(databaseDir, database.Name+".sqlite3")); err != nil {
-			return err
-		}
+		providers = append(providers, databasebackup.SQLite{Database: database})
 	}
-	providers := make([]stagedProvider, 0, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
 	for _, database := range backupProfile.PostgreSQLDatabases {
-		providers = append(providers, stagedProvider{name: database.Name, provider: databasebackup.PostgreSQL{Database: database}})
+		providers = append(providers, databasebackup.PostgreSQL{Database: database})
 	}
 	for _, database := range backupProfile.MongoDBDatabases {
-		providers = append(providers, stagedProvider{name: database.Name, provider: databasebackup.MongoDB{Database: database}})
+		providers = append(providers, databasebackup.MongoDB{Database: database})
 	}
-	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers); err != nil {
+	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers, output); err != nil {
 		return err
 	}
 	arguments = append(arguments, "--")
@@ -166,12 +160,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	return runner.Run(ctx, backupProfile, arguments, staging)
 }
 
-type stagedProvider struct {
-	name     string
-	provider databasebackup.Provider
-}
-
-func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, staging string, backupProfile profile.Profile, providers []stagedProvider) error {
+func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, staging string, backupProfile profile.Profile, providers []databasebackup.Provider, output io.Writer) error {
 	if len(providers) == 0 {
 		return nil
 	}
@@ -183,10 +172,11 @@ func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, s
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	jobs := make(chan stagedProvider)
+	jobs := make(chan databasebackup.Provider)
 	var workers sync.WaitGroup
 	var firstErr error
 	var recordError sync.Once
+	var outputMu sync.Mutex
 	workers.Add(concurrency)
 	for range concurrency {
 		go func() {
@@ -195,8 +185,17 @@ func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, s
 				if workerCtx.Err() != nil {
 					return
 				}
-				environment := backupProfile.Credentials.DatabaseEnvironmentFor(provider.name)
-				if err := provider.provider.Stage(workerCtx, runner, staging, environment); err != nil {
+				if progress := provider.Progress(); progress != "" {
+					outputMu.Lock()
+					_, outputErr := fmt.Fprintf(output, "==> %s\n", progress)
+					outputMu.Unlock()
+					if outputErr != nil {
+						recordError.Do(func() { firstErr = fmt.Errorf("cannot write backup progress: %w", outputErr); cancel() })
+						return
+					}
+				}
+				environment := backupProfile.Credentials.DatabaseEnvironmentFor(provider.Name())
+				if err := provider.Stage(workerCtx, runner, staging, environment); err != nil {
 					recordError.Do(func() {
 						firstErr = err
 						cancel()
