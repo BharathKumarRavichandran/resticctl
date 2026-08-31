@@ -1,5 +1,8 @@
 # resticctl
 
+[![CI](https://github.com/BharathKumarRavichandran/resticctl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BharathKumarRavichandran/resticctl/actions/workflows/ci.yml)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+
 A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
 
 A profile keeps the repository, paths, credentials, and retention rules in one place.
@@ -12,6 +15,14 @@ Restic handles the backup, encryption, restore, and repository maintenance.
 
 - restic
 - Go 1.25 or newer to build from source
+
+Build the binary from the repository root:
+
+```sh
+go build -o resticctl ./cmd/resticctl
+```
+
+On Windows, use `go build -o resticctl.exe ./cmd/resticctl`.
 
 Install the binary in a directory on your `PATH`, for example:
 
