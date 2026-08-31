@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -75,5 +77,18 @@ func TestFailedSnapshotDoesNotLeaveDestination(t *testing.T) {
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("incomplete snapshot still exists: %v", err)
+	}
+}
+
+func TestSQLiteURIUsesAbsoluteFileURLOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows file URL behavior")
+	}
+	uri, err := sqliteURI(filepath.Join(t.TempDir(), "source.sqlite3"), "mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(uri, "file:///") {
+		t.Fatalf("SQLite URI = %q, want an absolute file URL", uri)
 	}
 }

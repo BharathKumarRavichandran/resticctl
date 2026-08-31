@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	modernsqlite "modernc.org/sqlite"
@@ -151,5 +152,9 @@ func sqliteURI(path, rawQuery string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve SQLite path %s: %w", path, err)
 	}
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute), RawQuery: rawQuery}).String(), nil
+	uriPath := filepath.ToSlash(absolute)
+	if filepath.VolumeName(absolute) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: rawQuery}).String(), nil
 }

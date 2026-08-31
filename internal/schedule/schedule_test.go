@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -48,14 +49,18 @@ func TestCronInstallReplaceAndRemove(t *testing.T) {
 	now := time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC)
 	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: func() time.Time { return now }}
 
-	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendAuto, "/usr/local/bin/resticctl", false)
+	executable, err := filepath.Abs("/usr/local/bin/resticctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.Install(context.Background(), directory, "example", "15 2 * * *", BackendAuto, executable, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if state.Backend != BackendCron || state.Expression != "15 2 * * *" {
 		t.Fatalf("state = %#v", state)
 	}
-	for _, expected := range []string{"MAILTO=user@example.com", "# resticctl:example:begin", "15 2 * * *", "'/usr/local/bin/resticctl'", "'--config-dir'", "'backup'", "'example'"} {
+	for _, expected := range []string{"MAILTO=user@example.com", "# resticctl:example:begin", "15 2 * * *", shellQuote(executable), "'--config-dir'", "'backup'", "'example'"} {
 		if !strings.Contains(executor.crontab, expected) {
 			t.Fatalf("crontab does not contain %q:\n%s", expected, executor.crontab)
 		}
@@ -68,7 +73,7 @@ func TestCronInstallReplaceAndRemove(t *testing.T) {
 		t.Fatalf("installed = %s, want %s", loaded.Installed, now)
 	}
 
-	if _, err := manager.Install(context.Background(), directory, "example", "30 3 * * *", BackendCron, "/usr/local/bin/resticctl", false); err != nil {
+	if _, err := manager.Install(context.Background(), directory, "example", "30 3 * * *", BackendCron, executable, false); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Count(executor.crontab, "# resticctl:example:begin") != 1 || strings.Contains(executor.crontab, "15 2 * * *") {
@@ -90,7 +95,11 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 	executor := &fakeExecutor{}
 	launchAgents := filepath.Join(directory, "Library", "LaunchAgents")
 	manager := Manager{executor: executor, goos: "darwin", uid: 501, launchAgentsDir: launchAgents, now: time.Now}
-	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendAuto, "/Applications/Restic Tools/resticctl", true)
+	executable, err := filepath.Abs("/Applications/Restic Tools/resticctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.Install(context.Background(), directory, "mac", "5 1 * * *", BackendAuto, executable, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +108,7 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	for _, expected := range []string{"io.resticctl.backup.mac", "<key>Minute</key><integer>5</integer>", "<key>Hour</key><integer>1</integer>", "/Applications/Restic Tools/resticctl", "<string>schedule</string>", "<string>run</string>", "<string>mac</string>", "<key>RunAtLoad</key><true/>"} {
+	for _, expected := range []string{"io.resticctl.backup.mac", "<key>Minute</key><integer>5</integer>", "<key>Hour</key><integer>1</integer>", xmlText(executable), "<string>schedule</string>", "<string>run</string>", "<string>mac</string>", "<key>RunAtLoad</key><true/>"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("plist does not contain %q:\n%s", expected, content)
 		}
@@ -108,7 +117,7 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("plist mode = %o, want 600", info.Mode().Perm())
 	}
 	if filepath.Dir(state.JobFile) != launchAgents {

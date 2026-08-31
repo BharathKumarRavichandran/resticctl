@@ -6,8 +6,8 @@
 A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
 
 A profile keeps the repository, paths, credentials, and retention rules in one place.
-The package also supports consistent backups of live SQLite databases, adding
-the copies to the same snapshot as the rest of the files.
+resticctl can also stage SQLite, PostgreSQL, and MongoDB databases, adding their
+snapshots or dumps to the same Restic snapshot as the other files.
 
 Restic handles the backup, encryption, restore, and repository maintenance.
 
@@ -120,9 +120,9 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
 `restic_args` are placed before the restic subcommand. The other argument lists
 only apply to the command named by the field.
 
-`backup_paths` contains ordinary files and directories to include. SQLite
-databases are listed separately in `sqlite_databases`; for a SQLite-only
-profile, set `backup_paths` to `[]`.
+`backup_paths` contains ordinary files and directories to include. Databases
+are listed separately in `sqlite_databases`, `postgresql_databases`, and
+`mongodb_databases`; for a database-only profile, set `backup_paths` to `[]`.
 
 PostgreSQL and MongoDB can be staged by client programs installed on the
 machine running `resticctl`:
@@ -191,8 +191,9 @@ Inheritance may be nested. Scalar fields explicitly present in a child replace
 the parent value, including boolean fields set to `false`. Lists such as
 `backup_paths`, restic argument lists, tags, and hooks are appended parent-first.
 An empty child list therefore adds nothing; it does not clear an inherited
-list. SQLite databases are merged by case-insensitive `name`: a child entry
-replaces an inherited entry with the same name and new names are appended.
+list. Entries in each of the SQLite, PostgreSQL, and MongoDB database lists are
+merged by case-insensitive `name`: a child entry replaces an inherited entry
+with the same name and new names are appended.
 `schedule` and `forget` objects are each inherited or replaced as a whole.
 
 To replace or clear inherited collections explicitly, list their JSON field
@@ -285,6 +286,7 @@ mode `0600` for the files it creates.
 resticctl create <profile>
 resticctl list
 resticctl init <profile>
+resticctl validate <profile>
 resticctl backup <profile> [--dry-run]
 resticctl snapshots <profile>
 resticctl stats <profile> [--mode <mode>]
@@ -299,9 +301,10 @@ resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
 resticctl status <profile> [--action backup|forget] [--json]
-resticctl schedule install <profile> [backup|forget] [--cron "<expression>"] [--backend auto|cron|launchd] [--catch-up]
+resticctl schedule install <profile> [backup|forget] [--cron "<expression>"] [--backend auto|cron|launchd] [--catch-up] [--prune]
 resticctl schedule status <profile> [backup|forget] [--json]
 resticctl schedule remove <profile> [backup|forget]
+resticctl run <profile> <restic-command> [args...]
 resticctl completion <shell>
 ```
 
@@ -319,10 +322,15 @@ Lists the profiles found in the configuration directory.
 Initializes the restic repository configured by the profile. Run this once
 before the first backup.
 
+### `validate`
+
+Validates the merged profile, credentials, and configured database-client
+availability without connecting to a database or repository.
+
 ### `backup`
 
-Backs up the profile's files and configured SQLite databases. `--dry-run`
-passes the option to restic without writing a snapshot.
+Backs up the profile's files and configured SQLite, PostgreSQL, and MongoDB
+databases. `--dry-run` passes the option to restic without writing a snapshot.
 
 Backup orchestration is configured with `check_before`, `check_after`,
 `prune_before`, and `prune_after`. The order is check-before, prune-before,
@@ -331,9 +339,10 @@ Prune options apply `forget_args` to this profile and run Restic `forget
 --prune`, so they require non-empty `forget_args`. During `--dry-run`, checks
 still run and both backup and retention operations receive `--dry-run`.
 
-SQLite copies exist only for the backup step: resticctl creates consistent
-temporary snapshots immediately before Restic backup and removes the staging
-directory before any check-after or prune-after operation.
+Database staging exists only for the backup step: resticctl creates SQLite
+snapshots and PostgreSQL or MongoDB dumps immediately before Restic backup,
+then removes the staging directory before any check-after or prune-after
+operation.
 
 Backup hooks use argument vectors and never invoke a shell implicitly. Each
 hook is an object with a non-empty `command` array and an optional Go-style
@@ -345,8 +354,8 @@ backup workflow succeeds, `run_after_fail` runs when a before hook, runtime
 validation, workflow, or after hook fails, and `run_finally` runs on both
 success and failure. A hook failure is returned to the caller and stops later
 hooks in the same phase. Failure and finally hooks are still given a bounded
-opportunity to run after cancellation. Temporary SQLite staging and temporary
-Restic password files are cleaned before failure/finally processing.
+opportunity to run after cancellation. Temporary database staging and Restic
+password files are cleaned before failure/finally processing.
 
 ### `snapshots`
 
@@ -464,13 +473,13 @@ The portable aliases `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, and
 `@annually` are also accepted, as are the same names without `@`. Aliases are
 normalized to five-field expressions before installation.
 
-With `catch_up` enabled, resticctl runs at most one overdue backup when its
-scheduler starts again. It compares the cron schedule with the last successful
-backup; it does not replay every missed occurrence. Cron uses an additional
-`@reboot` entry. launchd uses `RunAtLoad` after login and also coalesces calendar
-events missed while the laptop was asleep into one event after wake. A
-powered-off machine cannot run the job until cron starts during boot or the
-launchd agent loads after login.
+With `catch_up` enabled, resticctl runs at most one overdue backup or retention
+action when its scheduler starts again. It compares the cron schedule with the
+last successful run of that action; it does not replay every missed occurrence.
+Cron uses an additional `@reboot` entry. launchd uses `RunAtLoad` after login
+and also coalesces calendar events missed while the laptop was asleep into one
+event after wake. A powered-off machine cannot run the job until cron starts
+during boot or the launchd agent loads after login.
 
 For an action with no recorded success, catch-up timing starts from the time its
 schedule was installed. Installing a launchd job therefore does not immediately
@@ -488,21 +497,21 @@ still exists and reports drift instead of trusting its state file alone. Run
 `schedule install` again to reconcile a missing or edited job.
 
 Generated jobs contain only the absolute resticctl path, configuration
-directory, and profile name. Repository and database credentials are loaded at
-runtime and are never written into the scheduler configuration. The current
-`PATH` is captured when installing a schedule so the scheduled process can find
-restic and configured credential commands; reinstall after changing tool
-locations.
+directory, profile name, and scheduled action. Repository and database
+credentials are loaded at runtime and are never written into the scheduler
+configuration. The current `PATH` is captured when installing a schedule so
+the scheduled process can find restic and configured credential commands;
+reinstall after changing tool locations.
 
-On macOS, persistent plist files are installed in
-`~/Library/LaunchAgents/io.resticctl.backup.<profile>.plist`. Cron jobs remain in
-the current user's crontab. Non-secret installed-schedule metadata remains under
-`<config-dir>/schedules/`.
+On macOS, persistent plist files are installed as
+`~/Library/LaunchAgents/io.resticctl.<action>.<profile>.plist`. Cron jobs remain
+in the current user's crontab. Non-secret installed-schedule metadata remains
+under `<config-dir>/schedules/`.
 
-Each non-dry-run backup records its state, start and finish times, duration, and
-last successful completion time in a private file under the configuration
-directory. Backups for the same profile are locked so overlapping manual and
-scheduled runs fail safely. View the latest result with:
+Each non-dry-run backup or retention action records its state, start and finish
+times, duration, and last successful completion time in a private file under
+the configuration directory. Operations for the same profile are locked so
+overlapping manual and scheduled runs fail safely. View the latest result with:
 
 ```sh
 resticctl status <profile>
@@ -512,7 +521,7 @@ resticctl status <profile> --json
 
 Status files intentionally do not store command output or error messages, which
 could contain sensitive paths or service details. Dry runs do not replace the
-latest real backup status.
+latest recorded status.
 
 ## Database backups
 
