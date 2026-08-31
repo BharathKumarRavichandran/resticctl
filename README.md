@@ -6,8 +6,9 @@
 A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
 
 A profile keeps the repository, paths, credentials, and retention rules in one place.
-resticctl can also stage SQLite, PostgreSQL, and MongoDB databases, adding their
-snapshots or dumps to the same Restic snapshot as the other files.
+resticctl can also stage SQLite, PostgreSQL, MongoDB, MySQL, and MariaDB
+databases, adding their snapshots or dumps to the same Restic snapshot as the
+other files.
 
 Restic handles the backup, encryption, restore, and repository maintenance.
 
@@ -121,11 +122,12 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
 only apply to the command named by the field.
 
 `backup_paths` contains ordinary files and directories to include. Databases
-are listed separately in `sqlite_databases`, `postgresql_databases`, and
-`mongodb_databases`; for a database-only profile, set `backup_paths` to `[]`.
+are listed separately in `sqlite_databases`, `postgresql_databases`,
+`mongodb_databases`, and `mysql_databases`; for a database-only profile, set
+`backup_paths` to `[]`.
 
-PostgreSQL and MongoDB can be staged by client programs installed on the
-machine running `resticctl`:
+PostgreSQL, MongoDB, MySQL, and MariaDB can be staged by client programs
+installed on the machine running `resticctl`:
 
 ```json
 {
@@ -145,12 +147,25 @@ machine running `resticctl`:
     "host": "mongo.example.net",
     "config_file": "mongo-backup.yml",
     "args": ["--oplog"]
+  }],
+  "mysql_databases": [{
+    "name": "orders",
+    "database": "shop",
+    "host": "mysql.example.net",
+    "port": 3306,
+    "username": "backup",
+    "routines": true,
+    "events": true,
+    "triggers": true,
+    "tables": []
   }]
 }
 ```
 
-`pg_dump`, `pg_dumpall`, and `mongodump` are resolved on the local `PATH` by
-default. Set `executable` or `globals_executable` to an explicit client path.
+`pg_dump`, `pg_dumpall`, `mongodump`, and `mysqldump` are resolved on the local
+`PATH` by default. Set `executable` or `globals_executable` to an explicit
+client path.
+Set a MySQL entry's `executable` to `mariadb-dump` when appropriate.
 Hosts may be localhost, remote DNS/IP endpoints, or a supported Unix-socket
 path. Client arguments are passed directly without a shell; output, archive,
 URI, and password options are reserved so profiles cannot bypass secure
@@ -169,8 +184,8 @@ schedule. Scheduled jobs still check again when they execute, since their
 recommended for scheduled database backups. Forget-only schedules do not
 require database clients. External database dumps run sequentially by default.
 Set `database_concurrency` to a positive value greater than one to run at most
-that many PostgreSQL or MongoDB dumps concurrently; choose a limit that the
-database servers and backup host can sustain.
+that many PostgreSQL, MongoDB, or MySQL/MariaDB dumps concurrently; choose a
+limit that the database servers and backup host can sustain.
 
 ### Profile inheritance
 
@@ -191,8 +206,8 @@ Inheritance may be nested. Scalar fields explicitly present in a child replace
 the parent value, including boolean fields set to `false`. Lists such as
 `backup_paths`, restic argument lists, tags, and hooks are appended parent-first.
 An empty child list therefore adds nothing; it does not clear an inherited
-list. Entries in each of the SQLite, PostgreSQL, and MongoDB database lists are
-merged by case-insensitive `name`: a child entry replaces an inherited entry
+list. Entries in each of the SQLite, PostgreSQL, MongoDB, and MySQL database
+lists are merged by case-insensitive `name`: a child entry replaces an inherited entry
 with the same name and new names are appended.
 `schedule` and `forget` objects are each inherited or replaced as a whole.
 
@@ -329,8 +344,9 @@ availability without connecting to a database or repository.
 
 ### `backup`
 
-Backs up the profile's files and configured SQLite, PostgreSQL, and MongoDB
-databases. `--dry-run` passes the option to restic without writing a snapshot.
+Backs up the profile's files and configured SQLite, PostgreSQL, MongoDB, MySQL,
+and MariaDB databases. `--dry-run` passes the option to restic without writing
+a snapshot.
 
 Backup orchestration is configured with `check_before`, `check_after`,
 `prune_before`, and `prune_after`. The order is check-before, prune-before,
@@ -340,9 +356,9 @@ Prune options apply `forget_args` to this profile and run Restic `forget
 still run and both backup and retention operations receive `--dry-run`.
 
 Database staging exists only for the backup step: resticctl creates SQLite
-snapshots and PostgreSQL or MongoDB dumps immediately before Restic backup,
-then removes the staging directory before any check-after or prune-after
-operation.
+snapshots and PostgreSQL, MongoDB, or MySQL/MariaDB dumps immediately before
+Restic backup, then removes the staging directory before any check-after or
+prune-after operation.
 
 Backup hooks use argument vectors and never invoke a shell implicitly. Each
 hook is an object with a non-empty `command` array and an optional Go-style
@@ -551,6 +567,14 @@ MongoDB dumps are stored below `databases/<name>/` and can be restored with:
 mongorestore --config /private/mongo-restore.yml --drop databases/events
 ```
 
+MySQL and MariaDB dumps are stored as `databases/<name>.sql`. Restore with the
+matching client and a private option file:
+
+```sh
+mysql --defaults-extra-file=/private/mysql-restore.cnf shop < databases/orders.sql
+# MariaDB: mariadb --defaults-extra-file=/private/mysql-restore.cnf shop < databases/orders.sql
+```
+
 Database credentials should be scoped by configured database name in
 `database_environments` in the private credentials file:
 
@@ -558,12 +582,13 @@ Database credentials should be scoped by configured database name in
 {
   "database_environments": {
     "accounts": {"PGPASSWORD": "..."},
-    "events": {"MONGO_TOKEN": "..."}
+    "events": {"MONGO_TOKEN": "..."},
+    "orders": {"MYSQL_PASSWORD": "..."}
   }
 }
 ```
 
-Each named environment is sent only to that database subprocess. The older
+Each named environment is made available only to that database provider. The older
 `database_environment` field remains available for values intentionally shared
 by every database client; named values override shared values. MongoDB secrets
 may instead live in the private YAML file named by `config_file`. Credentials
@@ -571,12 +596,25 @@ are never added to generated schedules or client argument values. The MongoDB
 config file must be mode 0600 (or otherwise private under the platform checks
 used for profile credentials).
 
+For MySQL/MariaDB, resticctl writes `MYSQL_PASSWORD` and the configured
+`username` to a temporary mode-0600 client option file, passes that file as the
+client's first option, blanks inherited `MYSQL_PWD`, and removes the file as
+soon as the dump exits. Use `socket` for a Unix socket, or `host` and optional
+`port` for TCP; `host` and `socket` are mutually exclusive. `tables` limits the
+dump to named objects. Routines, events, and triggers are excluded unless their
+corresponding booleans are enabled.
+
 `pg_dump` provides a transactionally consistent view of one PostgreSQL
 database, but globals are dumped separately and are not atomic with it.
 `mongodump` consistency depends on deployment topology: use `--oplog` for a
 replica set when a point-in-time dump is required, and consult MongoDB's
 requirements and restrictions for sharded clusters. `resticctl` does not
 coordinate application writes or transactions across multiple databases.
+MySQL/MariaDB dumps always use `--single-transaction`, which gives a consistent
+snapshot for transactional tables such as InnoDB without blocking writers.
+Non-transactional tables such as MyISAM are not made transactionally consistent;
+quiesce writes or arrange the required server-side locks before running the
+backup. A dump is not atomic with separately configured databases.
 
 ## Direct restic commands
 

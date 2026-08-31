@@ -130,7 +130,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if dryRun {
 		arguments = append(arguments, "--dry-run")
 	}
-	if len(backupProfile.SQLiteDatabases) == 0 && len(backupProfile.PostgreSQLDatabases) == 0 && len(backupProfile.MongoDBDatabases) == 0 {
+	if databaseCount(backupProfile) == 0 {
 		arguments = append(arguments, "--")
 		arguments = append(arguments, backupProfile.BackupPaths...)
 		return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
@@ -152,7 +152,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if err := os.Mkdir(databaseDir, 0o700); err != nil {
 		return fmt.Errorf("cannot create database staging directory: %w", err)
 	}
-	providers := make([]databasebackup.Provider, 0, len(backupProfile.SQLiteDatabases)+len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
+	providers := make([]databasebackup.Provider, 0, databaseCount(backupProfile))
 	for _, database := range backupProfile.SQLiteDatabases {
 		providers = append(providers, databasebackup.SQLite{Database: database})
 	}
@@ -161,6 +161,9 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	}
 	for _, database := range backupProfile.MongoDBDatabases {
 		providers = append(providers, databasebackup.MongoDB{Database: database})
+	}
+	for _, database := range backupProfile.MySQLDatabases {
+		providers = append(providers, databasebackup.MySQL{Database: database})
 	}
 	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers, output); err != nil {
 		return err
@@ -234,7 +237,7 @@ enqueue:
 }
 
 func validateBackupSources(backupProfile profile.Profile) error {
-	if len(backupProfile.BackupPaths) == 0 && len(backupProfile.SQLiteDatabases) == 0 && len(backupProfile.PostgreSQLDatabases) == 0 && len(backupProfile.MongoDBDatabases) == 0 {
+	if len(backupProfile.BackupPaths) == 0 && databaseCount(backupProfile) == 0 {
 		return errors.New("profile has no backup paths or databases")
 	}
 	for _, path := range backupProfile.BackupPaths {
@@ -245,4 +248,9 @@ func validateBackupSources(backupProfile profile.Profile) error {
 		}
 	}
 	return nil
+}
+
+func databaseCount(backupProfile profile.Profile) int {
+	return len(backupProfile.SQLiteDatabases) + len(backupProfile.PostgreSQLDatabases) +
+		len(backupProfile.MongoDBDatabases) + len(backupProfile.MySQLDatabases)
 }

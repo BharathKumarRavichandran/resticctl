@@ -1,10 +1,14 @@
 package databasebackup
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"resticctl/internal/profile"
 	"resticctl/internal/sqlitebackup"
@@ -101,4 +105,86 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 		return fmt.Errorf("dump MongoDB database %s: %w", db.Name, err)
 	}
 	return nil
+}
+
+type MySQL struct{ Database profile.MySQLDatabase }
+
+func (m MySQL) Name() string { return m.Database.Name }
+
+func (m MySQL) Progress() string { return "" }
+
+func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) (stageErr error) {
+	db := m.Database
+	optionFile, err := os.CreateTemp(directory, ".mysql-client-*")
+	if err != nil {
+		return fmt.Errorf("create MySQL client option file for %s: %w", db.Name, err)
+	}
+	optionPath := optionFile.Name()
+	defer func() {
+		if err := os.Remove(optionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			stageErr = errors.Join(stageErr, fmt.Errorf("remove MySQL client option file for %s: %w", db.Name, err))
+		}
+	}()
+	if err := optionFile.Chmod(0o600); err != nil {
+		optionFile.Close()
+		return fmt.Errorf("protect MySQL client option file for %s: %w", db.Name, err)
+	}
+	contents := mysqlOptionFile(db.Username, environment["MYSQL_PASSWORD"])
+	if _, err := optionFile.Write(contents); err != nil {
+		optionFile.Close()
+		return fmt.Errorf("write MySQL client option file for %s: %w", db.Name, err)
+	}
+	if err := optionFile.Close(); err != nil {
+		return fmt.Errorf("close MySQL client option file for %s: %w", db.Name, err)
+	}
+
+	args := []string{db.Executable, "--defaults-extra-file=" + optionPath,
+		"--single-transaction", "--result-file=" + filepath.Join("databases", db.Name+".sql")}
+	if db.Socket != "" {
+		args = append(args, "--protocol=socket", "--socket", db.Socket)
+	} else {
+		if db.Host != "" {
+			args = append(args, "--host", db.Host)
+		}
+		if db.Port != 0 {
+			args = append(args, "--port", strconv.Itoa(db.Port))
+		}
+	}
+	if db.Routines {
+		args = append(args, "--routines")
+	}
+	if db.Events {
+		args = append(args, "--events")
+	}
+	if db.Triggers {
+		args = append(args, "--triggers")
+	} else {
+		args = append(args, "--skip-triggers")
+	}
+	args = append(args, db.Args...)
+	args = append(args, db.Database)
+	args = append(args, db.Tables...)
+	// MYSQL_PWD is explicitly blanked so an ambient password cannot reach the
+	// client. The configured password exists only in the temporary option file.
+	if err := runner.RunDatabase(ctx, args, map[string]string{"MYSQL_PWD": ""}, directory); err != nil {
+		return fmt.Errorf("dump MySQL database %s: %w", db.Name, err)
+	}
+	return nil
+}
+
+func mysqlOptionFile(username, password string) []byte {
+	var contents bytes.Buffer
+	contents.WriteString("[client]\n")
+	if username != "" {
+		fmt.Fprintf(&contents, "user=\"%s\"\n", escapeMySQLOption(username))
+	}
+	if password != "" {
+		fmt.Fprintf(&contents, "password=\"%s\"\n", escapeMySQLOption(password))
+	}
+	return contents.Bytes()
+}
+
+func escapeMySQLOption(value string) string {
+	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r", "\t", "\\t")
+	return replacer.Replace(value)
 }

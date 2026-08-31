@@ -65,5 +65,20 @@
             "config_file": "mongo-backup.yml",
             "args": []
         }
+    ],
+    "mysql_databases": [
+        {
+            "name": "orders",
+            "database": "shop",
+            "host": "localhost",
+            "port": 3306,
+            "username": "backup",
+            "executable": "mysqldump",
+            "args": [],
+            "tables": [],
+            "routines": false,
+            "events": false,
+            "triggers": true
+        }
     ]
 }

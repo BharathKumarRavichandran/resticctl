@@ -82,11 +82,14 @@ func validateEnvironment(field string, environment map[string]string) error {
 }
 
 func validateDatabaseEnvironmentNames(backupProfile Profile) error {
-	configured := make(map[string]struct{}, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases))
+	configured := make(map[string]struct{}, len(backupProfile.PostgreSQLDatabases)+len(backupProfile.MongoDBDatabases)+len(backupProfile.MySQLDatabases))
 	for _, database := range backupProfile.PostgreSQLDatabases {
 		configured[strings.ToLower(database.Name)] = struct{}{}
 	}
 	for _, database := range backupProfile.MongoDBDatabases {
+		configured[strings.ToLower(database.Name)] = struct{}{}
+	}
+	for _, database := range backupProfile.MySQLDatabases {
 		configured[strings.ToLower(database.Name)] = struct{}{}
 	}
 	for name := range backupProfile.Credentials.DatabaseEnvironments {

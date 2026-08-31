@@ -35,7 +35,8 @@ func TestLoadExternalDatabases(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test", "credentials_file":"credentials.json",
           "postgresql_databases":[{"name":"accounts","database":"app","host":"db.example","globals":true}],
-          "mongodb_databases":[{"name":"events","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}]
+          "mongodb_databases":[{"name":"events","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}],
+          "mysql_databases":[{"name":"orders","database":"shop","host":"localhost"}]
         }`)
 	loaded, err := Load(directory, "example")
 	if err != nil {
@@ -47,8 +48,28 @@ func TestLoadExternalDatabases(t *testing.T) {
 	if loaded.MongoDBDatabases[0].ConfigFile != filepath.Join(directory, "mongo.yml") {
 		t.Fatalf("MongoDB config = %#v", loaded.MongoDBDatabases[0])
 	}
+	if loaded.MySQLDatabases[0].Executable != "mysqldump" {
+		t.Fatalf("MySQL defaults = %#v", loaded.MySQLDatabases[0])
+	}
 	if loaded.Credentials.DatabaseEnvironment["PGPASSWORD"] != "private" {
 		t.Fatal("database environment not loaded")
+	}
+}
+
+func TestLoadRejectsUnsafeMySQLConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	for name, database := range map[string]string{
+		"credential argument":   `{"name":"orders","database":"shop","args":["--defaults-extra-file=/tmp/exposed"]}`,
+		"conflicting endpoints": `{"name":"orders","database":"shop","host":"localhost","socket":"/run/mysql.sock"}`,
+		"unsafe table":          `{"name":"orders","database":"shop","tables":["--all-databases"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","mysql_databases":[`+database+`]}`)
+			if _, err := Load(directory, "example"); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
 	}
 }
 

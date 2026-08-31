@@ -185,6 +185,7 @@ type profileConfig struct {
 	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
 	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	MySQLDatabases      []MySQLDatabase      `json:"mysql_databases,omitempty"`
 	DatabaseConcurrency *int                 `json:"database_concurrency,omitempty"`
 	ResticArgs          []string             `json:"restic_args"`
 	BackupArgs          []string             `json:"backup_args"`
@@ -234,6 +235,9 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 	}
 	if err := validateConfiguredNames(child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }); err != nil {
 		return profileConfig{}, fmt.Errorf("invalid profile %s MongoDB databases: %w", name, err)
+	}
+	if err := validateConfiguredNames(child.MySQLDatabases, func(v MySQLDatabase) string { return v.Name }); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s MySQL databases: %w", name, err)
 	}
 	if child.Parent == "" {
 		return child, nil
@@ -338,6 +342,42 @@ func validateExternalDatabases(p *Profile, base string) error {
 				return err
 			}
 			db.ConfigFile = path
+		}
+	}
+	for i := range p.MySQLDatabases {
+		db := &p.MySQLDatabases[i]
+		if err := checkName("MySQL", db.Name); err != nil {
+			return err
+		}
+		if db.Database == "" {
+			return fmt.Errorf("MySQL database is missing: %s", db.Name)
+		}
+		if db.Port < 0 || db.Port > 65535 {
+			return fmt.Errorf("invalid MySQL port for %s", db.Name)
+		}
+		if db.Host != "" && db.Socket != "" {
+			return fmt.Errorf("MySQL database %s must not set both host and socket", db.Name)
+		}
+		if db.Executable == "" {
+			db.Executable = "mysqldump"
+		}
+		if hasNUL(db.Database, db.Host, db.Socket, db.Username, db.Executable) {
+			return fmt.Errorf("MySQL configuration for %s must not contain NUL bytes", db.Name)
+		}
+		if strings.HasPrefix(db.Database, "-") {
+			return fmt.Errorf("MySQL database for %s must not start with a hyphen", db.Name)
+		}
+		for _, table := range db.Tables {
+			if table == "" || strings.HasPrefix(table, "-") || strings.ContainsRune(table, 0) {
+				return fmt.Errorf("invalid MySQL table for %s: %q", db.Name, table)
+			}
+		}
+		if err := validateDatabaseArgs("MySQL", db.Args,
+			"--defaults-file", "--defaults-extra-file", "--login-path", "--password", "-p",
+			"--result-file", "-r", "--host", "-h", "--port", "-P", "--socket", "-S",
+			"--user", "-u", "--databases", "--all-databases", "--tables", "--single-transaction",
+			"--routines", "-R", "--events", "-E", "--triggers", "--skip-triggers"); err != nil {
+			return err
 		}
 	}
 	return nil

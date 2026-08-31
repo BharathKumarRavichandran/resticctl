@@ -32,6 +32,21 @@ type MongoDBDatabase struct {
 	Args       []string `json:"args,omitempty"`
 }
 
+type MySQLDatabase struct {
+	Name       string   `json:"name"`
+	Database   string   `json:"database"`
+	Host       string   `json:"host,omitempty"`
+	Port       int      `json:"port,omitempty"`
+	Socket     string   `json:"socket,omitempty"`
+	Username   string   `json:"username,omitempty"`
+	Executable string   `json:"executable,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Tables     []string `json:"tables,omitempty"`
+	Routines   bool     `json:"routines,omitempty"`
+	Events     bool     `json:"events,omitempty"`
+	Triggers   bool     `json:"triggers,omitempty"`
+}
+
 type PasswordSource struct {
 	Command []string `json:"command"`
 	File    string   `json:"file"`
@@ -97,6 +112,7 @@ type Profile struct {
 	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
 	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
+	MySQLDatabases      []MySQLDatabase      `json:"mysql_databases,omitempty"`
 	DatabaseConcurrency int                  `json:"database_concurrency,omitempty"`
 	ResticArgs          []string             `json:"restic_args"`
 	BackupArgs          []string             `json:"backup_args"`

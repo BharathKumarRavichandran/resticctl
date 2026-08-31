@@ -38,6 +38,13 @@ func preflight(backupProfile profile.Profile, lookPath func(string) (string, err
 		}
 		requested[executable] = "MongoDB dumps"
 	}
+	for _, database := range backupProfile.MySQLDatabases {
+		executable := database.Executable
+		if executable == "" {
+			executable = "mysqldump"
+		}
+		requested[executable] = "MySQL/MariaDB dumps"
+	}
 	var result error
 	for executable, purpose := range requested {
 		if _, err := lookPath(executable); err != nil {

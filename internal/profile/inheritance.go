@@ -19,6 +19,7 @@ func merge(parent, child profileConfig) profileConfig {
 	result.SQLiteDatabases = mergeNamed(parent.SQLiteDatabases, child.SQLiteDatabases, func(v SQLiteDatabase) string { return v.Name }, child.replaces("sqlite_databases"))
 	result.PostgreSQLDatabases = mergeNamed(parent.PostgreSQLDatabases, child.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name }, child.replaces("postgresql_databases"))
 	result.MongoDBDatabases = mergeNamed(parent.MongoDBDatabases, child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }, child.replaces("mongodb_databases"))
+	result.MySQLDatabases = mergeNamed(parent.MySQLDatabases, child.MySQLDatabases, func(v MySQLDatabase) string { return v.Name }, child.replaces("mysql_databases"))
 	result.ResticArgs = mergeList(parent.ResticArgs, child.ResticArgs, child.replaces("restic_args"))
 	result.BackupArgs = mergeList(parent.BackupArgs, child.BackupArgs, child.replaces("backup_args"))
 	result.Tags = mergeList(parent.Tags, child.Tags, child.replaces("tags"))
@@ -86,7 +87,7 @@ func (configured profileConfig) replaces(field string) bool {
 
 func validateReplaceInherited(fields []string) error {
 	allowed := map[string]struct{}{
-		"backup_paths": {}, "sqlite_databases": {}, "postgresql_databases": {}, "mongodb_databases": {},
+		"backup_paths": {}, "sqlite_databases": {}, "postgresql_databases": {}, "mongodb_databases": {}, "mysql_databases": {},
 		"restic_args": {}, "backup_args": {}, "tags": {}, "forget_args": {}, "check_args": {},
 		"run_before": {}, "run_after": {}, "run_after_fail": {}, "run_finally": {},
 		"schedule": {}, "forget": {},
@@ -107,7 +108,7 @@ func validateReplaceInherited(fields []string) error {
 func (configured profileConfig) profile(name string) Profile {
 	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
 		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs,
-		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases,
+		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases, MySQLDatabases: configured.MySQLDatabases,
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
