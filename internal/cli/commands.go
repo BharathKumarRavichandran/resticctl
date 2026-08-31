@@ -227,6 +227,22 @@ func (cli *commandLine) checkCommand() *cobra.Command {
 	return cli.profileCommand("check", "Check a repository for errors", app.Check)
 }
 
+func (cli *commandLine) runCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:               "run <profile> <restic-command> [args...]",
+		Short:             "Run a supported restic command",
+		Long:              "Run a supported restic command with arguments passed through unchanged. Repository and password flags are managed by resticctl.",
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: cli.completeFirstProfile,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.Runner, backupProfile profile.Profile) error {
+				return app.RunRestic(ctx, runner, backupProfile, arguments[1], arguments[2:])
+			})
+		}),
+	}
+	return command
+}
+
 func (cli *commandLine) keyCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "key",

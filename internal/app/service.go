@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"resticctl/internal/databasebackup"
@@ -244,6 +245,40 @@ func Dump(ctx context.Context, runner Runner, backupProfile profile.Profile, sna
 
 func Check(ctx context.Context, runner Runner, backupProfile profile.Profile) error {
 	return runner.Run(ctx, backupProfile, append([]string{"check"}, backupProfile.CheckArgs...), "")
+}
+
+// RunRestic executes a supported restic command with profile-independent
+// arguments. Repository and credential flags remain controlled by the client.
+func RunRestic(ctx context.Context, runner Runner, backupProfile profile.Profile, command string, arguments []string) error {
+	if !supportedResticCommand(command) {
+		return fmt.Errorf("unsupported restic command %q", command)
+	}
+	if err := validateResticArguments(arguments); err != nil {
+		return err
+	}
+	return runner.Run(ctx, backupProfile, append([]string{command}, arguments...), "")
+}
+
+func supportedResticCommand(command string) bool {
+	switch command {
+	case "backup", "cache", "cat", "check", "copy", "diff", "dump", "find", "forget", "init", "key", "list", "ls", "migrate", "prune", "rebuild-index", "recover", "repair", "restore", "self-update", "snapshots", "stats", "tag", "unlock":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateResticArguments(arguments []string) error {
+	for _, argument := range arguments {
+		if argument == "-r" || argument == "--repo" || argument == "--repository" || argument == "-p" ||
+			argument == "--password" || argument == "--password-file" || argument == "--password-command" ||
+			strings.HasPrefix(argument, "--repo=") || strings.HasPrefix(argument, "--repository=") ||
+			strings.HasPrefix(argument, "--password=") || strings.HasPrefix(argument, "--password-file=") ||
+			strings.HasPrefix(argument, "--password-command=") {
+			return fmt.Errorf("restic argument %q is reserved by resticctl", argument)
+		}
+	}
+	return nil
 }
 
 func Forget(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun, prune bool) error {

@@ -522,6 +522,26 @@ replica set when a point-in-time dump is required, and consult MongoDB's
 requirements and restrictions for sharded clusters. `resticctl` does not
 coordinate application writes or transactions across multiple databases.
 
+## Direct restic commands
+
+Use `run` when a Restic command or flag does not have a dedicated resticctl
+wrapper. Arguments are passed as an argument vector, preserving their exact
+boundaries:
+
+```sh
+resticctl run <profile> tag --add old-tag new-tag
+resticctl run <profile> unlock --remove-all
+```
+
+Supported commands are `backup`, `cache`, `cat`, `check`, `copy`, `diff`,
+`dump`, `find`, `forget`, `init`, `key`, `list`, `ls`, `migrate`, `prune`,
+`rebuild-index`, `recover`, `repair`, `restore`, `self-update`, `snapshots`,
+`stats`, `tag`, and `unlock`. Repository and password-file options are
+reserved and cannot be passed through; `resticctl` supplies them securely.
+Profile `restic_args` remain global options, while command-specific profile
+options and orchestration defaults continue to be applied by their dedicated
+commands.
+
 ## Support
 
 For restic commands, repositories, and storage backends, see the [restic

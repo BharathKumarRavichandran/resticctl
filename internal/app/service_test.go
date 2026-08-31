@@ -78,6 +78,28 @@ func TestSnapshotFilterDoesNotIncludeCustomTags(t *testing.T) {
 	}
 }
 
+func TestRunResticPassesArgumentsThrough(t *testing.T) {
+	runner := &recordingRunner{}
+	if err := RunRestic(context.Background(), runner, profile.Profile{Name: "example"}, "tag", []string{"--add", "old", "new"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"tag", "--add", "old", "new"}
+	if !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("arguments = %v, want %v", runner.runs[0].arguments, want)
+	}
+}
+
+func TestRunResticRejectsReservedArgumentsAndUnknownCommands(t *testing.T) {
+	for _, argument := range []string{"--repo", "--repo=/tmp/repo", "--password-file", "--password-file=/tmp/pw"} {
+		if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, "snapshots", []string{argument}); err == nil {
+			t.Fatalf("reserved argument %q accepted", argument)
+		}
+	}
+	if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, "not-a-command", nil); err == nil {
+		t.Fatal("unknown command accepted")
+	}
+}
+
 func TestForgetRequiresExplicitPrune(t *testing.T) {
 	runner := &recordingRunner{}
 	backupProfile := profile.Profile{Name: "example", ForgetArgs: []string{"--keep-last", "2"}}
