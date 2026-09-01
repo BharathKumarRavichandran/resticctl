@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -90,7 +91,10 @@ func TestMySQLStagesRemoteDatabaseWithPrivateCredentials(t *testing.T) {
 	if !slices.Equal(runner.call.args, want) {
 		t.Fatalf("args = %#v", runner.call.args)
 	}
-	if runner.optionMode != 0o600 || runner.optionData != "[client]\nuser=\"backup\"\npassword=\"p\\\\\\\"a\\nss\"\n" {
+	if runtime.GOOS != "windows" && runner.optionMode != 0o600 {
+		t.Fatalf("option file mode=%#o", runner.optionMode)
+	}
+	if runner.optionData != "[client]\nuser=\"backup\"\npassword=\"p\\\\\\\"a\\nss\"\n" {
 		t.Fatalf("option file mode=%#o data=%q", runner.optionMode, runner.optionData)
 	}
 	if len(runner.call.env) != 1 || runner.call.env["MYSQL_PWD"] != "" {

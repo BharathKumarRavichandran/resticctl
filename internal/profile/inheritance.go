@@ -50,6 +50,9 @@ func merge(parent, child profileConfig) profileConfig {
 	if child.Forget != nil || child.replaces("forget") {
 		result.Forget = child.Forget
 	}
+	if child.Monitoring != nil || child.replaces("monitoring") {
+		result.Monitoring = child.Monitoring
+	}
 	return result
 }
 
@@ -90,7 +93,7 @@ func validateReplaceInherited(fields []string) error {
 		"backup_paths": {}, "sqlite_databases": {}, "postgresql_databases": {}, "mongodb_databases": {}, "mysql_databases": {},
 		"restic_args": {}, "backup_args": {}, "tags": {}, "forget_args": {}, "check_args": {},
 		"run_before": {}, "run_after": {}, "run_after_fail": {}, "run_finally": {},
-		"schedule": {}, "forget": {},
+		"schedule": {}, "forget": {}, "monitoring": {},
 	}
 	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
@@ -113,6 +116,9 @@ func (configured profileConfig) profile(name string) Profile {
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
 		Schedule: configured.Schedule, Forget: configured.Forget}
+	if configured.Monitoring != nil {
+		value.Monitoring = *configured.Monitoring
+	}
 	if configured.Repository != nil {
 		value.Repository = *configured.Repository
 	}

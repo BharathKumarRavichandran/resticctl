@@ -223,6 +223,7 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 func (cli *commandLine) statusCommand() *cobra.Command {
 	var jsonOutput bool
 	var action string
+	var history int
 	command := &cobra.Command{
 		Use:               "status <profile>",
 		Short:             "Show the latest backup status",
@@ -236,6 +237,29 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 			if err := profile.ValidateName(arguments[0]); err != nil {
 				return err
 			}
+			if history > 0 {
+				statuses, err := runstatus.LoadHistory(configDir, arguments[0], action)
+				if err != nil {
+					return err
+				}
+				if len(statuses) > history {
+					statuses = statuses[:history]
+				}
+				if jsonOutput {
+					return writeJSON(cli.stdout, statuses)
+				}
+				for index, status := range statuses {
+					if index > 0 {
+						if err := writeOutput(cli.stdout, "---\n"); err != nil {
+							return err
+						}
+					}
+					if err := writeRunStatus(cli, status); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			status, err := runstatus.LoadAction(configDir, arguments[0], action)
 			if err != nil {
 				return err
@@ -248,6 +272,7 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
 	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "status action: backup, check, forget, prune, or copy")
+	command.Flags().IntVar(&history, "history", 0, "show the newest N completed runs")
 	return command
 }
 
@@ -281,7 +306,7 @@ func scheduledAction(arguments []string) (string, error) {
 }
 
 func writeRunStatus(cli *commandLine, status runstatus.Status) error {
-	if err := writeOutput(cli.stdout, "State: %s\nStarted: %s\n", status.State, status.StartedAt.Format(time.RFC3339)); err != nil {
+	if err := writeOutput(cli.stdout, "Command: %s\nState: %s\nStarted: %s\n", status.Command, status.State, status.StartedAt.Format(time.RFC3339)); err != nil {
 		return err
 	}
 	if status.FinishedAt != nil {
@@ -290,7 +315,17 @@ func writeRunStatus(cli *commandLine, status runstatus.Status) error {
 		}
 	}
 	if status.LastSuccessAt != nil {
-		return writeOutput(cli.stdout, "Last success: %s\n", status.LastSuccessAt.Format(time.RFC3339))
+		if err := writeOutput(cli.stdout, "Last success: %s\n", status.LastSuccessAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	if status.ExitCode != nil {
+		if err := writeOutput(cli.stdout, "Exit code: %d\n", *status.ExitCode); err != nil {
+			return err
+		}
+	}
+	if status.Warning {
+		return writeOutput(cli.stdout, "Restic warning: true\n")
 	}
 	return nil
 }

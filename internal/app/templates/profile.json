@@ -26,6 +26,15 @@
     "run_after": [],
     "run_after_fail": [],
     "run_finally": [],
+    "monitoring": {
+        "history_limit": 100,
+        "warning_policy": "warning",
+        "backup_statistics": false,
+        "status_file": "",
+        "prometheus_textfile": "",
+        "http": [],
+        "logs": []
+    },
     "database_concurrency": 1,
     "schedule": {
         "backend": "auto",

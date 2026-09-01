@@ -280,6 +280,10 @@ func TestLaunchdRejectsUnsupportedCronSyntax(t *testing.T) {
 func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	directory := t.TempDir()
 	units := filepath.Join(directory, "units")
+	executable, err := filepath.Abs("/bin/resticctl")
+	if err != nil {
+		t.Fatal(err)
+	}
 	executor := &fakeExecutor{}
 	manager := NewManager(
 		WithExecutor(executor),
@@ -312,7 +316,7 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"ExecStart=\"/bin/resticctl\"", "\"--action\" \"check\"", "Nice=10", "network-online.target", "StandardOutput=append:"} {
+	for _, expected := range []string{"ExecStart=" + systemdEscape(executable), "\"--action\" \"check\"", "Nice=10", "network-online.target", "StandardOutput=append:"} {
 		if !strings.Contains(string(service), expected) {
 			t.Fatalf("service lacks %q:\n%s", expected, service)
 		}

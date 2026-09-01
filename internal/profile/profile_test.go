@@ -119,6 +119,46 @@ func TestLoadRejectsUnknownNamedDatabaseEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadMonitoringDefaultsAndResolvesPaths(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "monitoring":{
+            "status_file":"exports/status.json", "prometheus_textfile":"exports/status.prom",
+            "http":[{"url":"https://monitor.example/events"}],
+            "logs":[{"type":"file","path":"events.jsonl"}]
+          }
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Monitoring.HistoryLimit != 100 || loaded.Monitoring.WarningPolicy != "failure" {
+		t.Fatalf("monitoring defaults = %#v", loaded.Monitoring)
+	}
+	if loaded.Monitoring.StatusFile != filepath.Join(directory, "exports/status.json") || loaded.Monitoring.Logs[0].Path != filepath.Join(directory, "events.jsonl") {
+		t.Fatalf("monitoring paths = %#v", loaded.Monitoring)
+	}
+}
+
+func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	for name, monitoring := range map[string]string{
+		"credential URL":       `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
+		"credential overwrite": `{"status_file":"credentials.json"}`,
+		"header newline":       `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","monitoring":`+monitoring+`}`)
+			if _, err := Load(directory, "example"); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
+	}
+}
+
 func TestLoadResolvesNestedInheritance(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)

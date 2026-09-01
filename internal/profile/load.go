@@ -171,6 +171,9 @@ func Load(configDir, name string) (Profile, error) {
 		forget.Cron = normalized
 		forget.Schedule = ""
 	}
+	if err := validateMonitoring(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
 	return backupProfile, nil
 }
 
@@ -206,6 +209,7 @@ type profileConfig struct {
 	RunFinally          []Hook               `json:"run_finally"`
 	Schedule            *Schedule            `json:"schedule,omitempty"`
 	Forget              *ForgetSchedule      `json:"forget,omitempty"`
+	Monitoring          *Monitoring          `json:"monitoring,omitempty"`
 }
 
 func resolve(configDir, name string, chain []string) (profileConfig, error) {

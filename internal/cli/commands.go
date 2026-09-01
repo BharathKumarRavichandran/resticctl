@@ -206,7 +206,20 @@ func (cli *commandLine) dumpCommand() *cobra.Command {
 }
 
 func (cli *commandLine) checkCommand() *cobra.Command {
-	return cli.profileCommand("check", "Check a repository for errors", app.Check)
+	return &cobra.Command{
+		Use: "check <profile>", Short: "Check a repository for errors", Args: cobra.ExactArgs(1), ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			return app.RunCheck(command.Context(), cli.newRunner, configDir, backupProfile, cli.now)
+		}),
+	}
 }
 
 func (cli *commandLine) runCommand() *cobra.Command {
@@ -217,9 +230,23 @@ func (cli *commandLine) runCommand() *cobra.Command {
 		Args:              cobra.MinimumNArgs(2),
 		ValidArgsFunction: cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
-			return cli.executeForProfile(command.Context(), arguments[0], func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
-				return app.RunRestic(ctx, runner, backupProfile, arguments[1], arguments[2:])
-			})
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			action := arguments[1]
+			if action == "backup" || action == "check" || action == "forget" || action == "prune" || action == "copy" {
+				return app.RunRecordedRestic(command.Context(), cli.newRunner, configDir, backupProfile, action, arguments[2:], cli.now, cli.stdout)
+			}
+			runner, err := cli.newRunner()
+			if err != nil {
+				return err
+			}
+			return app.RunRestic(command.Context(), runner, backupProfile, action, arguments[2:])
 		}),
 	}
 	return command

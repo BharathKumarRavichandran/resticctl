@@ -19,6 +19,18 @@ type Executor struct {
 	blockedEnvironment func(string) bool
 }
 
+// ExitError preserves subprocess status without retaining potentially
+// sensitive command output.
+type ExitError struct {
+	Label string
+	Code  int
+}
+
+func (err *ExitError) Error() string {
+	return fmt.Sprintf("%s exited with status %d", err.Label, err.Code)
+}
+func (err *ExitError) ExitCode() int { return err.Code }
+
 // NewExecutor constructs an executor that omits environment keys rejected by
 // blockedEnvironment when running database clients.
 func NewExecutor(stdin io.Reader, stdout, stderr io.Writer, blockedEnvironment func(string) bool) *Executor {
@@ -51,7 +63,7 @@ func (executor *Executor) run(ctx context.Context, label string, arguments []str
 		}
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			return fmt.Errorf("%s exited with status %d", label, exitError.ExitCode())
+			return &ExitError{Label: label, Code: exitError.ExitCode()}
 		}
 		return fmt.Errorf("cannot execute %s: %w", label, err)
 	}

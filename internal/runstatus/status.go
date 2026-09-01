@@ -17,13 +17,43 @@ var ErrNotRecorded = errors.New("backup status has not been recorded")
 var ErrLocked = errors.New("backup is already running for this profile")
 
 type Status struct {
-	Profile       string     `json:"profile"`
-	Action        string     `json:"action,omitempty"`
-	State         string     `json:"state"`
-	StartedAt     time.Time  `json:"started_at"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
-	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
-	DurationMS    int64      `json:"duration_ms,omitempty"`
+	Profile       string      `json:"profile"`
+	Action        string      `json:"action,omitempty"`
+	Command       string      `json:"command,omitempty"`
+	State         string      `json:"state"`
+	StartedAt     time.Time   `json:"started_at"`
+	FinishedAt    *time.Time  `json:"finished_at,omitempty"`
+	LastSuccessAt *time.Time  `json:"last_success_at,omitempty"`
+	DurationMS    int64       `json:"duration_ms,omitempty"`
+	ExitCode      *int        `json:"exit_code,omitempty"`
+	ErrorCategory string      `json:"error_category,omitempty"`
+	Warning       bool        `json:"restic_warning,omitempty"`
+	Statistics    *Statistics `json:"backup_statistics,omitempty"`
+}
+
+// Statistics is the deliberately small, non-sensitive subset of Restic's
+// backup summary suitable for status and metrics export.
+type Statistics struct {
+	FilesNew            uint64 `json:"files_new,omitempty"`
+	FilesChanged        uint64 `json:"files_changed,omitempty"`
+	FilesUnmodified     uint64 `json:"files_unmodified,omitempty"`
+	DirsNew             uint64 `json:"dirs_new,omitempty"`
+	DirsChanged         uint64 `json:"dirs_changed,omitempty"`
+	DirsUnmodified      uint64 `json:"dirs_unmodified,omitempty"`
+	DataBlobs           uint64 `json:"data_blobs,omitempty"`
+	TreeBlobs           uint64 `json:"tree_blobs,omitempty"`
+	DataAddedBytes      uint64 `json:"data_added_bytes,omitempty"`
+	TotalFilesProcessed uint64 `json:"total_files_processed,omitempty"`
+	TotalBytesProcessed uint64 `json:"total_bytes_processed,omitempty"`
+}
+
+type Outcome struct {
+	Err          error
+	ExitCode     *int
+	Warning      bool
+	WarningState bool
+	Statistics   *Statistics
+	HistoryLimit int
 }
 
 type Recorder struct {
@@ -94,7 +124,7 @@ func beginAction(configDir, name, action string, now time.Time, lock func(string
 	}
 	recorder := &Recorder{
 		path:    filepath.Join(directory, key+".json"),
-		status:  Status{Profile: name, Action: action, State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
+		status:  Status{Profile: name, Action: action, Command: action, State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
 		started: now,
 		release: release,
 	}
@@ -106,21 +136,38 @@ func beginAction(configDir, name, action string, now time.Time, lock func(string
 }
 
 func (recorder *Recorder) Finish(runErr error, now time.Time) error {
+	return recorder.FinishOutcome(Outcome{Err: runErr, HistoryLimit: 100}, now)
+}
+
+func (recorder *Recorder) FinishOutcome(outcome Outcome, now time.Time) error {
 	finished := now.UTC()
 	recorder.status.FinishedAt = &finished
 	recorder.status.DurationMS = now.Sub(recorder.started).Milliseconds()
-	if runErr == nil {
-		recorder.status.State = "succeeded"
+	recorder.status.Warning = outcome.Warning
+	recorder.status.Statistics = outcome.Statistics
+	recorder.status.ErrorCategory, recorder.status.ExitCode = classify(outcome.Err)
+	if outcome.Err == nil && outcome.ExitCode != nil {
+		recorder.status.ExitCode = outcome.ExitCode
+	}
+	if outcome.Err == nil {
+		if outcome.WarningState {
+			recorder.status.State = "warning"
+		} else {
+			recorder.status.State = "succeeded"
+		}
 		recorder.status.LastSuccessAt = &finished
-	} else if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+	} else if errors.Is(outcome.Err, context.Canceled) || errors.Is(outcome.Err, context.DeadlineExceeded) {
 		recorder.status.State = "cancelled"
 	} else {
 		recorder.status.State = "failed"
 	}
 	writeErr := write(recorder.path, recorder.status)
+	historyErr := appendHistory(recorder.path, recorder.status, outcome.HistoryLimit)
 	releaseErr := recorder.release()
-	return errors.Join(writeErr, releaseErr)
+	return errors.Join(writeErr, historyErr, releaseErr)
 }
+
+func (recorder *Recorder) Status() Status { return recorder.status }
 
 func Load(configDir, name string) (Status, error) {
 	return LoadAction(configDir, name, "backup")
@@ -151,16 +198,99 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	if status.Action == "" {
 		status.Action = "backup"
 	}
+	if status.Command == "" {
+		status.Command = status.Action
+	}
 	if status.Action != action {
 		return Status{}, fmt.Errorf("backup status %s has action %q, expected %q", path, status.Action, action)
 	}
-	if status.State != "running" && status.State != "succeeded" && status.State != "failed" && status.State != "cancelled" {
+	if status.State != "running" && status.State != "succeeded" && status.State != "warning" && status.State != "failed" && status.State != "cancelled" {
 		return Status{}, fmt.Errorf("backup status %s has invalid state %q", path, status.State)
 	}
 	if status.StartedAt.IsZero() {
 		return Status{}, fmt.Errorf("backup status %s has no start time", path)
 	}
 	return status, nil
+}
+
+// LoadHistory returns completed records newest first.
+func LoadHistory(configDir, name, action string) ([]Status, error) {
+	if err := profile.ValidateName(name); err != nil {
+		return nil, err
+	}
+	if err := validateAction(action); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(configDir, "status", "history", statusKey(name, action)+".json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot read status history %s: %w", path, err)
+	}
+	var statuses []Status
+	if err := json.Unmarshal(data, &statuses); err != nil {
+		return nil, fmt.Errorf("cannot decode status history %s: %w", path, err)
+	}
+	return statuses, nil
+}
+
+type exitCoder interface{ ExitCode() int }
+
+func classify(err error) (string, *int) {
+	if err == nil {
+		code := 0
+		return "", &code
+	}
+	category := "execution"
+	if errors.Is(err, context.Canceled) {
+		category = "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		category = "timeout"
+	}
+	var coded exitCoder
+	if errors.As(err, &coded) {
+		code := coded.ExitCode()
+		return "command_exit", &code
+	}
+	return category, nil
+}
+
+func appendHistory(latestPath string, status Status, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	directory := filepath.Join(filepath.Dir(latestPath), "history")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("cannot create status history directory: %w", err)
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return fmt.Errorf("cannot protect status history directory: %w", err)
+	}
+	path := filepath.Join(directory, filepath.Base(latestPath))
+	var history []Status
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &history); err != nil {
+			return fmt.Errorf("cannot decode status history %s: %w", path, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cannot read status history %s: %w", path, err)
+	}
+	history = append([]Status{status}, history...)
+	if len(history) > limit {
+		history = history[:limit]
+	}
+	data, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		return fmt.Errorf("cannot encode status history: %w", err)
+	}
+	data = append(data, '\n')
+	if err := securefile.WriteAtomic(path, data); err != nil {
+		return fmt.Errorf("cannot write status history %s: %w", path, err)
+	}
+	return nil
 }
 
 func statusKey(name, action string) string {

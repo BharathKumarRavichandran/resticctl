@@ -20,6 +20,10 @@ type ResticRunner interface {
 	Run(context.Context, restic.Config, []string, string) error
 }
 
+type resultRunner interface {
+	RunWithResult(context.Context, restic.Config, []string, string) (restic.Result, error)
+}
+
 // HookRunner executes a lifecycle hook without invoking a shell.
 type HookRunner interface {
 	RunHook(context.Context, []string) error
@@ -133,7 +137,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if databaseCount(backupProfile) == 0 {
 		arguments = append(arguments, "--")
 		arguments = append(arguments, backupProfile.BackupPaths...)
-		return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+		return invokeRestic(ctx, runner, backupProfile, arguments, "")
 	}
 
 	staging, err := os.MkdirTemp("", "resticctl-"+backupProfile.Name+"-")
@@ -171,7 +175,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	arguments = append(arguments, "--")
 	arguments = append(arguments, backupProfile.BackupPaths...)
 	arguments = append(arguments, "databases")
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, staging)
+	return invokeRestic(ctx, runner, backupProfile, arguments, staging)
 }
 
 func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, staging string, backupProfile profile.Profile, providers []databasebackup.Provider, output io.Writer) error {

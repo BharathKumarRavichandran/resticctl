@@ -315,7 +315,7 @@ resticctl key remove <profile> <key-id>
 resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
-resticctl status <profile> [--action backup|forget] [--json]
+resticctl status <profile> [--action backup|check|forget|prune|copy] [--history N] [--json]
 resticctl schedule install <profile> [backup|check|forget|prune|copy] [--calendar "<expression>" ...] [--backend auto|cron|launchd|systemd|windows] [--catch-up] [--dry-run]
 resticctl schedule status <profile> [backup|check|forget|prune|copy] [--json]
 resticctl schedule remove <profile> [backup|check|forget|prune|copy]
@@ -542,20 +542,83 @@ selected backend; cron cannot enforce network or power conditions itself.
 Non-secret installed-schedule metadata remains
 under `<config-dir>/schedules/`.
 
-Each non-dry-run backup or retention action records its state, start and finish
-times, duration, and last successful completion time in a private file under
-the configuration directory. Operations for the same profile are locked so
-overlapping manual and scheduled runs fail safely. View the latest result with:
+Each non-dry-run backup, check, forget, prune, or copy action records its
+command, state, start and finish times, duration, exit code, error category,
+Restic warning state, and last successful completion time in a private file
+under the configuration directory. A bounded per-command history is retained;
+operations for the same profile are locked so overlapping runs fail safely.
+View the latest result or history with:
 
 ```sh
 resticctl status <profile>
 resticctl status <profile> --action forget
+resticctl status <profile> --action backup --history 10
 resticctl status <profile> --json
 ```
 
-Status files intentionally do not store command output or error messages, which
-could contain sensitive paths or service details. Dry runs do not replace the
-latest recorded status.
+Status files intentionally do not store command output, error messages,
+repository locations, source paths, credential values, sensitive HTTP headers,
+or temporary credential-file names. Dry runs do not replace status.
+
+### Monitoring, notifications, and logs
+
+The optional `monitoring` object controls external status export. All delivery
+failures are non-fatal: they never change or hide the result of the Restic
+action. For example:
+
+```json
+{
+  "monitoring": {
+    "history_limit": 100,
+    "warning_policy": "warning",
+    "backup_statistics": true,
+    "status_file": "/var/lib/node-exporter/resticctl.json",
+    "prometheus_textfile": "/var/lib/node-exporter/resticctl.prom",
+    "pushgateway": {
+      "url": "https://push.example.invalid",
+      "job": "resticctl",
+      "labels": {"site": "primary"},
+      "timeout": "10s",
+      "headers": {"Authorization": "Bearer <token>"},
+      "ca_file": "monitoring-ca.pem"
+    },
+    "http": [{
+      "name": "operations",
+      "url": "https://monitor.example.invalid/restic",
+      "actions": ["backup", "check", "forget", "prune", "copy"],
+      "phases": ["send-before", "send-after", "send-after-fail", "send-finally", "warning"],
+      "method": "POST",
+      "headers": {"Authorization": "Bearer <token>"},
+      "body_template": "{\"profile\":{{printf \"%q\" .Status.Profile}},\"state\":{{printf \"%q\" .Status.State}}}",
+      "timeout": "10s",
+      "ca_file": "monitoring-ca.pem"
+    }],
+    "logs": [
+      {"type": "console"},
+      {"type": "file", "path": "resticctl-events.jsonl"},
+      {"type": "local-syslog"},
+      {"type": "remote-syslog", "network": "udp", "address": "logs.example.invalid:514"}
+    ]
+  }
+}
+```
+
+Relative output and CA paths resolve beside the profile. Output files and log
+files are private. HTTP targets support `GET`, `POST`, `PUT`, and `PATCH`;
+omitting `phases` selects `send-finally`, and omitting `actions` selects every
+recorded action. `body` sends literal content, while `body_template` uses Go's
+data-only text templating against `.Phase` and `.Status`. It cannot execute
+commands or access the loaded profile and credentials. Custom CA files must be
+regular files and are bounded before loading.
+
+Restic exit code 3 is governed by `warning_policy`: `failure` returns a failed
+action, `warning` returns success with status state `warning`, and `success`
+returns success with state `succeeded`. All three retain
+`restic_warning: true`; HTTP targets with phase `warning` act as non-fatal
+warning handlers. When `backup_statistics` is enabled, resticctl requests
+Restic JSON output and stores only aggregate counters and byte totals, never
+snapshot paths or IDs. JSON status, Prometheus textfiles, and Pushgateway
+metrics contain the same redacted status model.
 
 ## Database backups
 

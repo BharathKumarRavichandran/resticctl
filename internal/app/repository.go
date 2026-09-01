@@ -8,7 +8,7 @@ import (
 )
 
 func Snapshots(ctx context.Context, runner ResticRunner, backupProfile profile.Profile) error {
-	return runner.Run(ctx, resticConfig(backupProfile), []string{"snapshots", "--tag", profileTag(backupProfile)}, "")
+	return invokeRestic(ctx, runner, backupProfile, []string{"snapshots", "--tag", profileTag(backupProfile)}, "")
 }
 
 func Stats(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, mode string) error {
@@ -16,7 +16,7 @@ func Stats(ctx context.Context, runner ResticRunner, backupProfile profile.Profi
 	if mode != "" {
 		arguments = append(arguments, "--mode", mode)
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func ListSnapshot(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot string, paths []string, long, recursive, humanReadable bool, sort string, reverse bool) error {
@@ -37,7 +37,7 @@ func ListSnapshot(ctx context.Context, runner ResticRunner, backupProfile profil
 		arguments = append(arguments, "--reverse")
 	}
 	arguments = append(arguments, paths...)
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Find(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, patterns []string, ignoreCase, long, humanReadable, reverse bool) error {
@@ -55,7 +55,7 @@ func Find(ctx context.Context, runner ResticRunner, backupProfile profile.Profil
 		arguments = append(arguments, "--reverse")
 	}
 	arguments = append(arguments, patterns...)
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Diff(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, first, second string, metadata bool) error {
@@ -63,7 +63,7 @@ func Diff(ctx context.Context, runner ResticRunner, backupProfile profile.Profil
 	if metadata {
 		arguments = append(arguments, "--metadata")
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Dump(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot, path, archive, target string) error {
@@ -74,11 +74,11 @@ func Dump(ctx context.Context, runner ResticRunner, backupProfile profile.Profil
 	if target != "" {
 		arguments = append(arguments, "--target", target)
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Check(ctx context.Context, runner ResticRunner, backupProfile profile.Profile) error {
-	return runner.Run(ctx, resticConfig(backupProfile), append([]string{"check"}, backupProfile.CheckArgs...), "")
+	return invokeRestic(ctx, runner, backupProfile, append([]string{"check"}, backupProfile.CheckArgs...), "")
 }
 
 func Forget(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, dryRun, prune bool) error {
@@ -93,7 +93,7 @@ func Forget(ctx context.Context, runner ResticRunner, backupProfile profile.Prof
 	if dryRun {
 		arguments = append(arguments, "--dry-run")
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Restore(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot, target string, dryRun bool) error {
@@ -101,7 +101,7 @@ func Restore(ctx context.Context, runner ResticRunner, backupProfile profile.Pro
 	if dryRun {
 		arguments = append(arguments, "--dry-run", "--verbose=2")
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), arguments, "")
+	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func profileTag(backupProfile profile.Profile) string {

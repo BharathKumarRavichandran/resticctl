@@ -94,3 +94,17 @@ func TestResticUsesAndRemovesTemporaryPasswordFile(t *testing.T) {
 		t.Fatalf("temporary password file still exists: %v", err)
 	}
 }
+
+func TestSummaryCaptureIsStreamingAndBounded(t *testing.T) {
+	var capture summaryCapture
+	_, _ = capture.Write([]byte(`{"message_type":"status","percent_done":0.5}` + "\n"))
+	_, _ = capture.Write([]byte(`{"message_type":"summary","files_new":`))
+	_, _ = capture.Write([]byte(`7,"data_added":42}` + "\n"))
+	if capture.summary == nil || capture.summary.FilesNew != 7 || capture.summary.DataAddedBytes != 42 {
+		t.Fatalf("summary = %#v", capture.summary)
+	}
+	_, _ = capture.Write([]byte(strings.Repeat("x", maximumJSONLine+1) + "\n"))
+	if len(capture.line) != 0 || capture.discard {
+		t.Fatalf("capture retained oversized line: len=%d discard=%t", len(capture.line), capture.discard)
+	}
+}

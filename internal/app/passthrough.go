@@ -16,7 +16,7 @@ func RunRestic(ctx context.Context, runner ResticRunner, backupProfile profile.P
 	if err := validateResticArguments(arguments); err != nil {
 		return err
 	}
-	return runner.Run(ctx, resticConfig(backupProfile), append([]string{command}, arguments...), "")
+	return invokeRestic(ctx, runner, backupProfile, append([]string{command}, arguments...), "")
 }
 
 func supportedResticCommand(command string) bool {

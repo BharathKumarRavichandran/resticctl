@@ -103,6 +103,47 @@ type Hook struct {
 	Timeout string   `json:"timeout,omitempty"`
 }
 
+// Monitoring configures non-fatal observability side effects for recorded actions.
+type Monitoring struct {
+	HistoryLimit       int              `json:"history_limit,omitempty"`
+	StatusFile         string           `json:"status_file,omitempty"`
+	PrometheusTextfile string           `json:"prometheus_textfile,omitempty"`
+	Pushgateway        *Pushgateway     `json:"pushgateway,omitempty"`
+	HTTP               []HTTPHook       `json:"http,omitempty"`
+	WarningPolicy      string           `json:"warning_policy,omitempty"`
+	BackupStatistics   bool             `json:"backup_statistics,omitempty"`
+	Logs               []LogDestination `json:"logs,omitempty"`
+}
+
+type Pushgateway struct {
+	URL     string            `json:"url"`
+	Job     string            `json:"job,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
+	Timeout string            `json:"timeout,omitempty"`
+	CAFile  string            `json:"ca_file,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type HTTPHook struct {
+	Name         string            `json:"name,omitempty"`
+	URL          string            `json:"url"`
+	Actions      []string          `json:"actions,omitempty"`
+	Phases       []string          `json:"phases,omitempty"`
+	Method       string            `json:"method,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Body         string            `json:"body,omitempty"`
+	BodyTemplate string            `json:"body_template,omitempty"`
+	Timeout      string            `json:"timeout,omitempty"`
+	CAFile       string            `json:"ca_file,omitempty"`
+}
+
+type LogDestination struct {
+	Type    string `json:"type"`
+	Path    string `json:"path,omitempty"`
+	Address string `json:"address,omitempty"`
+	Network string `json:"network,omitempty"`
+}
+
 type Profile struct {
 	Name                string               `json:"-"`
 	Parent              string               `json:"parent,omitempty"`
@@ -129,5 +170,6 @@ type Profile struct {
 	RunFinally          []Hook               `json:"run_finally"`
 	Schedule            *Schedule            `json:"schedule,omitempty"`
 	Forget              *ForgetSchedule      `json:"forget,omitempty"`
+	Monitoring          Monitoring           `json:"monitoring,omitempty"`
 	Credentials         Credentials          `json:"-"`
 }

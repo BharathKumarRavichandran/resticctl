@@ -110,3 +110,29 @@ func TestRecorderPreservesLastSuccessAcrossFailure(t *testing.T) {
 		t.Fatalf("status = %#v", status)
 	}
 }
+
+type testExitError struct{ code int }
+
+func (err testExitError) Error() string { return "failed" }
+func (err testExitError) ExitCode() int { return err.code }
+
+func TestRecorderPersistsBoundedHistoryAndStructuredOutcome(t *testing.T) {
+	directory := t.TempDir()
+	for index := range 3 {
+		started := time.Unix(int64(index), 0)
+		recorder, err := BeginAction(directory, "example", "check", started)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recorder.FinishOutcome(Outcome{Err: testExitError{code: 7}, HistoryLimit: 2}, started.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := LoadHistory(directory, "example", "check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[0].ExitCode == nil || *history[0].ExitCode != 7 || history[0].ErrorCategory != "command_exit" || history[0].Command != "check" {
+		t.Fatalf("history = %#v", history)
+	}
+}
