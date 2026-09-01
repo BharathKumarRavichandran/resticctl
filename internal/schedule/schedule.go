@@ -23,8 +23,13 @@ const (
 	BackendAuto    = "auto"
 	BackendCron    = "cron"
 	BackendLaunchd = "launchd"
+	BackendSystemd = "systemd"
+	BackendWindows = "windows"
 	ActionBackup   = "backup"
 	ActionForget   = "forget"
+	ActionCheck    = "check"
+	ActionPrune    = "prune"
+	ActionCopy     = "copy"
 )
 
 var ErrDrift = errors.New("installed schedule differs from recorded state")
@@ -44,12 +49,14 @@ func (OSExecutor) Run(ctx context.Context, input []byte, name string, arguments 
 }
 
 type Manager struct {
-	executor        Executor
-	goos            string
-	uid             int
-	environmentPath string
-	launchAgentsDir string
-	now             func() time.Time
+	executor         Executor
+	goos             string
+	uid              int
+	environmentPath  string
+	launchAgentsDir  string
+	systemdUserDir   string
+	systemdSystemDir string
+	now              func() time.Time
 }
 
 // Option customizes a Manager constructed by NewManager.
@@ -94,6 +101,7 @@ func NewManager(options ...Option) Manager {
 	manager := Manager{
 		executor: OSExecutor{}, goos: runtime.GOOS, uid: platformUID(),
 		environmentPath: os.Getenv("PATH"), launchAgentsDir: filepath.Join(home, "Library", "LaunchAgents"),
+		systemdUserDir: filepath.Join(home, ".config", "systemd", "user"), systemdSystemDir: "/etc/systemd/system",
 		now: time.Now,
 	}
 	for _, option := range options {
@@ -107,6 +115,17 @@ func (manager Manager) Install(ctx context.Context, configDir, name, expression,
 }
 
 func (manager Manager) InstallAction(ctx context.Context, configDir, name, action, expression, backend, executable string, catchUp, prune bool) (State, error) {
+	return manager.InstallSpec(ctx, Spec{Name: name, Action: action, Expressions: []string{expression}, Backend: backend, Executable: executable, ConfigDir: configDir, CatchUp: catchUp, Prune: prune, Permission: PermissionUser, Enabled: true, Start: true})
+}
+
+// InstallSpec validates, renders, and installs one independently managed action.
+func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error) {
+	var err error
+	name, action, backend, executable, configDir := spec.Name, spec.Action, spec.Backend, spec.Executable, spec.ConfigDir
+	catchUp, prune := spec.CatchUp, spec.Prune
+	if err := spec.validatePolicy(); err != nil {
+		return State{}, err
+	}
 	if err := profile.ValidateName(name); err != nil {
 		return State{}, err
 	}
@@ -116,10 +135,17 @@ func (manager Manager) InstallAction(ctx context.Context, configDir, name, actio
 	if action != ActionForget && prune {
 		return State{}, errors.New("prune is only valid for a forget schedule")
 	}
-	normalized, err := cronexpr.Normalize(expression)
-	if err != nil {
-		return State{}, err
+	if len(spec.Expressions) == 0 {
+		return State{}, errors.New("at least one calendar expression is required")
 	}
+	normalizedExpressions := make([]string, len(spec.Expressions))
+	for i, expression := range spec.Expressions {
+		normalizedExpressions[i], err = cronexpr.Normalize(expression)
+		if err != nil {
+			return State{}, fmt.Errorf("calendar expression %d: %w", i+1, err)
+		}
+	}
+	normalized := normalizedExpressions[0]
 	fields := strings.Fields(normalized)
 	backend, err = manager.resolveBackend(backend)
 	if err != nil {
@@ -134,22 +160,32 @@ func (manager Manager) InstallAction(ctx context.Context, configDir, name, actio
 		return State{}, fmt.Errorf("cannot resolve configuration directory: %w", err)
 	}
 	var existing *State
-	if installed, loadErr := LoadAction(configDir, name, action); loadErr == nil && installed.Backend != backend {
-		return State{}, fmt.Errorf("profile already has a %s schedule; remove it before switching backends", installed.Backend)
-	} else if loadErr == nil {
-		existing = &installed
-	} else if loadErr != nil && !errors.Is(loadErr, ErrNotInstalled) {
-		return State{}, loadErr
+	if !spec.DryRun {
+		if installed, loadErr := LoadAction(configDir, name, action); loadErr == nil && installed.Backend != backend {
+			return State{}, fmt.Errorf("profile already has a %s schedule; remove it before switching backends", installed.Backend)
+		} else if loadErr == nil {
+			existing = &installed
+		} else if loadErr != nil && !errors.Is(loadErr, ErrNotInstalled) {
+			return State{}, loadErr
+		}
 	}
 	state := State{
 		Profile: name, Backend: backend, Expression: normalized,
 		Installed: manager.now().UTC(), CatchUp: catchUp, Action: action, Prune: prune,
+		Expressions: normalizedExpressions, Permission: defaultString(spec.Permission, PermissionUser), CronFile: spec.CronFile,
+		User: spec.User, Priority: spec.Priority, Log: spec.Log, LockMode: spec.LockMode, LockWait: spec.LockWait,
+		Enabled: spec.Enabled, Start: spec.Start, Network: spec.Network, ACPower: spec.ACPower,
 	}
 	if backend == BackendLaunchd {
 		state.JobFile, err = manager.launchdJobPath(name, action)
 		if err != nil {
 			return State{}, err
 		}
+	}
+	if spec.DryRun {
+		definition, renderErr := manager.render(configDir, state, executable)
+		state.Rendered = string(definition)
+		return state, renderErr
 	}
 	err = manager.apply(ctx, configDir, &state, fields, executable)
 	if err != nil {
@@ -183,6 +219,12 @@ func (manager Manager) apply(ctx context.Context, configDir string, state *State
 	if state.Backend == BackendCron {
 		return manager.installCron(ctx, *state, executable, configDir)
 	}
+	if state.Backend == BackendSystemd {
+		return manager.installSystemd(ctx, configDir, state, executable)
+	}
+	if state.Backend == BackendWindows {
+		return manager.installWindows(ctx, configDir, state, executable)
+	}
 	jobFile, err := manager.installLaunchd(ctx, configDir, *state, fields, executable)
 	state.JobFile = jobFile
 	return err
@@ -202,9 +244,16 @@ func (manager Manager) restore(ctx context.Context, configDir string, state Stat
 func (manager Manager) removeApplied(ctx context.Context, configDir string, state State) error {
 	switch state.Backend {
 	case BackendCron:
+		if state.CronFile != "" {
+			return removeCronFile(state.CronFile, state.Profile, state.Action)
+		}
 		return manager.removeCron(ctx, state.Profile, state.Action)
 	case BackendLaunchd:
 		return manager.removeLaunchd(ctx, configDir, state)
+	case BackendSystemd:
+		return manager.removeSystemd(ctx, &state)
+	case BackendWindows:
+		return manager.removeWindows(ctx, &state)
 	default:
 		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
 	}
@@ -221,9 +270,17 @@ func (manager Manager) RemoveAction(ctx context.Context, configDir, name, action
 	}
 	switch state.Backend {
 	case BackendCron:
-		err = manager.removeCron(ctx, name, action)
+		if state.CronFile != "" {
+			err = removeCronFile(state.CronFile, name, action)
+		} else {
+			err = manager.removeCron(ctx, name, action)
+		}
 	case BackendLaunchd:
 		err = manager.removeLaunchd(ctx, configDir, state)
+	case BackendSystemd:
+		err = manager.removeSystemd(ctx, &state)
+	case BackendWindows:
+		err = manager.removeWindows(ctx, &state)
 	default:
 		err = fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
 	}
@@ -258,6 +315,8 @@ func (manager Manager) Verify(ctx context.Context, state State) error {
 			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
 		}
 		return nil
+	case BackendSystemd, BackendWindows:
+		return manager.verifyNative(ctx, state)
 	default:
 		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
 	}
@@ -266,7 +325,15 @@ func (manager Manager) Verify(ctx context.Context, state State) error {
 func (manager Manager) installedDefinition(ctx context.Context, state State) ([]byte, error) {
 	switch state.Backend {
 	case BackendCron:
-		current, err := manager.crontab(ctx)
+		var current string
+		var err error
+		if state.CronFile != "" {
+			var data []byte
+			data, err = os.ReadFile(state.CronFile)
+			current = string(data)
+		} else {
+			current, err = manager.crontab(ctx)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -291,6 +358,8 @@ func (manager Manager) installedDefinition(ctx context.Context, state State) ([]
 			return nil, fmt.Errorf("%w: launchd job is not a regular file: %s", errDefinitionDrift, jobFile)
 		}
 		return os.ReadFile(jobFile)
+	case BackendSystemd, BackendWindows:
+		return manager.nativeDefinition(state)
 	default:
 		return nil, fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
 	}
@@ -306,11 +375,11 @@ func (manager Manager) resolveBackend(backend string) (string, error) {
 			return BackendLaunchd, nil
 		}
 		if manager.goos == "windows" {
-			return "", errors.New("automatic scheduling is not supported on Windows")
+			return BackendWindows, nil
 		}
 		return BackendCron, nil
 	}
-	if backend != BackendCron && backend != BackendLaunchd {
+	if !validBackend(backend) {
 		return "", fmt.Errorf("unsupported schedule backend %q", backend)
 	}
 	if backend == BackendLaunchd && manager.goos != "darwin" {
@@ -318,6 +387,12 @@ func (manager Manager) resolveBackend(backend string) (string, error) {
 	}
 	if backend == BackendCron && manager.goos == "windows" {
 		return "", errors.New("cron scheduling is not available on Windows")
+	}
+	if backend == BackendSystemd && manager.goos != "linux" {
+		return "", errors.New("systemd scheduling is only available on Linux")
+	}
+	if backend == BackendWindows && manager.goos != "windows" {
+		return "", errors.New("Windows Task Scheduler is only available on Windows")
 	}
 	return backend, nil
 }
@@ -335,25 +410,24 @@ func (manager Manager) jobArguments(executable, configDir string, state State) [
 }
 
 func scheduledArguments(executable, configDir string, state State) []string {
-	arguments := []string{executable, "--config-dir", configDir}
-	if state.CatchUp {
-		arguments = append(arguments, "schedule", "run", state.Profile, "--action", state.Action)
-	} else if state.Action == ActionForget {
-		arguments = append(arguments, "forget", state.Profile)
-		if state.Prune {
-			arguments = append(arguments, "--prune")
-		}
-	} else {
-		arguments = append(arguments, "backup", state.Profile)
-	}
-	return arguments
+	return []string{executable, "--config-dir", configDir, "schedule", "run", state.Profile, "--action", state.Action}
 }
 
 func validateAction(action string) error {
-	if action != ActionBackup && action != ActionForget {
+	if action != ActionBackup && action != ActionForget && action != ActionCheck && action != ActionPrune && action != ActionCopy {
 		return fmt.Errorf("unsupported schedule action %q", action)
 	}
 	return nil
+}
+
+func validBackend(value string) bool {
+	return value == BackendCron || value == BackendLaunchd || value == BackendSystemd || value == BackendWindows
+}
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func launchdCalendar(fields []string) (string, error) {

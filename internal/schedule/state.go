@@ -25,6 +25,19 @@ type State struct {
 	Action         string    `json:"action,omitempty"`
 	Prune          bool      `json:"prune,omitempty"`
 	DefinitionHash string    `json:"definition_hash,omitempty"`
+	Expressions    []string  `json:"expressions,omitempty"`
+	Permission     string    `json:"permission,omitempty"`
+	CronFile       string    `json:"cron_file,omitempty"`
+	User           string    `json:"user,omitempty"`
+	Priority       string    `json:"priority,omitempty"`
+	Log            string    `json:"log,omitempty"`
+	LockMode       string    `json:"lock_mode,omitempty"`
+	LockWait       string    `json:"lock_wait,omitempty"`
+	Enabled        bool      `json:"enabled"`
+	Start          bool      `json:"start"`
+	Network        bool      `json:"network,omitempty"`
+	ACPower        bool      `json:"ac_power,omitempty"`
+	Rendered       string    `json:"-"`
 }
 
 func Load(configDir, name string) (State, error) {
@@ -59,11 +72,14 @@ func LoadAction(configDir, name, action string) (State, error) {
 	if state.Action != action {
 		return State{}, fmt.Errorf("schedule state %s has action %q, expected %q", path, state.Action, action)
 	}
-	if state.Backend != BackendCron && state.Backend != BackendLaunchd {
+	if !validBackend(state.Backend) {
 		return State{}, fmt.Errorf("schedule state %s has unsupported backend %q", path, state.Backend)
 	}
 	if _, err := cronexpr.Normalize(state.Expression); err != nil {
 		return State{}, fmt.Errorf("schedule state %s has invalid expression: %w", path, err)
+	}
+	if len(state.Expressions) == 0 {
+		state.Expressions = []string{state.Expression}
 	}
 	if state.Installed.IsZero() {
 		return State{}, fmt.Errorf("schedule state %s has no installation time", path)

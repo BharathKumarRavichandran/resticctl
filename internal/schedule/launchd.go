@@ -13,7 +13,7 @@ import (
 )
 
 func (manager Manager) installLaunchd(ctx context.Context, configDir string, state State, fields []string, executable string) (string, error) {
-	calendar, err := launchdCalendar(fields)
+	content, err := manager.renderLaunchd(configDir, state, executable)
 	if err != nil {
 		return "", err
 	}
@@ -24,6 +24,40 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("cannot create schedule directory: %w", err)
+	}
+	if err := securefile.WriteAtomic(path, content); err != nil {
+		return "", fmt.Errorf("cannot write launchd job %s: %w", path, err)
+	}
+	if !state.Start {
+		return path, nil
+	}
+	label := launchdLabel(state.Profile, state.Action)
+	domain := "gui/" + strconv.Itoa(manager.uid)
+	_, _ = manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
+	if err != nil {
+		_ = os.Remove(path)
+		return "", commandError("install launchd job", output, err)
+	}
+	legacyPath := filepath.Join(configDir, "schedules", label+".plist")
+	if state.Action == ActionBackup && legacyPath != path {
+		_ = os.Remove(legacyPath)
+	}
+	return path, nil
+}
+
+func (manager Manager) renderLaunchd(configDir string, state State, executable string) ([]byte, error) {
+	calendars := make([]string, 0, len(state.Expressions))
+	for _, expression := range state.Expressions {
+		calendar, err := launchdCalendar(strings.Fields(expression))
+		if err != nil {
+			return nil, err
+		}
+		calendars = append(calendars, calendar)
+	}
+	calendar := strings.Join(calendars, "")
+	if len(calendars) > 1 {
+		calendar = "<array>" + calendar + "</array>"
 	}
 	label := launchdLabel(state.Profile, state.Action)
 	arguments := scheduledArguments(executable, configDir, state)
@@ -39,24 +73,29 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 ` + launchdEnvironment(manager.environmentPath) + `
 <key>StartCalendarInterval</key>` + calendar + `
 ` + launchdRunAtLoad(state.CatchUp) + `
-<key>ProcessType</key><string>Background</string>
+` + launchdPolicy(state) + `
 </dict></plist>
 `
-	if err := securefile.WriteAtomic(path, []byte(content)); err != nil {
-		return "", fmt.Errorf("cannot write launchd job %s: %w", path, err)
+	return []byte(content), nil
+}
+
+func launchdPolicy(state State) string {
+	var b strings.Builder
+	processType := "Adaptive"
+	if state.Priority == PriorityBackground {
+		processType = "Background"
 	}
-	domain := "gui/" + strconv.Itoa(manager.uid)
-	_, _ = manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
-	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
-	if err != nil {
-		_ = os.Remove(path)
-		return "", commandError("install launchd job", output, err)
+	b.WriteString("<key>ProcessType</key><string>" + processType + "</string>\n")
+	if state.Log != "" {
+		b.WriteString("<key>StandardOutPath</key><string>" + xmlText(state.Log) + "</string><key>StandardErrorPath</key><string>" + xmlText(state.Log) + "</string>\n")
 	}
-	legacyPath := filepath.Join(configDir, "schedules", label+".plist")
-	if state.Action == ActionBackup && legacyPath != path {
-		_ = os.Remove(legacyPath)
+	if state.Network {
+		b.WriteString("<key>KeepAlive</key><dict><key>NetworkState</key><true/></dict>\n")
 	}
-	return path, nil
+	if state.Priority == PriorityBackground {
+		b.WriteString("<key>LowPriorityIO</key><true/>\n")
+	}
+	return b.String()
 }
 
 func (manager Manager) removeLaunchd(ctx context.Context, configDir string, state State) error {

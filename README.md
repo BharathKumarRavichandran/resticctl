@@ -316,9 +316,9 @@ resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
 resticctl status <profile> [--action backup|forget] [--json]
-resticctl schedule install <profile> [backup|forget] [--cron "<expression>"] [--backend auto|cron|launchd] [--catch-up] [--prune]
-resticctl schedule status <profile> [backup|forget] [--json]
-resticctl schedule remove <profile> [backup|forget]
+resticctl schedule install <profile> [backup|check|forget|prune|copy] [--calendar "<expression>" ...] [--backend auto|cron|launchd|systemd|windows] [--catch-up] [--dry-run]
+resticctl schedule status <profile> [backup|check|forget|prune|copy] [--json]
+resticctl schedule remove <profile> [backup|check|forget|prune|copy]
 resticctl run <profile> <restic-command> [args...]
 resticctl completion <shell>
 ```
@@ -478,13 +478,21 @@ The older `forget.schedule` field remains accepted as an input alias for
 compatibility, but new and generated profiles should use `forget.cron`. Setting
 both fields is rejected.
 
-The default `auto` backend uses launchd on macOS and cron on other Unix-like
-systems. Windows scheduling is not supported yet. You can select a backend
-explicitly with `--backend cron` or `--backend launchd`.
+The default `auto` backend uses launchd on macOS, Windows Task Scheduler on
+Windows, and cron on other Unix-like systems. Native systemd timers are
+available explicitly with `--backend systemd`. Repeat `--calendar` to attach
+multiple calendars to the same action; `--cron` remains a compatible alias for
+one expression. `--dry-run` renders the definition without writing scheduler
+or state files.
 
-Cron accepts a standard five-field expression. The initial launchd integration
-supports a number or `*` in each field; lists, ranges, steps, and named values
-are rejected because launchd does not interpret cron syntax directly.
+The portable calendar syntax is a standard five-field cron expression in local
+time: minute, hour, day of month, month, and day of week. Cron preserves the
+expression. systemd translates all five fields to `OnCalendar`; numeric cron
+weekday values are retained, so use numeric values for portability. launchd
+supports only a number or `*` in each field. Windows currently supports daily
+or hourly expressions (day, month, and weekday must be `*`). Lists, ranges,
+steps, and names are therefore not portable and are rejected by backends that
+cannot represent them.
 The portable aliases `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, and
 `@annually` are also accepted, as are the same names without `@`. Aliases are
 normalized to five-field expressions before installation.
@@ -521,7 +529,17 @@ reinstall after changing tool locations.
 
 On macOS, persistent plist files are installed as
 `~/Library/LaunchAgents/io.resticctl.<action>.<profile>.plist`. Cron jobs remain
-in the current user's crontab. Non-secret installed-schedule metadata remains
+in the current user's crontab. `--crontab-file` targets an explicit file; with
+`--permission system`, each entry includes the required `--user` column.
+systemd supports user and system units, while Task Scheduler supports
+logged-on-user and system principals. `--no-start` and `--no-enable` control
+activation where the backend separates installation from activation.
+
+`--priority background`, `--log`, `--lock-mode wait --lock-wait <duration>`,
+`--require-network`, and `--require-ac-power` configure execution policy.
+Availability conditions are emitted only using facilities offered by the
+selected backend; cron cannot enforce network or power conditions itself.
+Non-secret installed-schedule metadata remains
 under `<config-dir>/schedules/`.
 
 Each non-dry-run backup or retention action records its state, start and finish

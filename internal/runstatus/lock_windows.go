@@ -24,7 +24,7 @@ func acquire(path string) (func() error, error) {
 	if err != nil {
 		_ = file.Close()
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			return nil, errors.New("backup is already running for this profile")
+			return nil, ErrLocked
 		}
 		return nil, fmt.Errorf("cannot lock backup: %w", err)
 	}

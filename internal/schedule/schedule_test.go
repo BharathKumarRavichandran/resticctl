@@ -276,3 +276,146 @@ func TestLaunchdRejectsUnsupportedCronSyntax(t *testing.T) {
 		t.Fatal("launchd accepted a step expression")
 	}
 }
+
+func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
+	directory := t.TempDir()
+	units := filepath.Join(directory, "units")
+	executor := &fakeExecutor{}
+	manager := NewManager(
+		WithExecutor(executor),
+		WithPlatform("linux", 1000),
+		WithSystemdDirs(units, filepath.Join(directory, "system")),
+		WithClock(time.Now),
+	)
+	state, err := manager.InstallSpec(context.Background(), Spec{
+		Name:        "example",
+		Action:      ActionCheck,
+		Backend:     BackendSystemd,
+		Executable:  "/bin/resticctl",
+		ConfigDir:   directory,
+		Expressions: []string{"0 2 * * *", "30 14 * * *"},
+		Permission:  PermissionUser,
+		Priority:    PriorityBackground,
+		Log:         filepath.Join(directory, "check.log"),
+		CatchUp:     true,
+		Enabled:     true,
+		Network:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := os.ReadFile(filepath.Join(units, nativeID(state)+".service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timer, err := os.ReadFile(state.JobFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"ExecStart=\"/bin/resticctl\"", "\"--action\" \"check\"", "Nice=10", "network-online.target", "StandardOutput=append:"} {
+		if !strings.Contains(string(service), expected) {
+			t.Fatalf("service lacks %q:\n%s", expected, service)
+		}
+	}
+	if strings.Count(string(timer), "OnCalendar=") != 2 || !strings.Contains(string(timer), "Persistent=true") {
+		t.Fatalf("timer:\n%s", timer)
+	}
+	for _, execution := range executor.executions {
+		if slices.Contains(execution.arguments, "start") || slices.Contains(execution.arguments, "--now") {
+			t.Fatalf("no-start ran %#v", execution)
+		}
+	}
+}
+
+func TestWindowsDryRunRendersEveryScheduledActionWithoutChanges(t *testing.T) {
+	for _, action := range []string{ActionBackup, ActionCheck, ActionForget, ActionPrune, ActionCopy} {
+		t.Run(action, func(t *testing.T) {
+			directory := t.TempDir()
+			executor := &fakeExecutor{}
+			manager := NewManager(WithExecutor(executor), WithPlatform("windows", 0), WithClock(time.Now))
+			state, err := manager.InstallSpec(context.Background(), Spec{
+				Name: "example", Action: action, Backend: BackendWindows,
+				Executable: `C:\Tools\resticctl.exe`, ConfigDir: directory,
+				Expressions: []string{"5 1 * * *"}, Permission: PermissionLoggedOn,
+				User: "Example\\User", Enabled: true, DryRun: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(state.Rendered, "<Task") || !strings.Contains(state.Rendered, action) {
+				t.Fatalf("rendered task:\n%s", state.Rendered)
+			}
+			if len(executor.executions) != 0 {
+				t.Fatalf("dry run executed commands: %#v", executor.executions)
+			}
+			if _, err := os.Stat(statePath(directory, "example", action)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("dry run wrote state: %v", err)
+			}
+		})
+	}
+}
+
+func TestExplicitSystemCrontabIncludesUserAndMultipleExpressions(t *testing.T) {
+	directory := t.TempDir()
+	cronFile := filepath.Join(directory, "etc", "cron.d", "resticctl")
+	manager := NewManager(WithExecutor(&fakeExecutor{}), WithPlatform("linux", 0), WithClock(time.Now))
+	state, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionPrune, Backend: BackendCron,
+		Executable: "/bin/resticctl", ConfigDir: directory,
+		Expressions: []string{"0 1 * * *", "0 13 * * *"},
+		Permission:  PermissionSystem, User: "backup", CronFile: cronFile,
+		Enabled: true, Start: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cronFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), " backup ") != 2 || !strings.Contains(string(data), "'--action' 'prune'") {
+		t.Fatalf("system crontab:\n%s", data)
+	}
+	if err := manager.Verify(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFakeInstallationCoversEveryBackendAndAction(t *testing.T) {
+	backends := []struct{ backend, goos string }{
+		{BackendCron, "linux"},
+		{BackendLaunchd, "darwin"},
+		{BackendSystemd, "linux"},
+		{BackendWindows, "windows"},
+	}
+	actions := []string{ActionBackup, ActionCheck, ActionForget, ActionPrune, ActionCopy}
+	for _, platform := range backends {
+		for _, action := range actions {
+			t.Run(platform.backend+"/"+action, func(t *testing.T) {
+				directory := t.TempDir()
+				executor := &fakeExecutor{}
+				manager := NewManager(
+					WithExecutor(executor), WithPlatform(platform.goos, 1000),
+					WithLaunchAgentsDir(filepath.Join(directory, "launchd")),
+					WithSystemdDirs(filepath.Join(directory, "systemd-user"), filepath.Join(directory, "systemd-system")),
+					WithClock(time.Now),
+				)
+				state, err := manager.InstallSpec(context.Background(), Spec{
+					Name: "example", Action: action, Backend: platform.backend,
+					Executable: "/bin/resticctl", ConfigDir: directory,
+					Expressions: []string{"5 1 * * *"}, Permission: PermissionUser,
+					Enabled: true, Start: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state.Action != action || state.DefinitionHash == "" {
+					t.Fatalf("state = %#v", state)
+				}
+				if len(executor.executions) == 0 {
+					t.Fatal("installation did not use fake executor")
+				}
+			})
+		}
+	}
+}

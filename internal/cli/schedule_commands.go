@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,10 +24,12 @@ func (cli *commandLine) scheduleCommand() *cobra.Command {
 
 func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	var expression, backend string
-	var catchUp, prune bool
+	var calendars []string
+	var catchUp, prune, dryRun, noStart, noEnable, network, acPower bool
+	var permission, cronFile, user, priority, logPath, lockMode, lockWait string
 	command := &cobra.Command{
-		Use:   "install <profile> [backup|forget]",
-		Short: "Install a cron or launchd backup schedule",
+		Use:   "install <profile> [backup|check|forget|prune|copy]",
+		Short: "Render or install a scheduled action",
 		Example: `  resticctl schedule install personal
   resticctl schedule install personal --cron "0 2 * * *" --catch-up
   resticctl schedule install personal forget`,
@@ -76,7 +79,12 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				}
 			}
 			if expression == "" {
-				return errors.New("schedule cron expression is required in the profile or with --cron")
+				if len(calendars) == 0 {
+					return errors.New("schedule calendar expression is required in the profile or with --calendar")
+				}
+			}
+			if expression != "" {
+				calendars = append([]string{expression}, calendars...)
 			}
 			if backend == "" {
 				backend = schedule.BackendAuto
@@ -85,17 +93,38 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("cannot find resticctl executable: %w", err)
 			}
-			state, err := cli.newScheduleManager().InstallAction(command.Context(), configDir, arguments[0], action, expression, backend, executable, catchUp, prune)
+			state, err := cli.newScheduleManager().InstallSpec(command.Context(), schedule.Spec{
+				Name: arguments[0], Action: action, Expressions: calendars, Backend: backend, Executable: executable, ConfigDir: configDir,
+				CatchUp: catchUp, Prune: prune, DryRun: dryRun, Permission: permission, CronFile: cronFile, User: user,
+				Priority: priority, Log: logPath, LockMode: lockMode, LockWait: lockWait, Enabled: !noEnable, Start: !noStart,
+				Network: network, ACPower: acPower,
+			})
 			if err != nil {
 				return err
 			}
-			return writeOutput(cli.stdout, "Installed %s %s schedule for %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.Profile, state.Expression, state.CatchUp)
+			if dryRun {
+				return writeOutput(cli.stdout, "%s", state.Rendered)
+			}
+			return writeOutput(cli.stdout, "Installed %s %s schedule for %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.Profile, strings.Join(state.Expressions, ", "), state.CatchUp)
 		}),
 	}
 	command.Flags().StringVar(&expression, "cron", "", "five-field cron expression")
-	command.Flags().StringVar(&backend, "backend", "", "scheduler backend: auto, cron, or launchd")
+	command.Flags().StringArrayVar(&calendars, "calendar", nil, "portable five-field calendar expression (repeatable)")
+	command.Flags().StringVar(&backend, "backend", "", "scheduler backend: auto, cron, launchd, systemd, or windows")
 	command.Flags().BoolVar(&catchUp, "catch-up", false, "run once after a missed schedule")
 	command.Flags().BoolVar(&prune, "prune", false, "prune unreferenced data after scheduled forget")
+	command.Flags().StringVar(&permission, "permission", schedule.PermissionUser, "permission mode: user, logged-on-user, or system")
+	command.Flags().StringVar(&cronFile, "crontab-file", "", "write an explicit crontab file")
+	command.Flags().StringVar(&user, "user", "", "account for a system schedule")
+	command.Flags().StringVar(&priority, "priority", schedule.PriorityNormal, "process priority: normal or background")
+	command.Flags().StringVar(&logPath, "log", "", "append scheduler output to this path")
+	command.Flags().StringVar(&lockMode, "lock-mode", schedule.LockFail, "lock contention mode: fail or wait")
+	command.Flags().StringVar(&lockWait, "lock-wait", "", "maximum lock wait duration")
+	command.Flags().BoolVar(&noStart, "no-start", false, "install without starting the schedule")
+	command.Flags().BoolVar(&noEnable, "no-enable", false, "install without enabling the schedule")
+	command.Flags().BoolVar(&network, "require-network", false, "run only when network is available where supported")
+	command.Flags().BoolVar(&acPower, "require-ac-power", false, "run only on AC power where supported")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "render scheduler changes without installing")
 	return command
 }
 
@@ -218,7 +247,7 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
-	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "status action: backup or forget")
+	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "status action: backup, check, forget, prune, or copy")
 	return command
 }
 
@@ -245,7 +274,7 @@ func scheduledAction(arguments []string) (string, error) {
 	if len(arguments) == 2 {
 		action = arguments[1]
 	}
-	if action != schedule.ActionBackup && action != schedule.ActionForget {
+	if action != schedule.ActionBackup && action != schedule.ActionForget && action != schedule.ActionCheck && action != schedule.ActionPrune && action != schedule.ActionCopy {
 		return "", fmt.Errorf("unsupported scheduled action %q", action)
 	}
 	return action, nil

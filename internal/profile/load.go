@@ -137,8 +137,8 @@ func Load(configDir, name string) (Profile, error) {
 		if schedule.Backend == "" {
 			schedule.Backend = "auto"
 		}
-		if schedule.Backend != "auto" && schedule.Backend != "cron" && schedule.Backend != "launchd" {
-			return Profile{}, fmt.Errorf("schedule.backend must be auto, cron, or launchd: %s", schedule.Backend)
+		if !validScheduleBackend(schedule.Backend) {
+			return Profile{}, fmt.Errorf("schedule.backend is unsupported: %s", schedule.Backend)
 		}
 		normalized, err := cronexpr.Normalize(schedule.Cron)
 		if err != nil {
@@ -154,8 +154,8 @@ func Load(configDir, name string) (Profile, error) {
 		if forget.Backend == "" {
 			forget.Backend = "auto"
 		}
-		if forget.Backend != "auto" && forget.Backend != "cron" && forget.Backend != "launchd" {
-			return Profile{}, fmt.Errorf("forget.backend must be auto, cron, or launchd: %s", forget.Backend)
+		if !validScheduleBackend(forget.Backend) {
+			return Profile{}, fmt.Errorf("forget.backend is unsupported: %s", forget.Backend)
 		}
 		if forget.Cron != "" && forget.Schedule != "" {
 			return Profile{}, errors.New("forget must not set both cron and deprecated schedule")
@@ -172,6 +172,10 @@ func Load(configDir, name string) (Profile, error) {
 		forget.Schedule = ""
 	}
 	return backupProfile, nil
+}
+
+func validScheduleBackend(value string) bool {
+	return value == "auto" || value == "cron" || value == "launchd" || value == "systemd" || value == "windows"
 }
 
 // profileConfig uses pointers for scalars so inheritance can distinguish an

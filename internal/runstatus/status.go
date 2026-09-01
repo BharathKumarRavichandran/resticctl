@@ -14,6 +14,7 @@ import (
 )
 
 var ErrNotRecorded = errors.New("backup status has not been recorded")
+var ErrLocked = errors.New("backup is already running for this profile")
 
 type Status struct {
 	Profile       string     `json:"profile"`
@@ -37,6 +38,31 @@ func Begin(configDir, name string, now time.Time) (*Recorder, error) {
 }
 
 func BeginAction(configDir, name, action string, now time.Time) (*Recorder, error) {
+	return beginAction(configDir, name, action, now, acquire)
+}
+
+// BeginActionWait retries lock contention until the bounded wait expires.
+func BeginActionWait(ctx context.Context, configDir, name, action string, now time.Time, wait time.Duration) (*Recorder, error) {
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	retry := time.NewTicker(100 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		recorder, err := beginAction(configDir, name, action, now, acquire)
+		if !errors.Is(err, ErrLocked) {
+			return recorder, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, fmt.Errorf("schedule lock wait expired after %s: %w", wait, ErrLocked)
+		case <-retry.C:
+		}
+	}
+}
+
+func beginAction(configDir, name, action string, now time.Time, lock func(string) (func() error, error)) (*Recorder, error) {
 	if err := profile.ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -51,7 +77,7 @@ func BeginAction(configDir, name, action string, now time.Time) (*Recorder, erro
 		return nil, fmt.Errorf("cannot protect status directory: %w", err)
 	}
 	key := statusKey(name, action)
-	release, err := acquire(filepath.Join(directory, name+".lock"))
+	release, err := lock(filepath.Join(directory, name+".lock"))
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +171,7 @@ func statusKey(name, action string) string {
 }
 
 func validateAction(action string) error {
-	if action != "backup" && action != "forget" {
+	if action != "backup" && action != "forget" && action != "check" && action != "prune" && action != "copy" {
 		return fmt.Errorf("unsupported status action %q", action)
 	}
 	return nil

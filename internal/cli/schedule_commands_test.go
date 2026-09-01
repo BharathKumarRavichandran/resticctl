@@ -87,7 +87,7 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 	if err != nil || statusCode != 0 {
 		t.Fatalf("install status=%d error=%v", statusCode, err)
 	}
-	if !strings.Contains(executor.crontab, "0 2 * * *") || !strings.Contains(executor.crontab, "backup' 'example") {
+	if !strings.Contains(executor.crontab, "0 2 * * *") || !strings.Contains(executor.crontab, "'--action' 'backup'") {
 		t.Fatalf("crontab = %q", executor.crontab)
 	}
 	output.Reset()

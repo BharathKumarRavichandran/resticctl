@@ -1,0 +1,297 @@
+package schedule
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"resticctl/internal/securefile"
+)
+
+func nativeID(state State) string {
+	return "resticctl-" + state.Action + "-" + state.Profile
+}
+
+func (manager Manager) render(configDir string, state State, executable string) ([]byte, error) {
+	switch state.Backend {
+	case BackendCron:
+		return manager.renderCron(state, executable, configDir)
+	case BackendLaunchd:
+		return manager.renderLaunchd(configDir, state, executable)
+	case BackendSystemd:
+		service, timer, err := manager.renderSystemd(configDir, state, executable)
+		return append(service, timer...), err
+	case BackendWindows:
+		return manager.renderWindows(configDir, state, executable)
+	default:
+		return nil, fmt.Errorf("unsupported schedule backend %q", state.Backend)
+	}
+}
+
+func (manager Manager) systemdDir(state State) string {
+	if state.Permission == PermissionSystem {
+		return manager.systemdSystemDir
+	}
+	return manager.systemdUserDir
+}
+
+func systemdEscape(value string) string {
+	return strconv.Quote(strings.ReplaceAll(value, "%", "%%"))
+}
+
+func cronToOnCalendar(expression string) string {
+	f := strings.Fields(expression)
+	// systemd order is weekday year-month-day hour:minute:second.
+	weekday := "*"
+	if f[4] != "*" {
+		weekday = f[4]
+	}
+	return weekday + " *-" + f[3] + "-" + f[2] + " " + f[1] + ":" + f[0] + ":00"
+}
+
+func (manager Manager) renderSystemd(configDir string, state State, executable string) ([]byte, []byte, error) {
+	args := scheduledArguments(executable, configDir, state)
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = systemdEscape(arg)
+	}
+	var service strings.Builder
+	service.WriteString("[Unit]\nDescription=resticctl " + state.Action + " for " + state.Profile + "\n")
+	if state.Network {
+		service.WriteString("Wants=network-online.target\nAfter=network-online.target\n")
+	}
+	if state.ACPower {
+		service.WriteString("ConditionACPower=true\n")
+	}
+	service.WriteString("[Service]\nType=oneshot\nExecStart=" + strings.Join(quoted, " ") + "\n")
+	if state.User != "" && state.Permission == PermissionSystem {
+		service.WriteString("User=" + strings.ReplaceAll(state.User, "%", "%%") + "\n")
+	}
+	if state.Priority == PriorityBackground {
+		service.WriteString("Nice=10\nIOSchedulingClass=idle\n")
+	}
+	if state.Log != "" {
+		logPath := strings.ReplaceAll(state.Log, "%", "%%")
+		service.WriteString("StandardOutput=append:" + logPath + "\nStandardError=append:" + logPath + "\n")
+	}
+	var timer strings.Builder
+	timer.WriteString("[Unit]\nDescription=Timer for " + nativeID(state) + "\n[Timer]\n")
+	for _, expression := range state.Expressions {
+		timer.WriteString("OnCalendar=" + cronToOnCalendar(expression) + "\n")
+	}
+	if state.CatchUp {
+		timer.WriteString("Persistent=true\n")
+	}
+	timer.WriteString("Unit=" + nativeID(state) + ".service\n[Install]\nWantedBy=timers.target\n")
+	return []byte(service.String()), []byte(timer.String()), nil
+}
+
+func (manager Manager) installSystemd(ctx context.Context, configDir string, state *State, executable string) error {
+	service, timer, err := manager.renderSystemd(configDir, *state, executable)
+	if err != nil {
+		return err
+	}
+	dir := manager.systemdDir(*state)
+	if !filepath.IsAbs(dir) {
+		return errors.New("systemd unit directory must be absolute")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	base := filepath.Join(dir, nativeID(*state))
+	servicePath, timerPath := base+".service", base+".timer"
+	if err := securefile.WriteAtomic(servicePath, service); err != nil {
+		return err
+	}
+	if err := securefile.WriteAtomic(timerPath, timer); err != nil {
+		_ = os.Remove(servicePath)
+		return err
+	}
+	state.JobFile = timerPath
+	args := systemctlArguments(*state)
+	if _, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "daemon-reload")...); err != nil {
+		return err
+	}
+	if state.Enabled {
+		if state.Start {
+			args = append(args, "enable", "--now", filepath.Base(timerPath))
+		} else {
+			args = append(args, "enable", filepath.Base(timerPath))
+		}
+		_, err = manager.executor.Run(ctx, nil, "systemctl", args...)
+		return err
+	}
+	if state.Start {
+		_, err = manager.executor.Run(ctx, nil, "systemctl", append(args, "start", filepath.Base(timerPath))...)
+		return err
+	}
+	return nil
+}
+
+func (manager Manager) removeSystemd(ctx context.Context, state *State) error {
+	dir := manager.systemdDir(*state)
+	base := filepath.Join(dir, nativeID(*state))
+	args := systemctlArguments(*state)
+	_, _ = manager.executor.Run(ctx, nil, "systemctl", append(args, "disable", "--now", filepath.Base(base)+".timer")...)
+	for _, suffix := range []string{".timer", ".service"} {
+		if err := os.Remove(base + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	_, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "daemon-reload")...)
+	return err
+}
+
+func systemctlArguments(state State) []string {
+	if state.Permission == PermissionSystem {
+		return nil
+	}
+	return []string{"--user"}
+}
+
+func (manager Manager) renderWindows(configDir string, state State, executable string) ([]byte, error) {
+	args := scheduledArguments(executable, configDir, state)
+	triggers, err := windowsTriggers(state.Expressions)
+	if err != nil {
+		return nil, err
+	}
+	runLevel := "LeastPrivilege"
+	logonType := "InteractiveToken"
+	user := state.User
+	if state.Permission == PermissionSystem {
+		user = "SYSTEM"
+		runLevel = "HighestAvailable"
+		logonType = "ServiceAccount"
+	}
+	priority := "5"
+	if state.Priority == PriorityBackground {
+		priority = "7"
+	}
+	command, arguments := executable, windowsJoin(args[1:])
+	if state.Log != "" {
+		command = "powershell.exe"
+		parts := make([]string, len(args))
+		for i, arg := range args {
+			parts[i] = "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+		}
+		arguments = "-NoProfile -NonInteractive -Command & " + strings.Join(parts, " ") + " *>> '" + strings.ReplaceAll(state.Log, "'", "''") + "'"
+	}
+	content := fmt.Sprintf(`<?xml version="1.0"?>
+<Task version="1.4"><Principals><Principal><UserId>%s</UserId><LogonType>%s</LogonType><RunLevel>%s</RunLevel></Principal></Principals>
+<Triggers>%s</Triggers>
+<Settings><Priority>%s</Priority><DisallowStartIfOnBatteries>%t</DisallowStartIfOnBatteries><RunOnlyIfNetworkAvailable>%t</RunOnlyIfNetworkAvailable><Enabled>%t</Enabled></Settings>
+<Actions><Exec><Command>%s</Command><Arguments>%s</Arguments></Exec></Actions></Task>
+`, xmlText(user), logonType, runLevel, triggers, priority, state.ACPower, state.Network, state.Enabled, xmlText(command), xmlText(arguments))
+	return []byte(content), nil
+}
+
+func windowsTriggers(expressions []string) (string, error) {
+	var triggers strings.Builder
+	for _, expression := range expressions {
+		fields := strings.Fields(expression)
+		if fields[2] != "*" || fields[3] != "*" || fields[4] != "*" {
+			return "", errors.New("Windows backend currently supports portable daily/hourly calendar fields only")
+		}
+		minute, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return "", errors.New("Windows backend requires a numeric minute")
+		}
+		hour, repetition, err := windowsHour(fields[1])
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&triggers, "<CalendarTrigger><StartBoundary>2000-01-01T%02d:%02d:00</StartBoundary>%s<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>", hour, minute, repetition)
+	}
+	return triggers.String(), nil
+}
+
+func windowsHour(field string) (int, string, error) {
+	if field == "*" {
+		return 0, "<Repetition><Interval>PT1H</Interval></Repetition>", nil
+	}
+	hour, err := strconv.Atoi(field)
+	if err != nil {
+		return 0, "", errors.New("Windows backend requires a numeric hour or *")
+	}
+	return hour, "", nil
+}
+
+func windowsJoin(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for i, argument := range arguments {
+		quoted[i] = strconv.Quote(argument)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func (manager Manager) installWindows(ctx context.Context, configDir string, state *State, executable string) error {
+	definition, err := manager.renderWindows(configDir, *state, executable)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "schedules", nativeID(*state)+".xml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := securefile.WriteAtomic(path, definition); err != nil {
+		return err
+	}
+	state.JobFile = path
+	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Create", "/TN", `\resticctl\`+nativeID(*state), "/XML", path, "/F")
+	if err != nil {
+		return commandError("install Windows task", output, err)
+	}
+	if state.Start {
+		output, err = manager.executor.Run(ctx, nil, "schtasks", "/Run", "/TN", `\resticctl\`+nativeID(*state))
+		if err != nil {
+			return commandError("start Windows task", output, err)
+		}
+	}
+	return nil
+}
+
+func (manager Manager) removeWindows(ctx context.Context, state *State) error {
+	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Delete", "/TN", `\resticctl\`+nativeID(*state), "/F")
+	if err != nil {
+		return commandError("remove Windows task", output, err)
+	}
+	if state.JobFile != "" {
+		_ = os.Remove(state.JobFile)
+	}
+	return nil
+}
+
+func (manager Manager) nativeDefinition(state State) ([]byte, error) {
+	if state.JobFile == "" {
+		return nil, fmt.Errorf("%w: job file is missing", errDefinitionDrift)
+	}
+	definition, err := os.ReadFile(state.JobFile)
+	if err != nil {
+		return nil, err
+	}
+	if state.Backend == BackendSystemd {
+		service, serviceErr := os.ReadFile(strings.TrimSuffix(state.JobFile, ".timer") + ".service")
+		if serviceErr != nil {
+			return nil, serviceErr
+		}
+		definition = append(service, definition...)
+	}
+	return definition, nil
+}
+
+func (manager Manager) verifyNative(ctx context.Context, state State) error {
+	if _, err := manager.nativeDefinition(state); err != nil {
+		return fmt.Errorf("%w: %v", ErrDrift, err)
+	}
+	if state.Backend == BackendSystemd {
+		args := systemctlArguments(state)
+		_, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "status", filepath.Base(state.JobFile))...)
+		return err
+	}
+	_, err := manager.executor.Run(ctx, nil, "schtasks", "/Query", "/TN", `\resticctl\`+nativeID(state))
+	return err
+}

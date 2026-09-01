@@ -9,6 +9,9 @@ import (
 )
 
 func (manager Manager) installCron(ctx context.Context, state State, executable, configDir string) error {
+	if state.CronFile != "" {
+		return manager.installCronFile(state, executable, configDir)
+	}
 	current, err := manager.crontab(ctx)
 	if err != nil {
 		return err
@@ -17,25 +20,14 @@ func (manager Manager) installCron(ctx context.Context, state State, executable,
 	if err != nil {
 		return err
 	}
-	arguments := manager.jobArguments(executable, configDir, state)
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		if strings.ContainsAny(argument, "\r\n\x00") {
-			return errors.New("scheduled command path contains an invalid character")
-		}
-		quoted[index] = strings.ReplaceAll(shellQuote(argument), "%", "\\%")
+	entry, err := manager.renderCron(state, executable, configDir)
+	if err != nil {
+		return err
 	}
-	begin, end := cronMarkers(state.Profile, state.Action)
-	command := strings.Join(quoted, " ")
-	entry := begin + "\n" + state.Expression + " " + command + "\n"
-	if state.CatchUp {
-		entry += "@reboot " + command + "\n"
-	}
-	entry += end + "\n"
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		current += "\n"
 	}
-	output, err := manager.executor.Run(ctx, []byte(current+entry), "crontab", "-")
+	output, err := manager.executor.Run(ctx, append([]byte(current), entry...), "crontab", "-")
 	if err != nil {
 		return commandError("install crontab", output, err)
 	}
@@ -43,6 +35,7 @@ func (manager Manager) installCron(ctx context.Context, state State, executable,
 }
 
 func (manager Manager) removeCron(ctx context.Context, name, action string) error {
+	// Explicit files are removed through state-aware removal.
 	current, err := manager.crontab(ctx)
 	if err != nil {
 		return err
@@ -137,7 +130,7 @@ func cronJobDefinition(content string, state State) (string, error) {
 			definition.WriteString(trimmed)
 			definition.WriteByte('\n')
 			inJob = false
-		case inJob && strings.HasPrefix(trimmed, state.Expression+" "):
+		case inJob && matchesExpression(trimmed, state.Expressions):
 			expressionFound = true
 			definition.WriteString(trimmed)
 			definition.WriteByte('\n')
@@ -156,6 +149,15 @@ func cronJobDefinition(content string, state State) (string, error) {
 		return "", fmt.Errorf("crontab job does not contain expression %q", state.Expression)
 	}
 	return definition.String(), nil
+}
+
+func matchesExpression(line string, expressions []string) bool {
+	for _, expression := range expressions {
+		if strings.HasPrefix(line, expression+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func commandError(action string, output []byte, err error) error {

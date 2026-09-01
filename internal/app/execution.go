@@ -63,14 +63,61 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 	} else if !errors.Is(statusErr, runstatus.ErrNotRecorded) {
 		return false, statusErr
 	}
-	due, err := cronexpr.Due(state.Expression, lastSuccess, now())
+	due := true
+	if state.CatchUp {
+		due, err = cronexpr.Due(state.Expression, lastSuccess, now())
+		for _, expression := range state.Expressions[1:] {
+			otherDue, otherErr := cronexpr.Due(expression, lastSuccess, now())
+			if otherErr != nil {
+				return false, otherErr
+			}
+			due = due || otherDue
+		}
+	}
 	if err != nil || !due {
 		return due, err
 	}
-	if action == schedule.ActionForget {
-		return true, RunForget(ctx, newRunner, configDir, backupProfile, false, state.Prune, now)
+	runner, err := newRunner()
+	if err != nil {
+		return true, err
 	}
-	return true, RunBackup(ctx, newRunner, configDir, backupProfile, false, output, now)
+	run := func() error {
+		switch action {
+		case schedule.ActionBackup:
+			return Backup(ctx, runner, backupProfile, false, output)
+		case schedule.ActionForget:
+			return Forget(ctx, runner, backupProfile, false, state.Prune)
+		case schedule.ActionCheck:
+			return Check(ctx, runner, backupProfile)
+		case schedule.ActionPrune:
+			return RunRestic(ctx, runner, backupProfile, "prune", nil)
+		case schedule.ActionCopy:
+			return RunRestic(ctx, runner, backupProfile, "copy", nil)
+		default:
+			return scheduleActionError(action)
+		}
+	}
+	return true, recordScheduledRun(ctx, configDir, backupProfile.Name, action, state, now, run)
+}
+
+func recordScheduledRun(ctx context.Context, configDir, name, action string, state schedule.State, now func() time.Time, run func() error) error {
+	if state.LockMode != schedule.LockWait {
+		return recordRun(configDir, name, action, now, run)
+	}
+	wait, err := time.ParseDuration(state.LockWait)
+	if err != nil {
+		return err
+	}
+	recorder, err := runstatus.BeginActionWait(ctx, configDir, name, action, now(), wait)
+	if err != nil {
+		return err
+	}
+	runErr := run()
+	return errors.Join(runErr, recorder.Finish(runErr, now()))
+}
+
+func scheduleActionError(action string) error {
+	return errors.New("unsupported scheduled action " + action)
 }
 
 func recordRun(configDir, name, action string, now func() time.Time, run func() error) error {

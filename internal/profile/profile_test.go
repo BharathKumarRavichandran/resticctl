@@ -461,7 +461,7 @@ func TestLoadRejectsBothForgetScheduleFields(t *testing.T) {
 
 func TestLoadRejectsInvalidSchedule(t *testing.T) {
 	for _, configuredSchedule := range []string{
-		`{"backend":"systemd","cron":"0 2 * * *"}`,
+		`{"backend":"bogus","cron":"0 2 * * *"}`,
 		`{"backend":"auto","cron":"99 2 * * *"}`,
 	} {
 		t.Run(configuredSchedule, func(t *testing.T) {
