@@ -80,7 +80,8 @@
             "executable": "mongodump",
             "config_file": "mongo-backup.yml",
             "args": [],
-            "collection": ""
+            "collection": "",
+            "exclude_collections": []
         }
       ],
       "mysql": [

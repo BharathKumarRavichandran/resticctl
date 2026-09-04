@@ -420,13 +420,22 @@ func validateExternalDatabases(p *Profile, base string) error {
 		if db.Collection != "" && db.Database == "" {
 			return fmt.Errorf("MongoDB collection requires a database: %s", db.Name)
 		}
+		if len(db.ExcludeCollections) > 0 && db.Database == "" {
+			return fmt.Errorf("MongoDB exclude_collections require a database: %s", db.Name)
+		}
+		if db.Collection != "" && len(db.ExcludeCollections) > 0 {
+			return fmt.Errorf("MongoDB database %s must not set both collection and exclude_collections", db.Name)
+		}
 		if strings.ContainsRune(db.Collection, 0) {
 			return fmt.Errorf("invalid MongoDB collection for %s", db.Name)
 		}
-		if db.Collection != "" && containsAnyOption(db.Args, "--oplog", "--excludeCollection", "--excludeCollectionsWithPrefix", "--query", "-q", "--queryFile") {
-			return fmt.Errorf("MongoDB collection for %s cannot be combined with other selection options", db.Name)
+		if err := validateNames("MongoDB excluded collection", db.Name, db.ExcludeCollections); err != nil {
+			return err
 		}
-		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d", "--collection", "-c"); err != nil {
+		if (db.Collection != "" || len(db.ExcludeCollections) > 0) && containsAnyOption(db.Args, "--oplog", "--excludeCollectionsWithPrefix", "--query", "-q", "--queryFile") {
+			return fmt.Errorf("MongoDB selection for %s cannot be combined with other selection options", db.Name)
+		}
+		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d", "--collection", "-c", "--excludeCollection"); err != nil {
 			return err
 		}
 		if db.ConfigFile != "" {
@@ -480,10 +489,15 @@ func validateExternalDatabases(p *Profile, base string) error {
 }
 
 func validateNames(kind, database string, values []string) error {
+	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		if value == "" || strings.ContainsRune(value, 0) {
 			return fmt.Errorf("invalid %s for %s: %q", kind, database, value)
 		}
+		if _, exists := seen[value]; exists {
+			return fmt.Errorf("duplicate %s for %s: %q", kind, database, value)
+		}
+		seen[value] = struct{}{}
 	}
 	return nil
 }

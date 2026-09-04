@@ -145,6 +145,29 @@ func TestMongoDBStagesSelectedCollection(t *testing.T) {
 	}
 }
 
+func TestMongoDBStagesDatabaseWithExcludedCollections(t *testing.T) {
+	runner := &fakeRunner{}
+	directory := t.TempDir()
+	db := profile.MongoDBDatabase{
+		Name: "events", Database: "events", Executable: "mongodump",
+		ExcludeCollections: []string{"temporary", "cache"},
+	}
+	if err := (MongoDB{Database: db}).Stage(context.Background(), runner, directory, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %#v", runner.calls)
+	}
+	args := runner.calls[0].args
+	if !containsSequence(args, []string{"--db", "events", "--excludeCollection", "temporary", "--excludeCollection", "cache"}) {
+		t.Fatalf("args = %#v", args)
+	}
+	manifest, err := os.ReadFile(filepath.Join(directory, "databases", "events.selection.json"))
+	if err != nil || !strings.Contains(string(manifest), `"kind": "exclude_collections"`) || !strings.Contains(string(manifest), `"cache"`) {
+		t.Fatalf("selection manifest = %q, %v", manifest, err)
+	}
+}
+
 func TestMySQLStagesRemoteDatabaseWithPrivateCredentials(t *testing.T) {
 	runner := &mysqlRunner{}
 	directory := t.TempDir()

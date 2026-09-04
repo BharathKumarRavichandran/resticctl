@@ -162,6 +162,7 @@ installed on the machine running `resticctl`:
       "host": "mongo.example.net",
       "config_file": "mongo-backup.yml",
       "collection": "activity",
+      "exclude_collections": [],
       "args": []
     }],
     "mysql": [{
@@ -739,19 +740,23 @@ soon as the dump exits. Use `socket` for a Unix socket, or `host` and optional
 `port` for TCP; `host` and `socket` are mutually exclusive. PostgreSQL
 `table_patterns` use `pg_dump` pattern semantics. MySQL/MariaDB `tables` contain
 literal table names. MongoDB `collection` limits an entry to one named
-collection. Empty or omitted selection fields dump the whole configured
-database. Routines, events, and triggers are excluded from MySQL/MariaDB dumps
-unless their corresponding booleans are enabled.
+collection, while `exclude_collections` dumps the database in one invocation
+but omits the listed collections. These fields are mutually exclusive. Empty
+or omitted selection fields dump the whole configured database. Routines,
+events, and triggers are excluded from MySQL/MariaDB dumps unless their
+corresponding booleans are enabled.
 
 `pg_dump` provides a transactionally consistent view of one PostgreSQL
 database, but globals are dumped separately and are not atomic with it.
 Selected PostgreSQL table patterns might not include dependent objects needed
-for an independent restore. A selected MongoDB collection cannot be combined
-with `--oplog` or other selection arguments. Configure separately named MongoDB
-entries for separate collections so each dump has an explicit artifact and
-consistency boundary. Partial dumps include a sibling
-`databases/<name>.selection.json` manifest recording their provider, database,
+for an independent restore. MongoDB `collection` and `exclude_collections`
+cannot be combined with `--oplog` or other selection arguments. Configure
+separately named MongoDB entries for separate included collections so each dump
+has an explicit artifact and consistency boundary. Partial dumps include a
+sibling `databases/<name>.selection.json` manifest when selection is configured
+through these first-class fields. The manifest records the provider, database,
 and configured selection.
+
 `mongodump` consistency depends on deployment topology: use `--oplog` for a
 replica set when a point-in-time dump is required, and consult MongoDB's
 requirements and restrictions for sharded clusters. `resticctl` does not

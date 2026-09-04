@@ -115,8 +115,14 @@ func TestLoadRejectsInvalidDatabaseSelectors(t *testing.T) {
 		"empty PostgreSQL table":               `"postgresql_databases":[{"name":"app","database":"app","table_patterns":[""]}]`,
 		"PostgreSQL table argument":            `"postgresql_databases":[{"name":"app","database":"app","table_patterns":["users"],"args":["--exclude-table=audit"]}]`,
 		"collection without database":          `"mongodb_databases":[{"name":"events","collection":"activity"}]`,
+		"exclusions without database":          `"mongodb_databases":[{"name":"events","exclude_collections":["cache"]}]`,
+		"collection and exclusions":            `"mongodb_databases":[{"name":"events","database":"events","collection":"activity","exclude_collections":["cache"]}]`,
+		"empty excluded collection":            `"mongodb_databases":[{"name":"events","database":"events","exclude_collections":[""]}]`,
+		"duplicate excluded collection":        `"mongodb_databases":[{"name":"events","database":"events","exclude_collections":["cache","cache"]}]`,
 		"MongoDB collection selector conflict": `"mongodb_databases":[{"name":"events","database":"events","args":["--collection=activity"]}]`,
+		"MongoDB exclusion argument":           `"mongodb_databases":[{"name":"events","database":"events","args":["--excludeCollection=cache"]}]`,
 		"MongoDB collection with oplog":        `"mongodb_databases":[{"name":"events","database":"events","collection":"activity","args":["--oplog=true"]}]`,
+		"MongoDB exclusions with oplog":        `"mongodb_databases":[{"name":"events","database":"events","exclude_collections":["cache"],"args":["--oplog"]}]`,
 	}
 	for name, configured := range tests {
 		t.Run(name, func(t *testing.T) {

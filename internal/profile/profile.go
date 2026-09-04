@@ -24,14 +24,15 @@ type PostgreSQLDatabase struct {
 }
 
 type MongoDBDatabase struct {
-	Name       string   `json:"name"`
-	Database   string   `json:"database,omitempty"`
-	Host       string   `json:"host,omitempty"`
-	Port       int      `json:"port,omitempty"`
-	Executable string   `json:"executable,omitempty"`
-	ConfigFile string   `json:"config_file,omitempty"`
-	Args       []string `json:"args,omitempty"`
-	Collection string   `json:"collection,omitempty"`
+	Name               string   `json:"name"`
+	Database           string   `json:"database,omitempty"`
+	Host               string   `json:"host,omitempty"`
+	Port               int      `json:"port,omitempty"`
+	Executable         string   `json:"executable,omitempty"`
+	ConfigFile         string   `json:"config_file,omitempty"`
+	Args               []string `json:"args,omitempty"`
+	Collection         string   `json:"collection,omitempty"`
+	ExcludeCollections []string `json:"exclude_collections,omitempty"`
 }
 
 type MySQLDatabase struct {

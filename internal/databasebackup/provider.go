@@ -155,6 +155,9 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 	if db.Collection != "" {
 		args = append(args, "--collection", db.Collection)
 	}
+	for _, collection := range db.ExcludeCollections {
+		args = append(args, "--excludeCollection", collection)
+	}
 	args = append(args, db.Args...)
 	if err := runner.RunDatabase(ctx, args, environment, directory); err != nil {
 		return fmt.Errorf("dump MongoDB database %s: %w", db.Name, err)
@@ -167,6 +170,10 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 	}
 	if db.Collection != "" {
 		if err := writeSelectionManifest(directory, db.Name, "mongodb", db.Database, "collection", []string{db.Collection}); err != nil {
+			return fmt.Errorf("record MongoDB selection %s: %w", db.Name, err)
+		}
+	} else if len(db.ExcludeCollections) > 0 {
+		if err := writeSelectionManifest(directory, db.Name, "mongodb", db.Database, "exclude_collections", db.ExcludeCollections); err != nil {
 			return fmt.Errorf("record MongoDB selection %s: %w", db.Name, err)
 		}
 	}
