@@ -317,8 +317,11 @@ resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
 resticctl status <profile> [--action backup|check|forget|prune|copy] [--history N] [--json]
 resticctl schedule install <profile> [backup|check|forget|prune|copy] [--calendar "<expression>" ...] [--backend auto|cron|launchd|systemd|windows] [--catch-up] [--dry-run]
+resticctl schedule reconcile <profile> [--dry-run]
+resticctl schedule reconcile --all [--dry-run]
+resticctl schedule list [profile] [--json]
 resticctl schedule status <profile> [backup|check|forget|prune|copy] [--json]
-resticctl schedule remove <profile> [backup|check|forget|prune|copy]
+resticctl schedule remove <profile> [backup|check|forget|prune|copy] [--dry-run]
 resticctl run <profile> <restic-command> [args...]
 resticctl completion <shell>
 ```
@@ -443,11 +446,26 @@ The schedule can instead be declared in the profile:
 }
 ```
 
-Then install or reconcile the generated scheduler job with:
+Then install the generated scheduler job with:
 
 ```sh
 resticctl schedule install <profile>
 ```
+
+Reconcile every schedule declared by one profile, or by every discovered
+profile, with:
+
+```sh
+resticctl schedule reconcile <profile>
+resticctl schedule reconcile --all
+```
+
+Reconciliation installs or updates the declared backup and forget schedules.
+It also removes a previously installed backup or forget schedule when the
+corresponding profile object has been removed. Use `--dry-run` to render jobs
+and report removals without changing scheduler or state files. Scheduler policy
+set during installation, such as permission, logging, locking, and activation,
+is preserved when the profile schedule is reconciled.
 
 Explicit command flags override the corresponding profile values.
 
@@ -512,13 +530,17 @@ run a new backup or retention operation merely because no prior status exists.
 Inspect or remove the schedule with:
 
 ```sh
+resticctl schedule list [profile] [--json]
 resticctl schedule status <profile>
 resticctl schedule remove <profile>
+resticctl schedule uninstall <profile>
 ```
 
 `schedule status` verifies that the recorded cron entry or loaded launchd job
 still exists and reports drift instead of trusting its state file alone. Run
 `schedule install` again to reconcile a missing or edited job.
+`schedule list` verifies every recorded job and reports each as `ok` or
+`drift`. `uninstall` is an alias for `remove`, and removal supports `--dry-run`.
 
 Generated jobs contain only the absolute resticctl path, configuration
 directory, profile name, and scheduled action. Repository and database

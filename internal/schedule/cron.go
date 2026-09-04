@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -61,6 +62,28 @@ func (manager Manager) crontab(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return "", commandError("read crontab", output, err)
+}
+
+func (manager Manager) cronDefinition(ctx context.Context, state State) ([]byte, error) {
+	var current string
+	var err error
+	if state.CronFile != "" {
+		data, readErr := os.ReadFile(state.CronFile)
+		current, err = string(data), readErr
+	} else {
+		current, err = manager.crontab(ctx)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: crontab file is missing: %s", errDefinitionDrift, state.CronFile)
+		}
+		return nil, err
+	}
+	definition, err := cronJobDefinition(current, state)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errDefinitionDrift, err)
+	}
+	return []byte(definition), nil
 }
 
 func isNoCrontab(exitCode int, output []byte) bool {

@@ -12,7 +12,7 @@ import (
 	"resticctl/internal/securefile"
 )
 
-func (manager Manager) installLaunchd(ctx context.Context, configDir string, state State, fields []string, executable string) (string, error) {
+func (manager Manager) installLaunchd(ctx context.Context, configDir string, state State, executable string) (string, error) {
 	content, err := manager.renderLaunchd(configDir, state, executable)
 	if err != nil {
 		return "", err
@@ -44,6 +44,33 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 		_ = os.Remove(legacyPath)
 	}
 	return path, nil
+}
+
+func (manager Manager) verifyLaunchd(ctx context.Context, state State) error {
+	domain := "gui/" + strconv.Itoa(manager.uid)
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
+	}
+	return nil
+}
+
+func (manager Manager) launchdDefinition(state State) ([]byte, error) {
+	jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(jobFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: launchd job file is missing: %s", errDefinitionDrift, jobFile)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cannot inspect launchd job %s: %w", jobFile, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: launchd job is not a regular file: %s", errDefinitionDrift, jobFile)
+	}
+	return os.ReadFile(jobFile)
 }
 
 func (manager Manager) renderLaunchd(configDir string, state State, executable string) ([]byte, error) {

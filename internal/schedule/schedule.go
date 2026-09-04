@@ -146,7 +146,6 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		}
 	}
 	normalized := normalizedExpressions[0]
-	fields := strings.Fields(normalized)
 	backend, err = manager.resolveBackend(backend)
 	if err != nil {
 		return State{}, err
@@ -161,9 +160,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	}
 	var existing *State
 	if !spec.DryRun {
-		if installed, loadErr := LoadAction(configDir, name, action); loadErr == nil && installed.Backend != backend {
-			return State{}, fmt.Errorf("profile already has a %s schedule; remove it before switching backends", installed.Backend)
-		} else if loadErr == nil {
+		if installed, loadErr := LoadAction(configDir, name, action); loadErr == nil {
 			existing = &installed
 		} else if loadErr != nil && !errors.Is(loadErr, ErrNotInstalled) {
 			return State{}, loadErr
@@ -181,82 +178,74 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		if err != nil {
 			return State{}, err
 		}
+	} else if backend == BackendSystemd {
+		state.JobFile = filepath.Join(manager.systemdDir(state), nativeID(state)+".timer")
+	} else if backend == BackendWindows {
+		state.JobFile = filepath.Join(configDir, "schedules", nativeID(state)+".xml")
 	}
 	if spec.DryRun {
 		definition, renderErr := manager.render(configDir, state, executable)
 		state.Rendered = string(definition)
 		return state, renderErr
 	}
-	err = manager.apply(ctx, configDir, &state, fields, executable)
-	if err != nil {
-		if existing != nil {
-			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
+	switchedBackend := existing != nil && existing.Backend != state.Backend
+	if switchedBackend {
+		if err := manager.removeApplied(ctx, configDir, *existing); err != nil {
+			return State{}, fmt.Errorf("cannot remove previous %s schedule: %w", existing.Backend, err)
+		}
+	}
+	rollbackCtx := context.WithoutCancel(ctx)
+	rollback := func(cause error) error {
+		if existing == nil {
+			return errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state), removeState(configDir, name, action))
+		}
+		if switchedBackend {
+			cause = errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state))
+		}
+		return errors.Join(cause, manager.restore(rollbackCtx, configDir, *existing, executable), writeState(configDir, *existing))
+	}
+	if err := writeState(configDir, state); err != nil {
+		if switchedBackend {
+			err = errors.Join(err, manager.restore(rollbackCtx, configDir, *existing, executable))
 		}
 		return State{}, err
+	}
+	err = manager.apply(ctx, configDir, &state, executable)
+	if err != nil {
+		return State{}, rollback(err)
 	}
 	definition, err := manager.installedDefinition(ctx, state)
 	if err != nil {
-		if existing != nil {
-			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
-		} else {
-			err = errors.Join(err, manager.removeApplied(ctx, configDir, state))
-		}
-		return State{}, err
+		return State{}, rollback(err)
 	}
 	state.DefinitionHash = definitionHash(definition)
 	if err := writeState(configDir, state); err != nil {
-		if existing != nil {
-			err = errors.Join(err, manager.restore(ctx, configDir, *existing, executable))
-		} else {
-			err = errors.Join(err, manager.removeApplied(ctx, configDir, state))
-		}
-		return State{}, err
+		return State{}, rollback(err)
 	}
 	return state, nil
 }
 
-func (manager Manager) apply(ctx context.Context, configDir string, state *State, fields []string, executable string) error {
-	if state.Backend == BackendCron {
-		return manager.installCron(ctx, *state, executable, configDir)
+func (manager Manager) apply(ctx context.Context, configDir string, state *State, executable string) error {
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return err
 	}
-	if state.Backend == BackendSystemd {
-		return manager.installSystemd(ctx, configDir, state, executable)
-	}
-	if state.Backend == BackendWindows {
-		return manager.installWindows(ctx, configDir, state, executable)
-	}
-	jobFile, err := manager.installLaunchd(ctx, configDir, *state, fields, executable)
-	state.JobFile = jobFile
-	return err
+	return backend.install(ctx, configDir, state, executable)
 }
 
 func (manager Manager) restore(ctx context.Context, configDir string, state State, executable string) error {
-	fields, err := cronexpr.Fields(state.Expression)
-	if err != nil {
-		return fmt.Errorf("cannot restore previous schedule: %w", err)
-	}
-	if err := manager.apply(ctx, configDir, &state, fields, executable); err != nil {
+	if err := manager.apply(ctx, configDir, &state, executable); err != nil {
 		return fmt.Errorf("cannot restore previous schedule: %w", err)
 	}
 	return nil
 }
 
 func (manager Manager) removeApplied(ctx context.Context, configDir string, state State) error {
-	switch state.Backend {
-	case BackendCron:
-		if state.CronFile != "" {
-			return removeCronFile(state.CronFile, state.Profile, state.Action)
-		}
-		return manager.removeCron(ctx, state.Profile, state.Action)
-	case BackendLaunchd:
-		return manager.removeLaunchd(ctx, configDir, state)
-	case BackendSystemd:
-		return manager.removeSystemd(ctx, &state)
-	case BackendWindows:
-		return manager.removeWindows(ctx, &state)
-	default:
-		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return err
 	}
+	return backend.remove(ctx, configDir, &state)
 }
 
 func (manager Manager) Remove(ctx context.Context, configDir, name string) error {
@@ -268,22 +257,11 @@ func (manager Manager) RemoveAction(ctx context.Context, configDir, name, action
 	if err != nil {
 		return err
 	}
-	switch state.Backend {
-	case BackendCron:
-		if state.CronFile != "" {
-			err = removeCronFile(state.CronFile, name, action)
-		} else {
-			err = manager.removeCron(ctx, name, action)
-		}
-	case BackendLaunchd:
-		err = manager.removeLaunchd(ctx, configDir, state)
-	case BackendSystemd:
-		err = manager.removeSystemd(ctx, &state)
-	case BackendWindows:
-		err = manager.removeWindows(ctx, &state)
-	default:
-		err = fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return err
 	}
+	err = backend.remove(ctx, configDir, &state)
 	if err != nil {
 		return err
 	}
@@ -305,64 +283,19 @@ func (manager Manager) Verify(ctx context.Context, state State) error {
 	if state.DefinitionHash != "" && definitionHash(definition) != state.DefinitionHash {
 		return fmt.Errorf("%w: scheduler job content changed", ErrDrift)
 	}
-	switch state.Backend {
-	case BackendCron:
-		return nil
-	case BackendLaunchd:
-		domain := "gui/" + strconv.Itoa(manager.uid)
-		output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
-		}
-		return nil
-	case BackendSystemd, BackendWindows:
-		return manager.verifyNative(ctx, state)
-	default:
-		return fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return err
 	}
+	return backend.verify(ctx, state)
 }
 
 func (manager Manager) installedDefinition(ctx context.Context, state State) ([]byte, error) {
-	switch state.Backend {
-	case BackendCron:
-		var current string
-		var err error
-		if state.CronFile != "" {
-			var data []byte
-			data, err = os.ReadFile(state.CronFile)
-			current = string(data)
-		} else {
-			current, err = manager.crontab(ctx)
-		}
-		if err != nil {
-			return nil, err
-		}
-		definition, err := cronJobDefinition(current, state)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", errDefinitionDrift, err)
-		}
-		return []byte(definition), nil
-	case BackendLaunchd:
-		jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
-		if err != nil {
-			return nil, err
-		}
-		info, err := os.Stat(jobFile)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: launchd job file is missing: %s", errDefinitionDrift, jobFile)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("cannot inspect launchd job %s: %w", jobFile, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("%w: launchd job is not a regular file: %s", errDefinitionDrift, jobFile)
-		}
-		return os.ReadFile(jobFile)
-	case BackendSystemd, BackendWindows:
-		return manager.nativeDefinition(state)
-	default:
-		return nil, fmt.Errorf("unsupported recorded schedule backend %q", state.Backend)
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return nil, err
 	}
+	return backend.definition(ctx, state)
 }
 
 func definitionHash(definition []byte) string {

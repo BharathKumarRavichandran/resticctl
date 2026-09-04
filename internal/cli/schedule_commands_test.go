@@ -293,6 +293,102 @@ func TestScheduledForgetUsesProfileAliasAndPrune(t *testing.T) {
 	}
 }
 
+func TestScheduleReconcileAllListAndDryRunRemoval(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	setCLIProfileSchedule(t, directory, &profile.Schedule{Cron: "0 2 * * *", Backend: "cron", CatchUp: true})
+	setCLIProfileForget(t, directory, &profile.ForgetSchedule{Cron: "@weekly", Backend: "cron", Prune: true})
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	var output bytes.Buffer
+	cli := newTestCommandLine(&output, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	statusCode, err := cli.run(context.Background(), []string{"schedule", "reconcile", "--all", "--dry-run", "--config-dir", directory})
+	if err != nil || statusCode != 0 {
+		t.Fatalf("dry-run reconcile status=%d error=%v", statusCode, err)
+	}
+	if executor.crontab != "" || !strings.Contains(output.String(), "# example backup") || !strings.Contains(output.String(), "# example forget") {
+		t.Fatalf("dry-run output=%q crontab=%q", output.String(), executor.crontab)
+	}
+
+	output.Reset()
+	statusCode, err = cli.run(context.Background(), []string{"schedule", "reconcile", "--all", "--config-dir", directory})
+	if err != nil || statusCode != 0 {
+		t.Fatalf("reconcile status=%d error=%v", statusCode, err)
+	}
+	for _, marker := range []string{"resticctl:example:begin", "resticctl:example:forget:begin"} {
+		if !strings.Contains(executor.crontab, marker) {
+			t.Fatalf("crontab does not contain %q:\n%s", marker, executor.crontab)
+		}
+	}
+
+	output.Reset()
+	statusCode, err = cli.run(context.Background(), []string{"schedule", "list", "example", "--json", "--config-dir", directory})
+	if err != nil || statusCode != 0 {
+		t.Fatalf("list status=%d error=%v", statusCode, err)
+	}
+	var listed []scheduleListItem
+	if err := json.Unmarshal(output.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 || listed[0].Schedule.Action != schedule.ActionBackup || listed[1].Schedule.Action != schedule.ActionForget || listed[0].Status != "ok" || listed[1].Status != "ok" {
+		t.Fatalf("listed schedules = %#v", listed)
+	}
+
+	output.Reset()
+	statusCode, err = cli.run(context.Background(), []string{"schedule", "uninstall", "example", "forget", "--dry-run", "--config-dir", directory})
+	if err != nil || statusCode != 0 || !strings.Contains(output.String(), "Would remove forget") {
+		t.Fatalf("dry-run removal status=%d error=%v output=%q", statusCode, err, output.String())
+	}
+	if !strings.Contains(executor.crontab, "resticctl:example:forget:begin") {
+		t.Fatal("dry-run removal changed the crontab")
+	}
+
+	setCLIProfileForget(t, directory, nil)
+	output.Reset()
+	statusCode, err = cli.run(context.Background(), []string{"schedule", "reconcile", "example", "--config-dir", directory})
+	if err != nil || statusCode != 0 {
+		t.Fatalf("reconcile removal status=%d error=%v", statusCode, err)
+	}
+	if strings.Contains(executor.crontab, "resticctl:example:forget:begin") {
+		t.Fatal("reconcile retained an undeclared forget schedule")
+	}
+}
+
+func TestScheduleReconcilePreservesInstalledPolicy(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	setCLIProfileSchedule(t, directory, &profile.Schedule{Cron: "0 3 * * *", Backend: "cron"})
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	installed, err := manager.InstallSpec(context.Background(), schedule.Spec{
+		Name: "example", Action: schedule.ActionBackup, Backend: schedule.BackendCron,
+		Executable: "/usr/local/bin/resticctl", ConfigDir: directory, Expressions: []string{"0 2 * * *"},
+		Permission: schedule.PermissionUser, Priority: schedule.PriorityBackground,
+		Log: filepath.Join(directory, "schedule.log"), LockMode: schedule.LockWait, LockWait: "2m",
+		Enabled: false, Start: false, Network: true, ACPower: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+	statusCode, err := cli.run(context.Background(), []string{"schedule", "reconcile", "example", "--config-dir", directory})
+	if err != nil || statusCode != 0 {
+		t.Fatalf("reconcile status=%d error=%v", statusCode, err)
+	}
+	reconciled, err := schedule.Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.Expression != "0 3 * * *" || reconciled.Priority != installed.Priority || reconciled.Log != installed.Log || reconciled.LockMode != installed.LockMode || reconciled.LockWait != installed.LockWait || reconciled.Enabled != installed.Enabled || reconciled.Start != installed.Start || reconciled.Network != installed.Network || reconciled.ACPower != installed.ACPower {
+		t.Fatalf("reconciled state = %#v; installed state = %#v", reconciled, installed)
+	}
+}
+
 func newCronManager(executor schedule.Executor, now func() time.Time) schedule.Manager {
 	return schedule.NewManager(
 		schedule.WithExecutor(executor),

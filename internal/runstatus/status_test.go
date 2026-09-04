@@ -77,6 +77,30 @@ func TestRecorderRejectsOverlappingActions(t *testing.T) {
 	}
 }
 
+func TestRecorderStoresEachSupportedActionIndependently(t *testing.T) {
+	directory := t.TempDir()
+	actions := []string{"backup", "check", "forget", "prune", "copy"}
+	for index, action := range actions {
+		started := time.Unix(int64(index), 0)
+		recorder, err := BeginAction(directory, "example", action, started)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recorder.Finish(nil, started.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, action := range actions {
+		status, err := LoadAction(directory, "example", action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Action != action || status.Command != action || status.State != "succeeded" {
+			t.Fatalf("%s status = %#v", action, status)
+		}
+	}
+}
+
 func TestLoadReportsMissingStatus(t *testing.T) {
 	_, err := Load(t.TempDir(), "example")
 	if !errors.Is(err, ErrNotRecorded) {

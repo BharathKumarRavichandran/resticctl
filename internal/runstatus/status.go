@@ -13,8 +13,8 @@ import (
 	"resticctl/internal/securefile"
 )
 
-var ErrNotRecorded = errors.New("backup status has not been recorded")
-var ErrLocked = errors.New("backup is already running for this profile")
+var ErrNotRecorded = errors.New("run status has not been recorded")
+var ErrLocked = errors.New("another action is already running for this profile")
 
 type Status struct {
 	Profile       string      `json:"profile"`
@@ -186,14 +186,14 @@ func LoadAction(configDir, name, action string) (Status, error) {
 		return Status{}, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
 	if err != nil {
-		return Status{}, fmt.Errorf("cannot read backup status %s: %w", path, err)
+		return Status{}, fmt.Errorf("cannot read run status %s: %w", path, err)
 	}
 	var status Status
 	if err := json.Unmarshal(data, &status); err != nil {
-		return Status{}, fmt.Errorf("cannot decode backup status %s: %w", path, err)
+		return Status{}, fmt.Errorf("cannot decode run status %s: %w", path, err)
 	}
 	if status.Profile != name {
-		return Status{}, fmt.Errorf("backup status %s has profile %q, expected %q", path, status.Profile, name)
+		return Status{}, fmt.Errorf("run status %s has profile %q, expected %q", path, status.Profile, name)
 	}
 	if status.Action == "" {
 		status.Action = "backup"
@@ -202,13 +202,13 @@ func LoadAction(configDir, name, action string) (Status, error) {
 		status.Command = status.Action
 	}
 	if status.Action != action {
-		return Status{}, fmt.Errorf("backup status %s has action %q, expected %q", path, status.Action, action)
+		return Status{}, fmt.Errorf("run status %s has action %q, expected %q", path, status.Action, action)
 	}
 	if status.State != "running" && status.State != "succeeded" && status.State != "warning" && status.State != "failed" && status.State != "cancelled" {
-		return Status{}, fmt.Errorf("backup status %s has invalid state %q", path, status.State)
+		return Status{}, fmt.Errorf("run status %s has invalid state %q", path, status.State)
 	}
 	if status.StartedAt.IsZero() {
-		return Status{}, fmt.Errorf("backup status %s has no start time", path)
+		return Status{}, fmt.Errorf("run status %s has no start time", path)
 	}
 	return status, nil
 }
@@ -310,11 +310,11 @@ func validateAction(action string) error {
 func write(path string, status Status) error {
 	data, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
-		return fmt.Errorf("cannot encode backup status: %w", err)
+		return fmt.Errorf("cannot encode run status: %w", err)
 	}
 	data = append(data, '\n')
 	if err := securefile.WriteAtomic(path, data); err != nil {
-		return fmt.Errorf("cannot write backup status %s: %w", path, err)
+		return fmt.Errorf("cannot write run status %s: %w", path, err)
 	}
 	return nil
 }

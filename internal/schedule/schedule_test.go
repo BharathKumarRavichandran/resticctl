@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -24,10 +25,15 @@ type fakeExecutor struct {
 	crontabError    error
 	launchctlOutput []byte
 	launchctlError  error
+	callback        func(execution)
 }
 
 func (executor *fakeExecutor) Run(_ context.Context, input []byte, name string, arguments ...string) ([]byte, error) {
-	executor.executions = append(executor.executions, execution{input: string(input), name: name, arguments: append([]string(nil), arguments...)})
+	current := execution{input: string(input), name: name, arguments: append([]string(nil), arguments...)}
+	executor.executions = append(executor.executions, current)
+	if executor.callback != nil {
+		executor.callback(current)
+	}
 	if name == "crontab" && slices.Equal(arguments, []string{"-l"}) {
 		if executor.crontabError != nil {
 			return []byte("permission denied"), executor.crontabError
@@ -141,6 +147,34 @@ func TestLaunchdInstallRendersPrivatePlist(t *testing.T) {
 	}
 }
 
+func TestInstallPublishesStateBeforeLaunchdActivation(t *testing.T) {
+	directory := t.TempDir()
+	var activationErr error
+	activated := false
+	executor := &fakeExecutor{}
+	executor.callback = func(current execution) {
+		if current.name != "launchctl" || !slices.Contains(current.arguments, "bootstrap") {
+			return
+		}
+		activated = true
+		_, activationErr = Load(directory, "example")
+	}
+	manager := Manager{
+		executor: executor, goos: "darwin", uid: 501,
+		launchAgentsDir: filepath.Join(directory, "Library", "LaunchAgents"), now: time.Now,
+	}
+	state, err := manager.Install(context.Background(), directory, "example", "5 1 * * *", BackendLaunchd, "/bin/resticctl", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activated || activationErr != nil {
+		t.Fatalf("activated=%t state load error=%v", activated, activationErr)
+	}
+	if state.DefinitionHash == "" {
+		t.Fatal("final schedule state has no definition hash")
+	}
+}
+
 func TestVerifyLaunchdScheduleDetectsMissingJob(t *testing.T) {
 	directory := t.TempDir()
 	manager := Manager{
@@ -192,12 +226,99 @@ func TestBackupAndForgetSchedulesAreIndependent(t *testing.T) {
 	}
 }
 
+func TestListReturnsRecordedSchedulesInStableOrder(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: time.Now}
+	for _, item := range []struct{ name, action string }{{"zeta", ActionForget}, {"alpha", ActionCheck}, {"alpha", ActionBackup}} {
+		if _, err := manager.InstallAction(context.Background(), directory, item.name, item.action, "0 2 * * *", BackendCron, "/bin/resticctl", false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	states, err := List(directory, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(states))
+	for i, state := range states {
+		got[i] = state.Profile + "/" + state.Action
+	}
+	want := []string{"alpha/backup", "alpha/check", "zeta/forget"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("List = %v, want %v", got, want)
+	}
+	states, err = List(directory, "alpha")
+	if err != nil || len(states) != 2 {
+		t.Fatalf("filtered List = %#v, %v", states, err)
+	}
+}
+
+func TestLoadActionValidatesAllExpressionsAndLegacyActivationDefaults(t *testing.T) {
+	directory := t.TempDir()
+	manager := Manager{executor: &fakeExecutor{}, goos: "linux", uid: 1000, now: time.Now}
+	state, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendCron,
+		Executable: "/bin/resticctl", ConfigDir: directory,
+		Expressions: []string{"0 2 * * *", "0 14 * * *"},
+		Permission:  PermissionUser, Enabled: true, Start: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := statePath(directory, "example", ActionBackup)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	delete(encoded, "enabled")
+	delete(encoded, "start")
+	data, err = json.Marshal(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(directory, "example")
+	if err != nil || !loaded.Enabled || !loaded.Start {
+		t.Fatalf("legacy state = %#v, error = %v", loaded, err)
+	}
+
+	encoded["expressions"] = []string{state.Expression, "invalid"}
+	data, err = json.Marshal(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "expression 2") {
+		t.Fatalf("invalid secondary expression error = %v", err)
+	}
+}
+
 func TestScheduleValidation(t *testing.T) {
 	manager := Manager{executor: &fakeExecutor{}, goos: "linux", uid: 1000, now: time.Now}
 	for _, expression := range []string{"", "0 1 * *", "0 1 * * *\n* * * * *", "0 1 $ * *"} {
 		if _, err := manager.Install(context.Background(), t.TempDir(), "example", expression, BackendCron, "/bin/resticctl", false); err == nil {
 			t.Fatalf("expression %q was accepted", expression)
 		}
+	}
+}
+
+func TestFailedInstallRemovesProvisionalState(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{crontabError: errors.New("crontab unavailable")}
+	manager := Manager{executor: executor, goos: "linux", uid: 1000, now: time.Now}
+	if _, err := manager.Install(context.Background(), directory, "example", "0 2 * * *", BackendCron, "/bin/resticctl", false); err == nil {
+		t.Fatal("installation succeeded")
+	}
+	if _, err := Load(directory, "example"); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("provisional state remains after failed install: %v", err)
 	}
 }
 
@@ -324,10 +445,49 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	if strings.Count(string(timer), "OnCalendar=") != 2 || !strings.Contains(string(timer), "Persistent=true") {
 		t.Fatalf("timer:\n%s", timer)
 	}
+	if err := manager.Verify(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
 	for _, execution := range executor.executions {
-		if slices.Contains(execution.arguments, "start") || slices.Contains(execution.arguments, "--now") {
+		if slices.Contains(execution.arguments, "start") || slices.Contains(execution.arguments, "--now") || slices.Contains(execution.arguments, "is-active") {
 			t.Fatalf("no-start ran %#v", execution)
 		}
+	}
+	if err := os.Remove(state.JobFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Verify(context.Background(), state); !errors.Is(err, ErrDrift) {
+		t.Fatalf("missing systemd timer error = %v, want drift", err)
+	}
+}
+
+func TestInstallReconcilesBackendChange(t *testing.T) {
+	directory := t.TempDir()
+	units := filepath.Join(directory, "units")
+	executor := &fakeExecutor{}
+	manager := NewManager(
+		WithExecutor(executor),
+		WithPlatform("linux", 1000),
+		WithSystemdDirs(units, filepath.Join(directory, "system")),
+		WithClock(time.Now),
+	)
+	if _, err := manager.Install(context.Background(), directory, "example", "0 2 * * *", BackendCron, "/bin/resticctl", false); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendSystemd,
+		Executable: "/bin/resticctl", ConfigDir: directory, Expressions: []string{"0 3 * * *"},
+		Permission: PermissionUser, Enabled: true, Start: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Backend != BackendSystemd || strings.Contains(executor.crontab, "resticctl:example:begin") {
+		t.Fatalf("state=%#v crontab=%q", state, executor.crontab)
+	}
+	loaded, err := Load(directory, "example")
+	if err != nil || loaded.Backend != BackendSystemd {
+		t.Fatalf("loaded state=%#v error=%v", loaded, err)
 	}
 }
 
@@ -341,12 +501,12 @@ func TestWindowsDryRunRendersEveryScheduledActionWithoutChanges(t *testing.T) {
 				Name: "example", Action: action, Backend: BackendWindows,
 				Executable: `C:\Tools\resticctl.exe`, ConfigDir: directory,
 				Expressions: []string{"5 1 * * *"}, Permission: PermissionLoggedOn,
-				User: "Example\\User", Enabled: true, DryRun: true,
+				User: "Example\\User", CatchUp: true, Enabled: true, DryRun: true,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(state.Rendered, "<Task") || !strings.Contains(state.Rendered, action) {
+			if !strings.Contains(state.Rendered, "<Task") || !strings.Contains(state.Rendered, action) || !strings.Contains(state.Rendered, "<StartWhenAvailable>true</StartWhenAvailable>") {
 				t.Fatalf("rendered task:\n%s", state.Rendered)
 			}
 			if len(executor.executions) != 0 {
@@ -356,6 +516,25 @@ func TestWindowsDryRunRendersEveryScheduledActionWithoutChanges(t *testing.T) {
 				t.Fatalf("dry run wrote state: %v", err)
 			}
 		})
+	}
+}
+
+func TestWindowsInstallDoesNotRunActionImmediately(t *testing.T) {
+	directory := t.TempDir()
+	executor := &fakeExecutor{}
+	manager := NewManager(WithExecutor(executor), WithPlatform("windows", 0), WithClock(time.Now))
+	if _, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendWindows,
+		Executable: `C:\Tools\resticctl.exe`, ConfigDir: directory,
+		Expressions: []string{"5 1 * * *"}, Permission: PermissionLoggedOn,
+		Enabled: true, Start: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, execution := range executor.executions {
+		if slices.Contains(execution.arguments, "/Run") {
+			t.Fatalf("installation ran the scheduled action: %#v", execution)
+		}
 	}
 }
 
@@ -382,6 +561,12 @@ func TestExplicitSystemCrontabIncludesUserAndMultipleExpressions(t *testing.T) {
 	}
 	if err := manager.Verify(context.Background(), state); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Remove(cronFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Verify(context.Background(), state); !errors.Is(err, ErrDrift) {
+		t.Fatalf("missing crontab file error = %v, want drift", err)
 	}
 }
 

@@ -17,19 +17,11 @@ func nativeID(state State) string {
 }
 
 func (manager Manager) render(configDir string, state State, executable string) ([]byte, error) {
-	switch state.Backend {
-	case BackendCron:
-		return manager.renderCron(state, executable, configDir)
-	case BackendLaunchd:
-		return manager.renderLaunchd(configDir, state, executable)
-	case BackendSystemd:
-		service, timer, err := manager.renderSystemd(configDir, state, executable)
-		return append(service, timer...), err
-	case BackendWindows:
-		return manager.renderWindows(configDir, state, executable)
-	default:
-		return nil, fmt.Errorf("unsupported schedule backend %q", state.Backend)
+	backend, err := manager.backend(state.Backend)
+	if err != nil {
+		return nil, err
 	}
+	return backend.render(configDir, state, executable)
 }
 
 func (manager Manager) systemdDir(state State) string {
@@ -102,7 +94,7 @@ func (manager Manager) installSystemd(ctx context.Context, configDir string, sta
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	base := filepath.Join(dir, nativeID(*state))
+	base := strings.TrimSuffix(state.JobFile, ".timer")
 	servicePath, timerPath := base+".service", base+".timer"
 	if err := securefile.WriteAtomic(servicePath, service); err != nil {
 		return err
@@ -183,9 +175,9 @@ func (manager Manager) renderWindows(configDir string, state State, executable s
 	content := fmt.Sprintf(`<?xml version="1.0"?>
 <Task version="1.4"><Principals><Principal><UserId>%s</UserId><LogonType>%s</LogonType><RunLevel>%s</RunLevel></Principal></Principals>
 <Triggers>%s</Triggers>
-<Settings><Priority>%s</Priority><DisallowStartIfOnBatteries>%t</DisallowStartIfOnBatteries><RunOnlyIfNetworkAvailable>%t</RunOnlyIfNetworkAvailable><Enabled>%t</Enabled></Settings>
+<Settings><Priority>%s</Priority><DisallowStartIfOnBatteries>%t</DisallowStartIfOnBatteries><RunOnlyIfNetworkAvailable>%t</RunOnlyIfNetworkAvailable><StartWhenAvailable>%t</StartWhenAvailable><Enabled>%t</Enabled></Settings>
 <Actions><Exec><Command>%s</Command><Arguments>%s</Arguments></Exec></Actions></Task>
-`, xmlText(user), logonType, runLevel, triggers, priority, state.ACPower, state.Network, state.Enabled, xmlText(command), xmlText(arguments))
+`, xmlText(user), logonType, runLevel, triggers, priority, state.ACPower, state.Network, state.CatchUp, state.Enabled, xmlText(command), xmlText(arguments))
 	return []byte(content), nil
 }
 
@@ -233,7 +225,7 @@ func (manager Manager) installWindows(ctx context.Context, configDir string, sta
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(configDir, "schedules", nativeID(*state)+".xml")
+	path := state.JobFile
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -244,12 +236,6 @@ func (manager Manager) installWindows(ctx context.Context, configDir string, sta
 	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Create", "/TN", `\resticctl\`+nativeID(*state), "/XML", path, "/F")
 	if err != nil {
 		return commandError("install Windows task", output, err)
-	}
-	if state.Start {
-		output, err = manager.executor.Run(ctx, nil, "schtasks", "/Run", "/TN", `\resticctl\`+nativeID(*state))
-		if err != nil {
-			return commandError("start Windows task", output, err)
-		}
 	}
 	return nil
 }
@@ -271,11 +257,18 @@ func (manager Manager) nativeDefinition(state State) ([]byte, error) {
 	}
 	definition, err := os.ReadFile(state.JobFile)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: job file is missing: %s", errDefinitionDrift, state.JobFile)
+		}
 		return nil, err
 	}
 	if state.Backend == BackendSystemd {
-		service, serviceErr := os.ReadFile(strings.TrimSuffix(state.JobFile, ".timer") + ".service")
+		servicePath := strings.TrimSuffix(state.JobFile, ".timer") + ".service"
+		service, serviceErr := os.ReadFile(servicePath)
 		if serviceErr != nil {
+			if errors.Is(serviceErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w: service file is missing: %s", errDefinitionDrift, servicePath)
+			}
 			return nil, serviceErr
 		}
 		definition = append(service, definition...)
@@ -284,14 +277,26 @@ func (manager Manager) nativeDefinition(state State) ([]byte, error) {
 }
 
 func (manager Manager) verifyNative(ctx context.Context, state State) error {
-	if _, err := manager.nativeDefinition(state); err != nil {
-		return fmt.Errorf("%w: %v", ErrDrift, err)
-	}
 	if state.Backend == BackendSystemd {
 		args := systemctlArguments(state)
-		_, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "status", filepath.Base(state.JobFile))...)
-		return err
+		unit := filepath.Base(state.JobFile)
+		if state.Enabled {
+			output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-enabled", unit)...)
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect enabled systemd timer", output, err))
+			}
+		}
+		if state.Start {
+			output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-active", unit)...)
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect active systemd timer", output, err))
+			}
+		}
+		return nil
 	}
-	_, err := manager.executor.Run(ctx, nil, "schtasks", "/Query", "/TN", `\resticctl\`+nativeID(state))
-	return err
+	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Query", "/TN", `\resticctl\`+nativeID(state))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect Windows task", output, err))
+	}
+	return nil
 }
