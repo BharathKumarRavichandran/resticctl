@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -28,6 +29,68 @@ func TestCreateAndListCommands(t *testing.T) {
 	}
 	if strings.TrimSpace(output.String()) != "example" {
 		t.Fatalf("list output = %q", output.String())
+	}
+}
+
+func TestShowCommandDisplaysResolvedProfileWithoutCredentials(t *testing.T) {
+	directory := t.TempDir()
+	writePrivateCLIFile(t, filepath.Join(directory, "base.json"), `{
+          "repository":"rest:https://backup:repository-secret@example.test/repository",
+          "backup_paths":["parent"],
+          "tags":["inherited"]
+        }`)
+	writePrivateCLIFile(t, filepath.Join(directory, "example.json"), `{
+          "parent":"base",
+          "credentials_file":"example.credentials.json",
+          "backup_paths":["child"],
+          "monitoring":{"http":[{
+            "url":"https://hooks.example.test/webhook-secret",
+            "headers":{"Authorization":"header-secret"},
+            "body":"body-secret"
+          }]}
+        }`)
+	writePrivateCLIFile(t, filepath.Join(directory, "example.credentials.json"), `{
+          "environment":{"TOKEN":"credential-secret"},
+          "password":{"command":["password-command","command-secret"]}
+        }`)
+
+	var output, stderr bytes.Buffer
+	status, err := runForTest(context.Background(), []string{"show", "example", "--config-dir", directory}, &output, &stderr)
+	if err != nil || status != 0 {
+		t.Fatalf("show status=%d error=%v stderr=%s", status, err, stderr.String())
+	}
+	var decoded struct {
+		Name        string   `json:"name"`
+		Parent      string   `json:"parent"`
+		BackupPaths []string `json:"backup_paths"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("show output is not JSON: %v", err)
+	}
+	if decoded.Name != "example" || decoded.Parent != "base" {
+		t.Fatalf("show identity = %q, %q", decoded.Name, decoded.Parent)
+	}
+	wantPaths := []string{filepath.Join(directory, "parent"), filepath.Join(directory, "child")}
+	if !slices.Equal(decoded.BackupPaths, wantPaths) {
+		t.Fatalf("backup paths = %q, want %q", decoded.BackupPaths, wantPaths)
+	}
+	if !strings.Contains(output.String(), `"Authorization": "[REDACTED]"`) {
+		t.Fatalf("show output does not contain a redacted header:\n%s", output.String())
+	}
+	for _, secret := range []string{
+		"repository-secret", "webhook-secret", "header-secret", "body-secret",
+		"credential-secret", "password-command", "command-secret",
+	} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("show output contains secret %q:\n%s", secret, output.String())
+		}
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
+		t.Fatalf("show output is not a JSON object: %v", err)
+	}
+	if _, exists := fields["credentials"]; exists {
+		t.Fatal("show output contains credentials")
 	}
 }
 
@@ -112,6 +175,13 @@ func TestListReturnsOutputError(t *testing.T) {
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+}
+
+func writePrivateCLIFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

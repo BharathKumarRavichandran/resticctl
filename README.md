@@ -314,6 +314,7 @@ mode `0600` for the files it creates.
 ```text
 resticctl create <profile>
 resticctl list
+resticctl show <profile>
 resticctl init <profile>
 resticctl validate <profile>
 resticctl backup <profile> [--dry-run]
@@ -348,6 +349,15 @@ Creates a profile JSON file and a matching credentials file. Replace
 ### `list`
 
 Lists the profiles found in the configuration directory.
+
+### `show`
+
+Prints the fully resolved profile as JSON after inheritance, defaults, path
+expansion, and validation. Loaded credentials are omitted. Repository URL
+passwords, query strings, and fragments and monitoring endpoint paths, query
+strings, headers, bodies, and body templates are redacted. Other public profile
+values, including hook and Restic argument vectors, are shown as configured and
+must not contain secrets.
 
 ### `init`
 

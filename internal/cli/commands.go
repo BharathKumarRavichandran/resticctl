@@ -61,6 +61,26 @@ func (cli *commandLine) listCommand() *cobra.Command {
 	}
 }
 
+func (cli *commandLine) showCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:               "show <profile>",
+		Short:             "Show a resolved profile with secrets redacted",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			return writeJSON(cli.stdout, profile.RedactedResolvedProfile(backupProfile))
+		}),
+	}
+}
+
 func (cli *commandLine) initCommand() *cobra.Command {
 	return cli.profileCommand("init", "Initialize a restic repository", func(ctx context.Context, runner app.ResticRunner, backupProfile profile.Profile) error {
 		return app.RunRestic(ctx, runner, backupProfile, "init", nil)
