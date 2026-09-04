@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -22,7 +23,7 @@ func RunBackup(ctx context.Context, newRunner RunnerFactory, configDir string, b
 	if err != nil {
 		return err
 	}
-	if dryRun {
+	if dryRun || configuredDryRun(backupProfile, schedule.ActionBackup) {
 		return Backup(ctx, runner, backupProfile, true, output)
 	}
 	return recordRun(ctx, configDir, backupProfile, schedule.ActionBackup, now, output, func(runCtx context.Context) error {
@@ -36,7 +37,7 @@ func RunForget(ctx context.Context, newRunner RunnerFactory, configDir string, b
 	if err != nil {
 		return err
 	}
-	if dryRun {
+	if dryRun || configuredDryRun(backupProfile, schedule.ActionForget) {
 		return Forget(ctx, runner, backupProfile, true, prune)
 	}
 	return recordRun(ctx, configDir, backupProfile, schedule.ActionForget, now, nil, func(runCtx context.Context) error {
@@ -62,12 +63,45 @@ func RunRecordedRestic(ctx context.Context, newRunner RunnerFactory, configDir s
 	if err != nil {
 		return err
 	}
-	if hasOption(arguments, "--dry-run") {
+	if hasDryRunOption(arguments) || configuredDryRun(backupProfile, command) {
 		return RunRestic(ctx, runner, backupProfile, command, arguments)
 	}
 	return recordRun(ctx, configDir, backupProfile, command, now, output, func(runCtx context.Context) error {
 		return RunRestic(runCtx, runner, backupProfile, command, arguments)
 	})
+}
+
+func configuredDryRun(backupProfile profile.Profile, command string) bool {
+	var workflowArguments []string
+	switch command {
+	case schedule.ActionBackup:
+		workflowArguments = backupProfile.BackupArgs
+	case schedule.ActionForget:
+		workflowArguments = backupProfile.ForgetArgs
+	}
+	for _, argument := range workflowArguments {
+		if profile.IsDryRunOption(argument) {
+			return true
+		}
+	}
+	for _, argument := range backupProfile.Commands[command].Args {
+		if profile.IsDryRunOption(argument) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDryRunOption(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "--" {
+			return false
+		}
+		if profile.IsDryRunOption(argument) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScheduledRun verifies and runs an overdue scheduled action.
@@ -79,36 +113,14 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 	if err := manager.Verify(ctx, state); err != nil {
 		return false, err
 	}
-	lastSuccess := &state.Installed
-	status, statusErr := runstatus.LoadAction(configDir, backupProfile.Name, action)
-	if statusErr == nil {
-		if status.LastSuccessAt != nil {
-			lastSuccess = status.LastSuccessAt
-		} else if status.State == "succeeded" && status.FinishedAt != nil {
-			lastSuccess = status.FinishedAt
-		}
-	} else if !errors.Is(statusErr, runstatus.ErrNotRecorded) {
-		return false, statusErr
-	}
-	due := true
-	if state.CatchUp {
-		due, err = cronexpr.Due(state.Expression, lastSuccess, now())
-		for _, expression := range state.Expressions[1:] {
-			otherDue, otherErr := cronexpr.Due(expression, lastSuccess, now())
-			if otherErr != nil {
-				return false, otherErr
-			}
-			due = due || otherDue
-		}
-	}
-	if err != nil || !due {
-		return due, err
-	}
-	runner, err := newRunner()
-	if err != nil {
-		return true, err
+	if configuredDryRun(backupProfile, action) {
+		return false, fmt.Errorf("scheduled %s cannot use a configured Restic dry-run option", action)
 	}
 	run := func(runCtx context.Context) error {
+		runner, runnerErr := newRunner()
+		if runnerErr != nil {
+			return runnerErr
+		}
 		switch action {
 		case schedule.ActionBackup:
 			return Backup(runCtx, runner, backupProfile, false, output)
@@ -124,22 +136,36 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 			return scheduleActionError(action)
 		}
 	}
-	return true, recordScheduledRun(ctx, configDir, backupProfile, action, state, now, output, run)
-}
-
-func recordScheduledRun(ctx context.Context, configDir string, backupProfile profile.Profile, action string, state schedule.State, now func() time.Time, output io.Writer, run func(context.Context) error) error {
-	if state.LockMode != schedule.LockWait {
-		return recordRun(ctx, configDir, backupProfile, action, now, output, run)
+	wait := time.Duration(0)
+	if state.LockMode == schedule.LockWait {
+		wait, err = time.ParseDuration(state.LockWait)
+		if err != nil {
+			return false, err
+		}
 	}
-	wait, err := time.ParseDuration(state.LockWait)
-	if err != nil {
-		return err
+	recorder, due, err := runstatus.BeginActionIf(ctx, configDir, backupProfile.Name, action, wait, now, func(lastSuccess *time.Time) (bool, error) {
+		if !state.CatchUp {
+			return true, nil
+		}
+		if lastSuccess == nil {
+			lastSuccess = &state.Installed
+		}
+		checkTime := now()
+		for _, expression := range state.Expressions {
+			expressionDue, dueErr := cronexpr.Due(expression, lastSuccess, checkTime)
+			if dueErr != nil {
+				return false, dueErr
+			}
+			if expressionDue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil || !due {
+		return due, err
 	}
-	recorder, err := runstatus.BeginActionWait(ctx, configDir, backupProfile.Name, action, now(), wait)
-	if err != nil {
-		return err
-	}
-	return finishRecordedRun(ctx, recorder, backupProfile, now, output, run)
+	return true, finishRecordedRun(ctx, recorder, backupProfile, now, output, run)
 }
 
 func scheduleActionError(action string) error {

@@ -40,13 +40,47 @@ func (r *mysqlRunner) RunDatabase(_ context.Context, args []string, env map[stri
 	}
 	r.optionData = string(data)
 	r.optionMode = info.Mode().Perm()
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	return createFakeArtifact(args, cwd)
 }
 
 type fakeRunner struct{ calls []recordedCall }
 
 func (r *fakeRunner) RunDatabase(_ context.Context, args []string, env map[string]string, cwd string) error {
 	r.calls = append(r.calls, recordedCall{append([]string(nil), args...), env, cwd})
+	return createFakeArtifact(args, cwd)
+}
+
+type noArtifactRunner struct{}
+
+func (noArtifactRunner) RunDatabase(context.Context, []string, map[string]string, string) error {
+	return nil
+}
+
+func createFakeArtifact(args []string, cwd string) error {
+	for i, argument := range args {
+		var path string
+		switch {
+		case argument == "--file" && i+1 < len(args):
+			path = args[i+1]
+		case strings.HasPrefix(argument, "--result-file="):
+			path = strings.TrimPrefix(argument, "--result-file=")
+		case argument == "--out" && i+1 < len(args):
+			path = filepath.Join(args[i+1], "dump.bson")
+		}
+		if path == "" {
+			continue
+		}
+		path = filepath.Join(cwd, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte("dump"), 0o600); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -118,6 +152,52 @@ func TestMySQLStagesSocketAndCleansOptionFileAfterFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(runner.optionPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary option file remains: %v", err)
+	}
+}
+
+func TestExternalProvidersRejectMissingArtifactsAfterSuccessfulClient(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+	}{
+		{"postgresql", PostgreSQL{Database: profile.PostgreSQLDatabase{Name: "pg", Database: "app", Executable: "pg_dump"}}},
+		{"mongodb", MongoDB{Database: profile.MongoDBDatabase{Name: "mongo", Database: "app", Executable: "mongodump"}}},
+		{"mysql", MySQL{Database: profile.MySQLDatabase{Name: "mysql", Database: "app", Executable: "mysqldump"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.Mkdir(filepath.Join(directory, "databases"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			err := test.provider.Stage(context.Background(), noArtifactRunner{}, directory, nil)
+			if err == nil || !strings.Contains(err.Error(), "verify") {
+				t.Fatalf("Stage error = %v", err)
+			}
+		})
+	}
+}
+
+func TestArtifactValidationRejectsEmptyAndNonRegularOutputs(t *testing.T) {
+	directory := t.TempDir()
+	empty := filepath.Join(directory, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireNonEmptyRegularFile(empty); err == nil {
+		t.Fatal("empty file was accepted")
+	}
+	if err := requireNonEmptyRegularFile(directory); err == nil {
+		t.Fatal("directory was accepted as a dump file")
+	}
+	if err := requireMongoDumpDirectory(directory); err == nil {
+		t.Fatal("directory without a non-empty dump file was accepted")
+	}
+	if err := os.WriteFile(filepath.Join(directory, "help.txt"), []byte("usage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireMongoDumpDirectory(directory); err == nil {
+		t.Fatal("unrecognized MongoDB output was accepted")
 	}
 }
 

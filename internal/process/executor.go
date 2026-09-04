@@ -49,7 +49,7 @@ func (executor *Executor) run(ctx context.Context, label string, arguments []str
 	if len(arguments) == 0 {
 		return fmt.Errorf("cannot execute %s: command is empty", label)
 	}
-	command := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
+	command := exec.Command(arguments[0], arguments[1:]...)
 	command.Dir = cwd
 	if environment != nil {
 		command.Env = mergeEnvironment(os.Environ(), environment, executor.blockedEnvironment)
@@ -57,7 +57,7 @@ func (executor *Executor) run(ctx context.Context, label string, arguments []str
 	command.Stdin = executor.stdin
 	command.Stdout = executor.stdout
 	command.Stderr = executor.stderr
-	if err := command.Run(); err != nil {
+	if err := Run(ctx, command); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

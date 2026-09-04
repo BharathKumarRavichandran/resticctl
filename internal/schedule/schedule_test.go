@@ -398,6 +398,62 @@ func TestLaunchdRejectsUnsupportedCronSyntax(t *testing.T) {
 	}
 }
 
+func TestNativeBackendsRejectCronDayFieldORSemantics(t *testing.T) {
+	for _, test := range []struct {
+		backend, goos string
+	}{
+		{BackendSystemd, "linux"},
+		{BackendLaunchd, "darwin"},
+	} {
+		t.Run(test.backend, func(t *testing.T) {
+			directory := t.TempDir()
+			manager := NewManager(
+				WithExecutor(&fakeExecutor{}),
+				WithPlatform(test.goos, 501),
+				WithSystemdDirs(filepath.Join(directory, "user"), filepath.Join(directory, "system")),
+				WithLaunchAgentsDir(filepath.Join(directory, "launchd")),
+			)
+			_, err := manager.InstallSpec(context.Background(), Spec{
+				Name: "example", Action: ActionBackup, Backend: test.backend,
+				Executable: "/bin/resticctl", ConfigDir: directory,
+				Expressions: []string{"0 0 1 * 1"}, Permission: PermissionUser,
+				Enabled: true, Start: true, DryRun: true,
+			})
+			if err == nil || !strings.Contains(err.Error(), "OR semantics") {
+				t.Fatalf("InstallSpec error = %v", err)
+			}
+		})
+	}
+
+	directory := t.TempDir()
+	manager := NewManager(WithExecutor(&fakeExecutor{}), WithPlatform("linux", 1000))
+	if _, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendCron,
+		Executable: "/bin/resticctl", ConfigDir: directory,
+		Expressions: []string{"0 0 1 * 1"}, Permission: PermissionUser,
+		Enabled: true, Start: true, DryRun: true,
+	}); err != nil {
+		t.Fatalf("cron backend rejected standard OR semantics: %v", err)
+	}
+}
+
+func TestLaunchdRejectsNetworkRequirement(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(
+		WithExecutor(&fakeExecutor{}), WithPlatform("darwin", 501),
+		WithLaunchAgentsDir(filepath.Join(directory, "launchd")),
+	)
+	_, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendLaunchd,
+		Executable: "/bin/resticctl", ConfigDir: directory,
+		Expressions: []string{"0 2 * * *"}, Permission: PermissionUser,
+		Enabled: true, Start: true, Network: true, DryRun: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "network-availability") {
+		t.Fatalf("InstallSpec error = %v", err)
+	}
+}
+
 func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	directory := t.TempDir()
 	units := filepath.Join(directory, "units")

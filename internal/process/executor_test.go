@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type helperResult struct {
@@ -16,8 +19,27 @@ type helperResult struct {
 }
 
 func TestProcessHelper(t *testing.T) {
+	if marker := os.Getenv("GO_PROCESS_TREE_CHILD"); marker != "" {
+		time.Sleep(500 * time.Millisecond)
+		if err := os.WriteFile(marker, []byte("survived"), 0o600); err != nil {
+			os.Exit(4)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("GO_WANT_PROCESS_HELPER") != "1" {
 		return
+	}
+	if marker := os.Getenv("GO_PROCESS_TREE_MARKER"); marker != "" {
+		child := exec.Command(os.Args[0], "-test.run=TestProcessHelper")
+		child.Env = append(os.Environ(), "GO_WANT_PROCESS_HELPER=", "GO_PROCESS_TREE_CHILD="+marker)
+		if err := child.Start(); err != nil {
+			os.Exit(5)
+		}
+		if err := os.WriteFile(marker+".ready", []byte("ready"), 0o600); err != nil {
+			os.Exit(6)
+		}
+		_ = child.Wait()
+		os.Exit(0)
 	}
 	directory, err := os.Getwd()
 	if err != nil {
@@ -30,6 +52,36 @@ func TestProcessHelper(t *testing.T) {
 		os.Exit(3)
 	}
 	os.Exit(0)
+}
+
+func TestCancellationTerminatesProcessTree(t *testing.T) {
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "child-finished")
+	t.Setenv("GO_WANT_PROCESS_HELPER", "1")
+	t.Setenv("GO_PROCESS_TREE_MARKER", marker)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewExecutor(nil, nil, nil, nil).RunHook(ctx, []string{os.Args[0], "-test.run=TestProcessHelper"})
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker + ".ready"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child process did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunHook error = %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descendant survived cancellation: %v", err)
+	}
 }
 
 func TestRunDatabaseUsesEnvironmentAndWorkingDirectory(t *testing.T) {

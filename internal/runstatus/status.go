@@ -68,49 +68,82 @@ func Begin(configDir, name string, now time.Time) (*Recorder, error) {
 }
 
 func BeginAction(configDir, name, action string, now time.Time) (*Recorder, error) {
-	return beginAction(configDir, name, action, now, acquire)
+	release, path, err := acquireAction(context.Background(), configDir, name, action, 0)
+	if err != nil {
+		return nil, err
+	}
+	lastSuccess, err := loadLastSuccess(configDir, name, action)
+	if err != nil {
+		_ = release()
+		return nil, err
+	}
+	return beginActionLocked(path, name, action, now, lastSuccess, release)
 }
 
-// BeginActionWait retries lock contention until the bounded wait expires.
-func BeginActionWait(ctx context.Context, configDir, name, action string, now time.Time, wait time.Duration) (*Recorder, error) {
+// BeginActionIf acquires the action lock and evaluates shouldRun against the
+// latest successful run while holding it. A zero wait fails immediately on
+// contention; a positive wait retries for the bounded duration.
+func BeginActionIf(ctx context.Context, configDir, name, action string, wait time.Duration, now func() time.Time, shouldRun func(*time.Time) (bool, error)) (*Recorder, bool, error) {
+	release, path, err := acquireAction(ctx, configDir, name, action, wait)
+	if err != nil {
+		return nil, false, err
+	}
+	lastSuccess, err := loadLastSuccess(configDir, name, action)
+	if err != nil {
+		_ = release()
+		return nil, false, err
+	}
+	due, err := shouldRun(lastSuccess)
+	if err != nil || !due {
+		releaseErr := release()
+		return nil, due, errors.Join(err, releaseErr)
+	}
+	recorder, err := beginActionLocked(path, name, action, now(), lastSuccess, release)
+	if err != nil {
+		return nil, false, err
+	}
+	return recorder, true, nil
+}
+
+func acquireAction(ctx context.Context, configDir, name, action string, wait time.Duration) (func() error, string, error) {
+	if err := profile.ValidateName(name); err != nil {
+		return nil, "", err
+	}
+	if err := validateAction(action); err != nil {
+		return nil, "", err
+	}
+	directory := filepath.Join(configDir, "status")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, "", fmt.Errorf("cannot create status directory: %w", err)
+	}
+	if err := securefile.Protect(directory); err != nil {
+		return nil, "", fmt.Errorf("cannot protect status directory: %w", err)
+	}
+	lockPath := filepath.Join(directory, name+".lock")
+	release, err := acquire(lockPath)
+	if !errors.Is(err, ErrLocked) || wait <= 0 {
+		return release, filepath.Join(directory, statusKey(name, action)+".json"), err
+	}
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	retry := time.NewTicker(100 * time.Millisecond)
 	defer retry.Stop()
 	for {
-		recorder, err := beginAction(configDir, name, action, now, acquire)
-		if !errors.Is(err, ErrLocked) {
-			return recorder, err
-		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		case <-deadline.C:
-			return nil, fmt.Errorf("schedule lock wait expired after %s: %w", wait, ErrLocked)
+			return nil, "", fmt.Errorf("schedule lock wait expired after %s: %w", wait, ErrLocked)
 		case <-retry.C:
+			release, err := acquire(lockPath)
+			if !errors.Is(err, ErrLocked) {
+				return release, filepath.Join(directory, statusKey(name, action)+".json"), err
+			}
 		}
 	}
 }
 
-func beginAction(configDir, name, action string, now time.Time, lock func(string) (func() error, error)) (*Recorder, error) {
-	if err := profile.ValidateName(name); err != nil {
-		return nil, err
-	}
-	if err := validateAction(action); err != nil {
-		return nil, err
-	}
-	directory := filepath.Join(configDir, "status")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("cannot create status directory: %w", err)
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("cannot protect status directory: %w", err)
-	}
-	key := statusKey(name, action)
-	release, err := lock(filepath.Join(directory, name+".lock"))
-	if err != nil {
-		return nil, err
-	}
+func loadLastSuccess(configDir, name, action string) (*time.Time, error) {
 	var lastSuccess *time.Time
 	previous, loadErr := LoadAction(configDir, name, action)
 	if loadErr == nil {
@@ -119,11 +152,14 @@ func beginAction(configDir, name, action string, now time.Time, lock func(string
 			lastSuccess = previous.FinishedAt
 		}
 	} else if !errors.Is(loadErr, ErrNotRecorded) {
-		_ = release()
 		return nil, loadErr
 	}
+	return lastSuccess, nil
+}
+
+func beginActionLocked(path, name, action string, now time.Time, lastSuccess *time.Time, release func() error) (*Recorder, error) {
 	recorder := &Recorder{
-		path:    filepath.Join(directory, key+".json"),
+		path:    path,
 		status:  Status{Profile: name, Action: action, Command: action, State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
 		started: now,
 		release: release,
@@ -266,7 +302,7 @@ func appendHistory(latestPath string, status Status, limit int) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("cannot create status history directory: %w", err)
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
+	if err := securefile.Protect(directory); err != nil {
 		return fmt.Errorf("cannot protect status history directory: %w", err)
 	}
 	path := filepath.Join(directory, filepath.Base(latestPath))

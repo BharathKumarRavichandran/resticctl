@@ -53,6 +53,16 @@ func Fields(expression string) ([]string, error) {
 	return strings.Fields(normalized), nil
 }
 
+// HasRestrictedDayFields reports cron expressions whose day-of-month and
+// day-of-week restrictions require standard cron OR semantics.
+func HasRestrictedDayFields(expression string) (bool, error) {
+	fields, err := Fields(expression)
+	if err != nil {
+		return false, err
+	}
+	return fields[2] != "*" && fields[4] != "*", nil
+}
+
 func Due(expression string, lastSuccess *time.Time, now time.Time) (bool, error) {
 	normalized, err := Normalize(expression)
 	if err != nil {

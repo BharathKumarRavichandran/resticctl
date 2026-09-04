@@ -542,7 +542,7 @@ func (runner *concurrentDatabaseRunner) Run(_ context.Context, _ restic.Config, 
 
 func (runner *concurrentDatabaseRunner) RunHook(_ context.Context, _ []string) error { return nil }
 
-func (runner *concurrentDatabaseRunner) RunDatabase(_ context.Context, arguments []string, environment map[string]string, _ string) error {
+func (runner *concurrentDatabaseRunner) RunDatabase(_ context.Context, arguments []string, environment map[string]string, cwd string) error {
 	database := arguments[len(arguments)-1]
 	runner.mutex.Lock()
 	if runner.passwords == nil {
@@ -557,7 +557,7 @@ func (runner *concurrentDatabaseRunner) RunDatabase(_ context.Context, arguments
 	runner.mutex.Lock()
 	runner.active--
 	runner.mutex.Unlock()
-	return nil
+	return createDatabaseArtifact(arguments, cwd)
 }
 
 func (runner *cleanupCheckingRunner) Run(_ context.Context, _ restic.Config, arguments []string, cwd string) error {
@@ -572,6 +572,6 @@ func (runner *cleanupCheckingRunner) Run(_ context.Context, _ restic.Config, arg
 }
 
 func (runner *cleanupCheckingRunner) RunHook(_ context.Context, _ []string) error { return nil }
-func (runner *cleanupCheckingRunner) RunDatabase(_ context.Context, _ []string, _ map[string]string, _ string) error {
-	return nil
+func (runner *cleanupCheckingRunner) RunDatabase(_ context.Context, arguments []string, _ map[string]string, cwd string) error {
+	return createDatabaseArtifact(arguments, cwd)
 }

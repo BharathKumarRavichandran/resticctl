@@ -16,6 +16,12 @@ func IsReservedOption(argument string) bool {
 	return false
 }
 
+// IsDryRunOption reports whether argument enables Restic's dry-run mode.
+func IsDryRunOption(argument string) bool {
+	return argument == "--dry-run" || argument == "-n" ||
+		strings.EqualFold(argument, "--dry-run=true") || strings.EqualFold(argument, "-n=true")
+}
+
 // IsReservedEnvironment reports whether resticctl, rather than profile
 // credentials, must control the environment variable.
 func IsReservedEnvironment(key string) bool {

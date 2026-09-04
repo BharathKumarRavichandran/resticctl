@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"resticctl/internal/profile"
+	"resticctl/internal/securefile"
 )
 
 //go:embed templates/*.json
@@ -29,6 +30,9 @@ func CreateProfile(configDir, name string) (profilePath, credentialsPath string,
 	}
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", "", fmt.Errorf("cannot create profile directory: %w", err)
+	}
+	if err := securefile.Protect(configDir); err != nil {
+		return "", "", fmt.Errorf("cannot protect profile directory: %w", err)
 	}
 
 	profileTemplate, err := templateFiles.ReadFile("templates/profile.json")
@@ -80,7 +84,7 @@ func createPrivateFile(path, content string) (err error) {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := securefile.Protect(path); err != nil {
 		return err
 	}
 	ok = true

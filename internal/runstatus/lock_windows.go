@@ -8,12 +8,17 @@ import (
 	"os"
 
 	"golang.org/x/sys/windows"
+	"resticctl/internal/securefile"
 )
 
 func acquire(path string) (func() error, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open backup lock: %w", err)
+	}
+	if err := securefile.Protect(path); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("cannot protect backup lock: %w", err)
 	}
 	overlapped := &windows.Overlapped{}
 	err = windows.LockFileEx(

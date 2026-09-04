@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"resticctl/internal/process"
 )
 
 // Config contains only the repository settings needed to invoke Restic.
@@ -137,7 +139,7 @@ func (client *Client) run(ctx context.Context, config Config, arguments []string
 	commandArgs = append(commandArgs, config.Arguments...)
 	commandArgs = append(commandArgs, "--repo", config.Repository, "--password-file", passwordFile)
 	commandArgs = append(commandArgs, arguments...)
-	command := exec.CommandContext(ctx, client.executable, commandArgs...)
+	command := exec.Command(client.executable, commandArgs...)
 	command.Dir = cwd
 	command.Env = mergeEnvironment(os.Environ(), config.Environment)
 	command.Stdin = client.stdin
@@ -146,7 +148,7 @@ func (client *Client) run(ctx context.Context, config Config, arguments []string
 		command.Stdout = io.MultiWriter(client.stdout, capture)
 	}
 	command.Stderr = client.stderr
-	commandErr := command.Run()
+	commandErr := process.Run(ctx, command)
 	if capture != nil {
 		capture.consume()
 		result.Summary = capture.summary

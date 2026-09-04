@@ -150,6 +150,20 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	if err != nil {
 		return State{}, err
 	}
+	if backend == BackendSystemd || backend == BackendLaunchd {
+		for i, expression := range normalizedExpressions {
+			ambiguous, checkErr := cronexpr.HasRestrictedDayFields(expression)
+			if checkErr != nil {
+				return State{}, checkErr
+			}
+			if ambiguous {
+				return State{}, fmt.Errorf("calendar expression %d restricts both day-of-month and day-of-week; %s cannot preserve standard cron OR semantics", i+1, backend)
+			}
+		}
+	}
+	if backend == BackendLaunchd && spec.Network {
+		return State{}, errors.New("launchd does not support a reliable network-availability requirement")
+	}
 	executable, err = filepath.Abs(executable)
 	if err != nil {
 		return State{}, fmt.Errorf("cannot resolve resticctl executable: %w", err)

@@ -102,6 +102,9 @@ func Load(configDir, name string) (Profile, error) {
 			if IsReservedOption(value) {
 				return Profile{}, fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
 			}
+			if list.name == "backup_args" && IsDryRunOption(value) {
+				return Profile{}, fmt.Errorf("backup_args must not set workflow-owned dry-run option: %s", value)
+			}
 		}
 	}
 	commandNames := make([]string, 0, len(backupProfile.Commands))
@@ -120,6 +123,9 @@ func Load(configDir, name string) (Profile, error) {
 			}
 			if IsReservedOption(value) {
 				return Profile{}, fmt.Errorf("commands.%s.args must not override repository or password options: %s", name, value)
+			}
+			if name == "backup" && IsDryRunOption(value) {
+				return Profile{}, fmt.Errorf("commands.backup.args must not set workflow-owned dry-run option: %s", value)
 			}
 		}
 	}
@@ -328,6 +334,9 @@ func validateExternalDatabases(p *Profile, base string) error {
 		}
 		if strings.Contains(db.Database, "://") || strings.Contains(strings.ToLower(db.Database), "password=") {
 			return fmt.Errorf("PostgreSQL database for %s must be a name, not a credential-bearing connection string", db.Name)
+		}
+		if strings.HasPrefix(db.Database, "-") {
+			return fmt.Errorf("PostgreSQL database for %s must not start with a hyphen", db.Name)
 		}
 		if db.Port < 0 || db.Port > 65535 {
 			return fmt.Errorf("invalid PostgreSQL port for %s", db.Name)

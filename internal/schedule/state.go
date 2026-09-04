@@ -205,7 +205,7 @@ func writeState(configDir string, state State) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("cannot create schedule directory: %w", err)
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
+	if err := securefile.Protect(directory); err != nil {
 		return fmt.Errorf("cannot protect schedule directory: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")

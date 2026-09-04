@@ -13,6 +13,7 @@ import (
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
+	"resticctl/internal/securefile"
 )
 
 func TestProfileCommandDispatch(t *testing.T) {
@@ -237,6 +238,9 @@ func writeCLIProfile(t *testing.T, directory string) {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(directory, file.name), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := securefile.Protect(filepath.Join(directory, file.name)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"resticctl/internal/securefile"
 )
 
 func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
@@ -416,6 +418,36 @@ func TestLoadRejectsReservedResticOptions(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsConfiguredBackupDryRunOptions(t *testing.T) {
+	for _, test := range []struct {
+		name, field string
+	}{
+		{"long", `"backup_args":["--dry-run"]`},
+		{"short", `"backup_args":["-n"]`},
+		{"explicit true", `"backup_args":["--dry-run=true"]`},
+		{"command arguments", `"commands":{"backup":{"args":["-n=true"]}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+test.field+`}`)
+			_, err := Load(directory, "example")
+			if err == nil || !strings.Contains(err.Error(), "dry-run") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsPostgreSQLDatabaseBeginningWithHyphen(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","postgresql_databases":[{"name":"main","database":"--help"}]}`)
+	if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "must not start with a hyphen") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func TestLoadRejectsReservedResticEnvironment(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
@@ -582,7 +614,7 @@ func writePrivate(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := securefile.Protect(path); err != nil {
 		t.Fatal(err)
 	}
 }

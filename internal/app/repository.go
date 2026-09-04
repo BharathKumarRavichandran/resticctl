@@ -99,7 +99,7 @@ func Forget(ctx context.Context, runner ResticRunner, backupProfile profile.Prof
 	if prune {
 		arguments = append(arguments, "--prune")
 	}
-	if dryRun {
+	if dryRun && !hasDryRunOption(arguments) {
 		arguments = append(arguments, "--dry-run")
 	}
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")

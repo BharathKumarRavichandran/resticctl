@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"resticctl/internal/process"
+	"resticctl/internal/securefile"
 )
 
 func preparePasswordFile(ctx context.Context, config Config) (path string, temporary bool, err error) {
@@ -18,11 +21,11 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 	if len(commandParts) == 0 {
 		return "", false, errors.New("password source is not configured")
 	}
-	command := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...)
+	command := exec.Command(commandParts[0], commandParts[1:]...)
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
+	if err := process.Run(ctx, command); err != nil {
 		if ctx.Err() != nil {
 			return "", false, ctx.Err()
 		}
@@ -56,7 +59,7 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 			}
 		}
 	}()
-	if err := file.Chmod(0o600); err != nil {
+	if err := securefile.Protect(path); err != nil {
 		return "", false, fmt.Errorf("cannot protect temporary password file: %w", err)
 	}
 	if _, err := file.Write(password); err != nil {

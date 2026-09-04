@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"resticctl/internal/profile"
+	"resticctl/internal/securefile"
 	"resticctl/internal/sqlitebackup"
 )
 
@@ -49,18 +50,26 @@ func (p PostgreSQL) Progress() string { return "" }
 
 func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := p.Database
-	args := []string{db.Executable, "--format=custom", "--file", filepath.Join("databases", db.Name+".dump")}
+	dump := filepath.Join("databases", db.Name+".dump")
+	args := []string{db.Executable, "--format=custom", "--file", dump}
 	args = appendConnection(args, db.Host, db.Port, db.Username)
 	args = append(args, db.Args...)
 	args = append(args, db.Database)
 	if err := runner.RunDatabase(ctx, args, environment, directory); err != nil {
 		return fmt.Errorf("dump PostgreSQL database %s: %w", db.Name, err)
 	}
+	if err := requireNonEmptyRegularFile(filepath.Join(directory, dump)); err != nil {
+		return fmt.Errorf("verify PostgreSQL database dump %s: %w", db.Name, err)
+	}
 	if db.Globals {
-		globals := []string{db.GlobalsExecutable, "--globals-only", "--file", filepath.Join("databases", db.Name+"-globals.sql")}
+		globalsDump := filepath.Join("databases", db.Name+"-globals.sql")
+		globals := []string{db.GlobalsExecutable, "--globals-only", "--file", globalsDump}
 		globals = appendConnection(globals, db.Host, db.Port, db.Username)
 		if err := runner.RunDatabase(ctx, globals, environment, directory); err != nil {
 			return fmt.Errorf("dump PostgreSQL globals %s: %w", db.Name, err)
+		}
+		if err := requireNonEmptyRegularFile(filepath.Join(directory, globalsDump)); err != nil {
+			return fmt.Errorf("verify PostgreSQL globals dump %s: %w", db.Name, err)
 		}
 	}
 	return nil
@@ -87,7 +96,8 @@ func (m MongoDB) Progress() string { return "" }
 
 func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := m.Database
-	args := []string{db.Executable, "--out", filepath.Join("databases", db.Name)}
+	dump := filepath.Join("databases", db.Name)
+	args := []string{db.Executable, "--out", dump}
 	if db.ConfigFile != "" {
 		args = append(args, "--config", db.ConfigFile)
 	}
@@ -103,6 +113,9 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 	args = append(args, db.Args...)
 	if err := runner.RunDatabase(ctx, args, environment, directory); err != nil {
 		return fmt.Errorf("dump MongoDB database %s: %w", db.Name, err)
+	}
+	if err := requireMongoDumpDirectory(filepath.Join(directory, dump)); err != nil {
+		return fmt.Errorf("verify MongoDB database dump %s: %w", db.Name, err)
 	}
 	return nil
 }
@@ -125,7 +138,7 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 			stageErr = errors.Join(stageErr, fmt.Errorf("remove MySQL client option file for %s: %w", db.Name, err))
 		}
 	}()
-	if err := optionFile.Chmod(0o600); err != nil {
+	if err := securefile.Protect(optionPath); err != nil {
 		optionFile.Close()
 		return fmt.Errorf("protect MySQL client option file for %s: %w", db.Name, err)
 	}
@@ -169,7 +182,63 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 	if err := runner.RunDatabase(ctx, args, map[string]string{"MYSQL_PWD": ""}, directory); err != nil {
 		return fmt.Errorf("dump MySQL database %s: %w", db.Name, err)
 	}
+	if err := requireNonEmptyRegularFile(filepath.Join(directory, "databases", db.Name+".sql")); err != nil {
+		return fmt.Errorf("verify MySQL database dump %s: %w", db.Name, err)
+	}
 	return nil
+}
+
+func requireNonEmptyRegularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("artifact is not a regular file")
+	}
+	if info.Size() == 0 {
+		return errors.New("artifact is empty")
+	}
+	return nil
+}
+
+func requireMongoDumpDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("artifact is not a directory")
+	}
+	found := false
+	err = filepath.WalkDir(path, func(_ string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if found || entry.IsDir() {
+			return nil
+		}
+		entryInfo, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if entryInfo.Mode().IsRegular() && entryInfo.Size() > 0 && isMongoDumpFile(entry.Name()) {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("artifact directory contains no non-empty BSON or metadata files")
+	}
+	return nil
+}
+
+func isMongoDumpFile(name string) bool {
+	return strings.HasSuffix(name, ".bson") || strings.HasSuffix(name, ".bson.gz") ||
+		strings.HasSuffix(name, ".metadata.json") || strings.HasSuffix(name, ".metadata.json.gz")
 }
 
 func mysqlOptionFile(username, password string) []byte {

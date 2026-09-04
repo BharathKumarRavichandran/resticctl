@@ -26,7 +26,7 @@ func WriteAtomic(path string, data []byte) (err error) {
 			}
 		}
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := Protect(temporaryPath); err != nil {
 		return fmt.Errorf("cannot protect temporary file: %w", err)
 	}
 	if _, err := temporary.Write(data); err != nil {

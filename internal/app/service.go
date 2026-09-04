@@ -13,6 +13,7 @@ import (
 	"resticctl/internal/databasebackup"
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/securefile"
 )
 
 // ResticRunner executes a Restic argument vector for a repository.
@@ -132,7 +133,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	}
 	arguments = append(arguments, backupProfile.BackupArgs...)
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "backup")
-	if dryRun {
+	if dryRun && !hasDryRunOption(arguments) {
 		arguments = append(arguments, "--dry-run")
 	}
 	if databaseCount(backupProfile) == 0 {
@@ -150,12 +151,15 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 			backupErr = errors.Join(backupErr, fmt.Errorf("cannot remove database staging directory %s: %w", staging, err))
 		}
 	}()
-	if err := os.Chmod(staging, 0o700); err != nil {
+	if err := securefile.Protect(staging); err != nil {
 		return fmt.Errorf("cannot protect database staging directory: %w", err)
 	}
 	databaseDir := filepath.Join(staging, "databases")
 	if err := os.Mkdir(databaseDir, 0o700); err != nil {
 		return fmt.Errorf("cannot create database staging directory: %w", err)
+	}
+	if err := securefile.Protect(databaseDir); err != nil {
+		return fmt.Errorf("cannot protect database staging directory: %w", err)
 	}
 	providers := make([]databasebackup.Provider, 0, databaseCount(backupProfile))
 	for _, database := range backupProfile.SQLiteDatabases {

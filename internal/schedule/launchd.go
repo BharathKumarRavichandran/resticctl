@@ -116,9 +116,6 @@ func launchdPolicy(state State) string {
 	if state.Log != "" {
 		b.WriteString("<key>StandardOutPath</key><string>" + xmlText(state.Log) + "</string><key>StandardErrorPath</key><string>" + xmlText(state.Log) + "</string>\n")
 	}
-	if state.Network {
-		b.WriteString("<key>KeepAlive</key><dict><key>NetworkState</key><true/></dict>\n")
-	}
 	if state.Priority == PriorityBackground {
 		b.WriteString("<key>LowPriorityIO</key><true/>\n")
 	}
