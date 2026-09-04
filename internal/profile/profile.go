@@ -18,6 +18,7 @@ type PostgreSQLDatabase struct {
 	Username          string   `json:"username,omitempty"`
 	Executable        string   `json:"executable,omitempty"`
 	Args              []string `json:"args,omitempty"`
+	TablePatterns     []string `json:"table_patterns,omitempty"`
 	Globals           bool     `json:"globals,omitempty"`
 	GlobalsExecutable string   `json:"globals_executable,omitempty"`
 }
@@ -30,6 +31,7 @@ type MongoDBDatabase struct {
 	Executable string   `json:"executable,omitempty"`
 	ConfigFile string   `json:"config_file,omitempty"`
 	Args       []string `json:"args,omitempty"`
+	Collection string   `json:"collection,omitempty"`
 }
 
 type MySQLDatabase struct {

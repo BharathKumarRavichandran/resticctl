@@ -42,7 +42,9 @@ func createDatabaseArtifact(arguments []string, cwd string) error {
 		if path == "" {
 			continue
 		}
-		path = filepath.Join(cwd, path)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}

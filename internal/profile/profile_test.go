@@ -37,9 +37,10 @@ func TestLoadExternalDatabases(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "mongo.yml"), "password: private\n")
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test", "credentials_file":"credentials.json",
-          "postgresql_databases":[{"name":"accounts","database":"app","host":"db.example","globals":true}],
-          "mongodb_databases":[{"name":"events","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}],
-          "mysql_databases":[{"name":"orders","database":"shop","host":"localhost"}]
+          "databases":{"concurrency":2,
+            "postgresql":[{"name":"accounts","database":"app","host":"db.example","globals":true,"table_patterns":["public.accounts*"]}],
+            "mongodb":[{"name":"events","database":"events","collection":"activity","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}],
+            "mysql":[{"name":"orders","database":"shop","host":"localhost"}]}
         }`)
 	loaded, err := Load(directory, "example")
 	if err != nil {
@@ -51,11 +52,29 @@ func TestLoadExternalDatabases(t *testing.T) {
 	if loaded.MongoDBDatabases[0].ConfigFile != filepath.Join(directory, "mongo.yml") {
 		t.Fatalf("MongoDB config = %#v", loaded.MongoDBDatabases[0])
 	}
+	if !slices.Equal(loaded.PostgreSQLDatabases[0].TablePatterns, []string{"public.accounts*"}) || loaded.MongoDBDatabases[0].Collection != "activity" {
+		t.Fatalf("database selectors were not loaded: %#v %#v", loaded.PostgreSQLDatabases[0], loaded.MongoDBDatabases[0])
+	}
 	if loaded.MySQLDatabases[0].Executable != "mysqldump" {
 		t.Fatalf("MySQL defaults = %#v", loaded.MySQLDatabases[0])
 	}
+	if loaded.DatabaseConcurrency != 2 {
+		t.Fatalf("database concurrency = %d", loaded.DatabaseConcurrency)
+	}
 	if loaded.Credentials.DatabaseEnvironment["PGPASSWORD"] != "private" {
 		t.Fatal("database environment not loaded")
+	}
+}
+
+func TestLoadRejectsMixedNestedAndLegacyDatabaseConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "databases":{"sqlite":[]},
+          "sqlite_databases":[]
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "must not be combined") {
+		t.Fatalf("Load error = %v", err)
 	}
 }
 
@@ -86,6 +105,26 @@ func TestLoadRejectsDatabaseCredentialArguments(t *testing.T) {
 	_, err := Load(directory, "example")
 	if err == nil || !strings.Contains(err.Error(), "unsafe option --password") {
 		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidDatabaseSelectors(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	tests := map[string]string{
+		"empty PostgreSQL table":               `"postgresql_databases":[{"name":"app","database":"app","table_patterns":[""]}]`,
+		"PostgreSQL table argument":            `"postgresql_databases":[{"name":"app","database":"app","table_patterns":["users"],"args":["--exclude-table=audit"]}]`,
+		"collection without database":          `"mongodb_databases":[{"name":"events","collection":"activity"}]`,
+		"MongoDB collection selector conflict": `"mongodb_databases":[{"name":"events","database":"events","args":["--collection=activity"]}]`,
+		"MongoDB collection with oplog":        `"mongodb_databases":[{"name":"events","database":"events","collection":"activity","args":["--oplog=true"]}]`,
+	}
+	for name, configured := range tests {
+		t.Run(name, func(t *testing.T) {
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+configured+`}`)
+			if _, err := Load(directory, "example"); err == nil {
+				t.Fatal("Load succeeded")
+			}
+		})
 	}
 }
 
@@ -322,6 +361,28 @@ func TestLoadCanReplaceOrClearInheritedCollections(t *testing.T) {
 	}
 	if len(loaded.Tags) != 0 || len(loaded.RunBefore) != 0 || len(loaded.SQLiteDatabases) != 0 || loaded.Schedule != nil {
 		t.Fatalf("inherited values were not cleared: %#v", loaded)
+	}
+}
+
+func TestLoadCanClearInheritedNestedDatabases(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:test",
+          "databases":{"postgresql":[{"name":"app","database":"app"}]}
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "parent":"base",
+          "credentials_file":"credentials.json",
+          "replace_inherited":["databases.postgresql"],
+          "databases":{"postgresql":[]}
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.PostgreSQLDatabases) != 0 {
+		t.Fatalf("inherited PostgreSQL databases = %#v", loaded.PostgreSQLDatabases)
 	}
 }
 

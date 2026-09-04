@@ -78,7 +78,7 @@ func Load(configDir, name string) (Profile, error) {
 		return Profile{}, err
 	}
 	if backupProfile.DatabaseConcurrency <= 0 {
-		return Profile{}, errors.New("database_concurrency must be a positive integer")
+		return Profile{}, errors.New("databases.concurrency must be a positive integer (legacy: database_concurrency)")
 	}
 	if err := validateDatabaseEnvironmentNames(backupProfile); err != nil {
 		return Profile{}, err
@@ -220,6 +220,7 @@ type profileConfig struct {
 	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
 	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
 	DatabaseConcurrency *int                     `json:"database_concurrency,omitempty"`
+	Databases           *databaseConfig          `json:"databases,omitempty"`
 	ResticArgs          []string                 `json:"restic_args"`
 	Commands            map[string]ResticCommand `json:"commands,omitempty"`
 	BackupArgs          []string                 `json:"backup_args"`
@@ -237,6 +238,14 @@ type profileConfig struct {
 	Schedule            *Schedule                `json:"schedule,omitempty"`
 	Forget              *ForgetSchedule          `json:"forget,omitempty"`
 	Monitoring          *Monitoring              `json:"monitoring,omitempty"`
+}
+
+type databaseConfig struct {
+	Concurrency *int                 `json:"concurrency,omitempty"`
+	SQLite      []SQLiteDatabase     `json:"sqlite,omitempty"`
+	PostgreSQL  []PostgreSQLDatabase `json:"postgresql,omitempty"`
+	MongoDB     []MongoDBDatabase    `json:"mongodb,omitempty"`
+	MySQL       []MySQLDatabase      `json:"mysql,omitempty"`
 }
 
 func resolve(configDir, name string, chain []string) (profileConfig, error) {
@@ -258,6 +267,9 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 	var child profileConfig
 	if err := decodeStrict(path, "profile", &child); err != nil {
 		return profileConfig{}, err
+	}
+	if err := child.normalizeDatabases(); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
 	}
 	if err := validateReplaceInherited(child.ReplaceInherited); err != nil {
 		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
@@ -282,6 +294,35 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 		return profileConfig{}, err
 	}
 	return merge(parent, child), nil
+}
+
+func (configured *profileConfig) normalizeDatabases() error {
+	for index, field := range configured.ReplaceInherited {
+		switch field {
+		case "databases.sqlite":
+			configured.ReplaceInherited[index] = "sqlite_databases"
+		case "databases.postgresql":
+			configured.ReplaceInherited[index] = "postgresql_databases"
+		case "databases.mongodb":
+			configured.ReplaceInherited[index] = "mongodb_databases"
+		case "databases.mysql":
+			configured.ReplaceInherited[index] = "mysql_databases"
+		}
+	}
+	if configured.Databases == nil {
+		return nil
+	}
+	if configured.SQLiteDatabases != nil || configured.PostgreSQLDatabases != nil || configured.MongoDBDatabases != nil ||
+		configured.MySQLDatabases != nil || configured.DatabaseConcurrency != nil {
+		return errors.New("databases must not be combined with legacy top-level database fields")
+	}
+	configured.DatabaseConcurrency = configured.Databases.Concurrency
+	configured.SQLiteDatabases = configured.Databases.SQLite
+	configured.PostgreSQLDatabases = configured.Databases.PostgreSQL
+	configured.MongoDBDatabases = configured.Databases.MongoDB
+	configured.MySQLDatabases = configured.Databases.MySQL
+	configured.Databases = nil
+	return nil
 }
 
 func validateConfiguredNames[T any](values []T, name func(T) string) error {
@@ -350,7 +391,15 @@ func validateExternalDatabases(p *Profile, base string) error {
 		if hasNUL(db.Database, db.Host, db.Username, db.Executable, db.GlobalsExecutable) {
 			return fmt.Errorf("PostgreSQL configuration for %s must not contain NUL bytes", db.Name)
 		}
-		if err := validateDatabaseArgs("PostgreSQL", db.Args, "--file", "-f", "--password", "--dbname", "-d", "--host", "-h", "--port", "-p", "--username", "-U"); err != nil {
+		if err := validateNames("PostgreSQL table pattern", db.Name, db.TablePatterns); err != nil {
+			return err
+		}
+		if len(db.TablePatterns) > 0 && containsAnyOption(db.Args,
+			"--exclude-table", "--exclude-table-and-children", "--exclude-table-data", "--exclude-table-data-and-children",
+			"--schema", "-n", "--exclude-schema", "-N", "--table-and-children") {
+			return fmt.Errorf("PostgreSQL table_patterns for %s cannot be combined with other selection options", db.Name)
+		}
+		if err := validateDatabaseArgs("PostgreSQL", db.Args, "--file", "-f", "--password", "--dbname", "-d", "--host", "-h", "--port", "-p", "--username", "-U", "--table", "-t"); err != nil {
 			return err
 		}
 	}
@@ -368,7 +417,16 @@ func validateExternalDatabases(p *Profile, base string) error {
 		if hasNUL(db.Database, db.Host, db.Executable, db.ConfigFile) {
 			return fmt.Errorf("MongoDB configuration for %s must not contain NUL bytes", db.Name)
 		}
-		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d"); err != nil {
+		if db.Collection != "" && db.Database == "" {
+			return fmt.Errorf("MongoDB collection requires a database: %s", db.Name)
+		}
+		if strings.ContainsRune(db.Collection, 0) {
+			return fmt.Errorf("invalid MongoDB collection for %s", db.Name)
+		}
+		if db.Collection != "" && containsAnyOption(db.Args, "--oplog", "--excludeCollection", "--excludeCollectionsWithPrefix", "--query", "-q", "--queryFile") {
+			return fmt.Errorf("MongoDB collection for %s cannot be combined with other selection options", db.Name)
+		}
+		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d", "--collection", "-c"); err != nil {
 			return err
 		}
 		if db.ConfigFile != "" {
@@ -419,6 +477,26 @@ func validateExternalDatabases(p *Profile, base string) error {
 		}
 	}
 	return nil
+}
+
+func validateNames(kind, database string, values []string) error {
+	for _, value := range values {
+		if value == "" || strings.ContainsRune(value, 0) {
+			return fmt.Errorf("invalid %s for %s: %q", kind, database, value)
+		}
+	}
+	return nil
+}
+
+func containsAnyOption(args []string, options ...string) bool {
+	for _, arg := range args {
+		for _, option := range options {
+			if arg == option || strings.HasPrefix(arg, option+"=") || (len(option) == 2 && strings.HasPrefix(arg, option) && len(arg) > 2) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasNUL(values ...string) bool {

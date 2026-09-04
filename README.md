@@ -114,12 +114,12 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "cron": "0 2 * * *",
     "catch_up": true
   },
-  "sqlite_databases": [
-    {
+  "databases": {
+    "sqlite": [{
       "name": "notes",
       "path": "~/Library/Application Support/notes/data.sqlite3"
-    }
-  ]
+    }]
+  }
 }
 ```
 
@@ -135,44 +135,47 @@ ultimately decides whether a repeated option is valid. Parent profile command
 arguments are appended before child arguments. Use `"commands"` in
 `replace_inherited` to replace all inherited command sections.
 
-`backup_paths` contains ordinary files and directories to include. Databases
-are listed separately in `sqlite_databases`, `postgresql_databases`,
-`mongodb_databases`, and `mysql_databases`; for a database-only profile, set
-`backup_paths` to `[]`.
+`backup_paths` contains ordinary files and directories to include. Database
+settings live under `databases`, grouped by provider. For a database-only
+profile, set `backup_paths` to `[]`.
 
 PostgreSQL, MongoDB, MySQL, and MariaDB can be staged by client programs
 installed on the machine running `resticctl`:
 
 ```json
 {
-  "database_concurrency": 2,
-  "postgresql_databases": [{
-    "name": "accounts",
-    "database": "app",
-    "host": "db.example.net",
-    "port": 5432,
-    "username": "backup",
-    "globals": true,
-    "args": ["--no-owner"]
-  }],
-  "mongodb_databases": [{
-    "name": "events",
-    "database": "events",
-    "host": "mongo.example.net",
-    "config_file": "mongo-backup.yml",
-    "args": ["--oplog"]
-  }],
-  "mysql_databases": [{
-    "name": "orders",
-    "database": "shop",
-    "host": "mysql.example.net",
-    "port": 3306,
-    "username": "backup",
-    "routines": true,
-    "events": true,
-    "triggers": true,
-    "tables": []
-  }]
+  "databases": {
+    "concurrency": 2,
+    "postgresql": [{
+      "name": "accounts",
+      "database": "app",
+      "host": "db.example.net",
+      "port": 5432,
+      "username": "backup",
+      "globals": true,
+      "table_patterns": ["public.customers", "public.orders"],
+      "args": ["--no-owner"]
+    }],
+    "mongodb": [{
+      "name": "events",
+      "database": "events",
+      "host": "mongo.example.net",
+      "config_file": "mongo-backup.yml",
+      "collection": "activity",
+      "args": []
+    }],
+    "mysql": [{
+      "name": "orders",
+      "database": "shop",
+      "host": "mysql.example.net",
+      "port": 3306,
+      "username": "backup",
+      "routines": true,
+      "events": true,
+      "triggers": true,
+      "tables": []
+    }]
+  }
 }
 ```
 
@@ -197,9 +200,13 @@ schedule. Scheduled jobs still check again when they execute, since their
 `PATH` or installed tools may differ later. Explicit absolute client paths are
 recommended for scheduled database backups. Forget-only schedules do not
 require database clients. External database dumps run sequentially by default.
-Set `database_concurrency` to a positive value greater than one to run at most
+Set `databases.concurrency` to a positive value greater than one to run at most
 that many PostgreSQL, MongoDB, or MySQL/MariaDB dumps concurrently; choose a
 limit that the database servers and backup host can sustain.
+
+Legacy top-level `database_concurrency`, `sqlite_databases`,
+`postgresql_databases`, `mongodb_databases`, and `mysql_databases` fields remain
+supported for compatibility. Do not mix them with `databases` in one profile.
 
 ### Profile inheritance
 
@@ -241,7 +248,9 @@ clears an inherited schedule when the child omits that object. For example:
 }
 ```
 
-Supported replacement fields are the backup paths, all three database lists,
+For nested database lists, use `databases.sqlite`, `databases.postgresql`,
+`databases.mongodb`, or `databases.mysql` in `replace_inherited`. Supported
+replacement fields are the backup paths, all four database lists,
 Restic argument lists, tags, hook lists, and the `schedule` and `forget`
 objects. Unknown or duplicate names are rejected.
 
@@ -668,7 +677,7 @@ metrics contain the same redacted status model.
 
 ## Database backups
 
-Each entry in `sqlite_databases` is copied with SQLite's online backup API and
+Each entry in `databases.sqlite` is copied with SQLite's online backup API and
 checked with `PRAGMA integrity_check`. The copies appear in the snapshot as:
 
 ```text
@@ -727,12 +736,22 @@ For MySQL/MariaDB, resticctl writes `MYSQL_PASSWORD` and the configured
 `username` to a temporary mode-0600 client option file, passes that file as the
 client's first option, blanks inherited `MYSQL_PWD`, and removes the file as
 soon as the dump exits. Use `socket` for a Unix socket, or `host` and optional
-`port` for TCP; `host` and `socket` are mutually exclusive. `tables` limits the
-dump to named objects. Routines, events, and triggers are excluded unless their
-corresponding booleans are enabled.
+`port` for TCP; `host` and `socket` are mutually exclusive. PostgreSQL
+`table_patterns` use `pg_dump` pattern semantics. MySQL/MariaDB `tables` contain
+literal table names. MongoDB `collection` limits an entry to one named
+collection. Empty or omitted selection fields dump the whole configured
+database. Routines, events, and triggers are excluded from MySQL/MariaDB dumps
+unless their corresponding booleans are enabled.
 
 `pg_dump` provides a transactionally consistent view of one PostgreSQL
 database, but globals are dumped separately and are not atomic with it.
+Selected PostgreSQL table patterns might not include dependent objects needed
+for an independent restore. A selected MongoDB collection cannot be combined
+with `--oplog` or other selection arguments. Configure separately named MongoDB
+entries for separate collections so each dump has an explicit artifact and
+consistency boundary. Partial dumps include a sibling
+`databases/<name>.selection.json` manifest recording their provider, database,
+and configured selection.
 `mongodump` consistency depends on deployment topology: use `--oplog` for a
 replica set when a point-in-time dump is required, and consult MongoDB's
 requirements and restrictions for sharded clusters. `resticctl` does not

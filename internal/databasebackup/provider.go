@@ -3,6 +3,7 @@ package databasebackup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,8 +37,16 @@ func (s SQLite) Progress() string { return "Snapshotting SQLite database: " + s.
 
 func (s SQLite) Stage(ctx context.Context, _ Runner, directory string, _ map[string]string) error {
 	destination := filepath.Join(directory, "databases", s.Database.Name+".sqlite3")
-	if err := sqlitebackup.Create(ctx, s.Database.Path, destination); err != nil {
+	temporary, err := temporaryArtifact(directory, s.Database.Name+"-*.sqlite3")
+	if err != nil {
+		return fmt.Errorf("prepare SQLite database %s: %w", s.Database.Name, err)
+	}
+	defer os.Remove(temporary)
+	if err := sqlitebackup.Create(ctx, s.Database.Path, temporary); err != nil {
 		return fmt.Errorf("snapshot SQLite database %s: %w", s.Database.Name, err)
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		return fmt.Errorf("publish SQLite database %s: %w", s.Database.Name, err)
 	}
 	return nil
 }
@@ -51,25 +60,49 @@ func (p PostgreSQL) Progress() string { return "" }
 func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := p.Database
 	dump := filepath.Join("databases", db.Name+".dump")
-	args := []string{db.Executable, "--format=custom", "--file", dump}
+	temporaryDump, err := temporaryArtifact(directory, db.Name+"-*.dump")
+	if err != nil {
+		return fmt.Errorf("prepare PostgreSQL dump %s: %w", db.Name, err)
+	}
+	defer os.Remove(temporaryDump)
+	args := []string{db.Executable, "--format=custom", "--file", temporaryDump}
 	args = appendConnection(args, db.Host, db.Port, db.Username)
+	for _, pattern := range db.TablePatterns {
+		args = append(args, "--table="+pattern)
+	}
 	args = append(args, db.Args...)
 	args = append(args, db.Database)
 	if err := runner.RunDatabase(ctx, args, environment, directory); err != nil {
 		return fmt.Errorf("dump PostgreSQL database %s: %w", db.Name, err)
 	}
-	if err := requireNonEmptyRegularFile(filepath.Join(directory, dump)); err != nil {
+	if err := requireNonEmptyRegularFile(temporaryDump); err != nil {
 		return fmt.Errorf("verify PostgreSQL database dump %s: %w", db.Name, err)
+	}
+	if err := os.Rename(temporaryDump, filepath.Join(directory, dump)); err != nil {
+		return fmt.Errorf("publish PostgreSQL database dump %s: %w", db.Name, err)
 	}
 	if db.Globals {
 		globalsDump := filepath.Join("databases", db.Name+"-globals.sql")
-		globals := []string{db.GlobalsExecutable, "--globals-only", "--file", globalsDump}
+		temporaryGlobals, err := temporaryArtifact(directory, db.Name+"-globals-*.sql")
+		if err != nil {
+			return fmt.Errorf("prepare PostgreSQL globals %s: %w", db.Name, err)
+		}
+		defer os.Remove(temporaryGlobals)
+		globals := []string{db.GlobalsExecutable, "--globals-only", "--file", temporaryGlobals}
 		globals = appendConnection(globals, db.Host, db.Port, db.Username)
 		if err := runner.RunDatabase(ctx, globals, environment, directory); err != nil {
 			return fmt.Errorf("dump PostgreSQL globals %s: %w", db.Name, err)
 		}
-		if err := requireNonEmptyRegularFile(filepath.Join(directory, globalsDump)); err != nil {
+		if err := requireNonEmptyRegularFile(temporaryGlobals); err != nil {
 			return fmt.Errorf("verify PostgreSQL globals dump %s: %w", db.Name, err)
+		}
+		if err := os.Rename(temporaryGlobals, filepath.Join(directory, globalsDump)); err != nil {
+			return fmt.Errorf("publish PostgreSQL globals dump %s: %w", db.Name, err)
+		}
+	}
+	if len(db.TablePatterns) > 0 {
+		if err := writeSelectionManifest(directory, db.Name, "postgresql", db.Database, "table_patterns", db.TablePatterns); err != nil {
+			return fmt.Errorf("record PostgreSQL selection %s: %w", db.Name, err)
 		}
 	}
 	return nil
@@ -97,7 +130,16 @@ func (m MongoDB) Progress() string { return "" }
 func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := m.Database
 	dump := filepath.Join("databases", db.Name)
-	args := []string{db.Executable, "--out", dump}
+	databaseDir := filepath.Join(directory, "databases")
+	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
+		return fmt.Errorf("prepare MongoDB dump %s: %w", db.Name, err)
+	}
+	temporaryDump, err := os.MkdirTemp(databaseDir, "."+db.Name+"-*")
+	if err != nil {
+		return fmt.Errorf("prepare MongoDB dump %s: %w", db.Name, err)
+	}
+	defer os.RemoveAll(temporaryDump)
+	args := []string{db.Executable, "--out", temporaryDump}
 	if db.ConfigFile != "" {
 		args = append(args, "--config", db.ConfigFile)
 	}
@@ -110,12 +152,23 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 	if db.Database != "" {
 		args = append(args, "--db", db.Database)
 	}
+	if db.Collection != "" {
+		args = append(args, "--collection", db.Collection)
+	}
 	args = append(args, db.Args...)
 	if err := runner.RunDatabase(ctx, args, environment, directory); err != nil {
 		return fmt.Errorf("dump MongoDB database %s: %w", db.Name, err)
 	}
-	if err := requireMongoDumpDirectory(filepath.Join(directory, dump)); err != nil {
+	if err := requireMongoDumpDirectory(temporaryDump); err != nil {
 		return fmt.Errorf("verify MongoDB database dump %s: %w", db.Name, err)
+	}
+	if err := os.Rename(temporaryDump, filepath.Join(directory, dump)); err != nil {
+		return fmt.Errorf("publish MongoDB database dump %s: %w", db.Name, err)
+	}
+	if db.Collection != "" {
+		if err := writeSelectionManifest(directory, db.Name, "mongodb", db.Database, "collection", []string{db.Collection}); err != nil {
+			return fmt.Errorf("record MongoDB selection %s: %w", db.Name, err)
+		}
 	}
 	return nil
 }
@@ -151,8 +204,13 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 		return fmt.Errorf("close MySQL client option file for %s: %w", db.Name, err)
 	}
 
+	temporaryDump, err := temporaryArtifact(directory, db.Name+"-*.sql")
+	if err != nil {
+		return fmt.Errorf("prepare MySQL dump %s: %w", db.Name, err)
+	}
+	defer os.Remove(temporaryDump)
 	args := []string{db.Executable, "--defaults-extra-file=" + optionPath,
-		"--single-transaction", "--result-file=" + filepath.Join("databases", db.Name+".sql")}
+		"--single-transaction", "--result-file=" + temporaryDump}
 	if db.Socket != "" {
 		args = append(args, "--protocol=socket", "--socket", db.Socket)
 	} else {
@@ -182,10 +240,72 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 	if err := runner.RunDatabase(ctx, args, map[string]string{"MYSQL_PWD": ""}, directory); err != nil {
 		return fmt.Errorf("dump MySQL database %s: %w", db.Name, err)
 	}
-	if err := requireNonEmptyRegularFile(filepath.Join(directory, "databases", db.Name+".sql")); err != nil {
+	if err := requireNonEmptyRegularFile(temporaryDump); err != nil {
 		return fmt.Errorf("verify MySQL database dump %s: %w", db.Name, err)
 	}
+	if err := os.Rename(temporaryDump, filepath.Join(directory, "databases", db.Name+".sql")); err != nil {
+		return fmt.Errorf("publish MySQL database dump %s: %w", db.Name, err)
+	}
+	if len(db.Tables) > 0 {
+		if err := writeSelectionManifest(directory, db.Name, "mysql", db.Database, "tables", db.Tables); err != nil {
+			return fmt.Errorf("record MySQL selection %s: %w", db.Name, err)
+		}
+	}
 	return nil
+}
+
+type selectionManifest struct {
+	Provider string   `json:"provider"`
+	Database string   `json:"database"`
+	Kind     string   `json:"kind"`
+	Values   []string `json:"values"`
+}
+
+func writeSelectionManifest(directory, name, provider, database, kind string, values []string) error {
+	data, err := json.MarshalIndent(selectionManifest{Provider: provider, Database: database, Kind: kind, Values: values}, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	path := filepath.Join(directory, "databases", name+".selection.json")
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+name+"-*.selection.json")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func temporaryArtifact(directory, pattern string) (string, error) {
+	databaseDir := filepath.Join(directory, "databases")
+	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
+		return "", err
+	}
+	file, err := os.CreateTemp(databaseDir, "."+pattern)
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func requireNonEmptyRegularFile(path string) error {

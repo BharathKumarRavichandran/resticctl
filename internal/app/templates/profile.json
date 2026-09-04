@@ -40,13 +40,14 @@
         "http": [],
         "logs": []
     },
-    "database_concurrency": 1,
     "schedule": {
         "backend": "auto",
         "cron": "0 2 * * *",
         "catch_up": true
     },
-    "sqlite_databases": [
+    "databases": {
+      "concurrency": 1,
+      "sqlite": [
         {
             "name": "primary",
             "path": "~/path/to/application.sqlite3"
@@ -55,8 +56,8 @@
             "name": "secondary",
             "path": "~/path/to/another.sqlite3"
         }
-    ],
-    "postgresql_databases": [
+      ],
+      "postgresql": [
         {
             "name": "application",
             "database": "application",
@@ -66,10 +67,11 @@
             "executable": "pg_dump",
             "globals": false,
             "globals_executable": "pg_dumpall",
-            "args": ["--no-owner"]
+            "args": ["--no-owner"],
+            "table_patterns": []
         }
-    ],
-    "mongodb_databases": [
+      ],
+      "mongodb": [
         {
             "name": "events",
             "database": "events",
@@ -77,10 +79,11 @@
             "port": 27017,
             "executable": "mongodump",
             "config_file": "mongo-backup.yml",
-            "args": []
+            "args": [],
+            "collection": ""
         }
-    ],
-    "mysql_databases": [
+      ],
+      "mysql": [
         {
             "name": "orders",
             "database": "shop",
@@ -94,5 +97,6 @@
             "events": false,
             "triggers": true
         }
-    ]
+      ]
+    }
 }

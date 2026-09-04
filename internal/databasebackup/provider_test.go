@@ -59,6 +59,15 @@ func (noArtifactRunner) RunDatabase(context.Context, []string, map[string]string
 	return nil
 }
 
+type artifactThenErrorRunner struct{}
+
+func (artifactThenErrorRunner) RunDatabase(_ context.Context, args []string, _ map[string]string, cwd string) error {
+	if err := createFakeArtifact(args, cwd); err != nil {
+		return err
+	}
+	return errors.New("client failed")
+}
+
 func createFakeArtifact(args []string, cwd string) error {
 	for i, argument := range args {
 		var path string
@@ -73,7 +82,9 @@ func createFakeArtifact(args []string, cwd string) error {
 		if path == "" {
 			continue
 		}
-		path = filepath.Join(cwd, path)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}
@@ -88,11 +99,11 @@ func TestPostgreSQLStagesRemoteDatabaseAndGlobals(t *testing.T) {
 	runner := &fakeRunner{}
 	directory := t.TempDir()
 	env := map[string]string{"PGPASSWORD": "private"}
-	db := profile.PostgreSQLDatabase{Name: "accounts", Database: "app", Host: "db.example", Port: 5433, Username: "backup", Executable: "/opt/pg_dump", GlobalsExecutable: "/opt/pg_dumpall", Globals: true, Args: []string{"--no-owner"}}
+	db := profile.PostgreSQLDatabase{Name: "accounts", Database: "app", Host: "db.example", Port: 5433, Username: "backup", Executable: "/opt/pg_dump", GlobalsExecutable: "/opt/pg_dumpall", Globals: true, Args: []string{"--no-owner"}, TablePatterns: []string{"public.customers", "public.orders"}}
 	if err := (PostgreSQL{Database: db}).Stage(context.Background(), runner, directory, env); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/opt/pg_dump", "--format=custom", "--file", filepath.Join("databases", "accounts.dump"), "--host", "db.example", "--port", "5433", "--username", "backup", "--no-owner", "app"}
+	want := []string{"/opt/pg_dump", "--format=custom", "--file", runner.calls[0].args[3], "--host", "db.example", "--port", "5433", "--username", "backup", "--table=public.customers", "--table=public.orders", "--no-owner", "app"}
 	if len(runner.calls) != 2 || !slices.Equal(runner.calls[0].args, want) {
 		t.Fatalf("calls = %#v", runner.calls)
 	}
@@ -108,9 +119,29 @@ func TestMongoDBStagesLocalSocketConfiguration(t *testing.T) {
 	if err := (MongoDB{Database: db}).Stage(context.Background(), runner, directory, nil); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"mongodump", "--out", filepath.Join("databases", "events"), "--config", "/private/mongo.yml", "--host", "/var/run/mongodb/mongodb.sock", "--db", "events", "--oplog"}
+	want := []string{"mongodump", "--out", runner.calls[0].args[2], "--config", "/private/mongo.yml", "--host", "/var/run/mongodb/mongodb.sock", "--db", "events", "--oplog"}
 	if len(runner.calls) != 1 || !slices.Equal(runner.calls[0].args, want) {
 		t.Fatalf("calls = %#v", runner.calls)
+	}
+}
+
+func TestMongoDBStagesSelectedCollection(t *testing.T) {
+	runner := &fakeRunner{}
+	directory := t.TempDir()
+	db := profile.MongoDBDatabase{Name: "events", Database: "events", Executable: "mongodump", Collection: "activity"}
+	if err := (MongoDB{Database: db}).Stage(context.Background(), runner, directory, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %#v", runner.calls)
+	}
+	args := runner.calls[0].args
+	if !containsSequence(args, []string{"--db", "events", "--collection", "activity"}) {
+		t.Fatalf("args = %#v", args)
+	}
+	manifest, err := os.ReadFile(filepath.Join(directory, "databases", "events.selection.json"))
+	if err != nil || !strings.Contains(string(manifest), `"values": [`) || !strings.Contains(string(manifest), `"activity"`) {
+		t.Fatalf("selection manifest = %q, %v", manifest, err)
 	}
 }
 
@@ -121,7 +152,7 @@ func TestMySQLStagesRemoteDatabaseWithPrivateCredentials(t *testing.T) {
 	if err := (MySQL{Database: db}).Stage(context.Background(), runner, directory, map[string]string{"MYSQL_PASSWORD": "p\\\"a\nss", "UNRELATED": "secret"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"mariadb-dump", "--defaults-extra-file=" + runner.optionPath, "--single-transaction", "--result-file=" + filepath.Join("databases", "accounts.sql"), "--host", "db.example", "--port", "3307", "--routines", "--events", "--triggers", "--hex-blob", "app", "customers", "orders"}
+	want := []string{"mariadb-dump", "--defaults-extra-file=" + runner.optionPath, "--single-transaction", runner.call.args[3], "--host", "db.example", "--port", "3307", "--routines", "--events", "--triggers", "--hex-blob", "app", "customers", "orders"}
 	if !slices.Equal(runner.call.args, want) {
 		t.Fatalf("args = %#v", runner.call.args)
 	}
@@ -174,7 +205,28 @@ func TestExternalProvidersRejectMissingArtifactsAfterSuccessfulClient(t *testing
 			if err == nil || !strings.Contains(err.Error(), "verify") {
 				t.Fatalf("Stage error = %v", err)
 			}
+			entries, readErr := os.ReadDir(filepath.Join(directory, "databases"))
+			if readErr != nil || len(entries) != 0 {
+				t.Fatalf("unverified artifacts were published: %v, %v", entries, readErr)
+			}
 		})
+	}
+}
+
+func TestMongoDBDoesNotPublishArtifactAfterClientFailure(t *testing.T) {
+	directory := t.TempDir()
+	databaseDir := filepath.Join(directory, "databases")
+	if err := os.Mkdir(databaseDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := profile.MongoDBDatabase{Name: "events", Database: "events", Collection: "activity", Executable: "mongodump"}
+	err := (MongoDB{Database: db}).Stage(context.Background(), artifactThenErrorRunner{}, directory, nil)
+	if err == nil || !strings.Contains(err.Error(), "client failed") {
+		t.Fatalf("Stage error = %v", err)
+	}
+	entries, err := os.ReadDir(databaseDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed artifact was published: %v, %v", entries, err)
 	}
 }
 
