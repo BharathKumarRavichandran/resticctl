@@ -2,8 +2,13 @@
     "repository": "s3:https://s3.<region>.backblazeb2.com/<bucket>/restic",
     "credentials_file": "<profile>.credentials.json",
     "restic_args": ["--retry-lock", "2m"],
+    "commands": {
+        "backup": {"args": ["--exclude-caches", "--skip-if-unchanged"]},
+        "mount": {"args": []},
+        "rewrite": {"args": []}
+    },
     "backup_paths": ["~/path/to/files"],
-    "backup_args": ["--exclude-caches", "--skip-if-unchanged"],
+    "backup_args": [],
     "tags": [],
     "forget_args": [
         "--keep-daily", "7",

@@ -21,6 +21,7 @@ func merge(parent, child profileConfig) profileConfig {
 	result.MongoDBDatabases = mergeNamed(parent.MongoDBDatabases, child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }, child.replaces("mongodb_databases"))
 	result.MySQLDatabases = mergeNamed(parent.MySQLDatabases, child.MySQLDatabases, func(v MySQLDatabase) string { return v.Name }, child.replaces("mysql_databases"))
 	result.ResticArgs = mergeList(parent.ResticArgs, child.ResticArgs, child.replaces("restic_args"))
+	result.Commands = mergeCommands(parent.Commands, child.Commands, child.replaces("commands"))
 	result.BackupArgs = mergeList(parent.BackupArgs, child.BackupArgs, child.replaces("backup_args"))
 	result.Tags = mergeList(parent.Tags, child.Tags, child.replaces("tags"))
 	result.ForgetArgs = mergeList(parent.ForgetArgs, child.ForgetArgs, child.replaces("forget_args"))
@@ -84,6 +85,24 @@ func mergeNamed[T any](parent, child []T, name func(T) string, replace bool) []T
 	return result
 }
 
+func mergeCommands(parent, child map[string]ResticCommand, replace bool) map[string]ResticCommand {
+	result := make(map[string]ResticCommand, len(parent)+len(child))
+	if !replace {
+		for name, command := range parent {
+			result[name] = ResticCommand{Args: append([]string(nil), command.Args...)}
+		}
+	}
+	for name, command := range child {
+		if inherited, ok := result[name]; ok {
+			command.Args = mergeList(inherited.Args, command.Args, false)
+		} else {
+			command.Args = append([]string(nil), command.Args...)
+		}
+		result[name] = command
+	}
+	return result
+}
+
 func (configured profileConfig) replaces(field string) bool {
 	return slices.Contains(configured.ReplaceInherited, field)
 }
@@ -91,7 +110,7 @@ func (configured profileConfig) replaces(field string) bool {
 func validateReplaceInherited(fields []string) error {
 	allowed := map[string]struct{}{
 		"backup_paths": {}, "sqlite_databases": {}, "postgresql_databases": {}, "mongodb_databases": {}, "mysql_databases": {},
-		"restic_args": {}, "backup_args": {}, "tags": {}, "forget_args": {}, "check_args": {},
+		"restic_args": {}, "commands": {}, "backup_args": {}, "tags": {}, "forget_args": {}, "check_args": {},
 		"run_before": {}, "run_after": {}, "run_after_fail": {}, "run_finally": {},
 		"schedule": {}, "forget": {}, "monitoring": {},
 	}
@@ -110,7 +129,7 @@ func validateReplaceInherited(fields []string) error {
 
 func (configured profileConfig) profile(name string) Profile {
 	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
-		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs,
+		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs, Commands: configured.Commands,
 		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases, MySQLDatabases: configured.MySQLDatabases,
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,

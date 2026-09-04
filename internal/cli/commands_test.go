@@ -142,6 +142,37 @@ func TestKeyRemoveRejectsInvalidKeyID(t *testing.T) {
 	}
 }
 
+func TestRunPassesResticFlagsWithoutParsingThem(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	runner := &recordingRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+
+	status, err := cli.run(context.Background(), []string{
+		"--config-dir", directory, "run", "example", "mount", "--help",
+	})
+	if status != 0 || err != nil {
+		t.Fatalf("status=%d error=%v", status, err)
+	}
+	want := []string{"mount", "--help"}
+	if len(runner.runs) != 1 || !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("runs = %#v, want arguments %v", runner.runs, want)
+	}
+}
+
+func TestRunOnlyConsumesLeadingResticctlFlags(t *testing.T) {
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	arguments := []string{"example", "find", "--config-dir", "literal-pattern"}
+	got, err := cli.extractRunConfigDir(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, arguments) || cli.configDir != "" {
+		t.Fatalf("arguments = %v, config dir = %q", got, cli.configDir)
+	}
+}
+
 func TestExecutionErrorHasRuntimeStatus(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)

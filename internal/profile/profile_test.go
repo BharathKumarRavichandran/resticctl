@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,44 @@ func TestLoadResolvesNestedInheritance(t *testing.T) {
 	}
 	if loaded.CredentialsFile != filepath.Join(directory, "credentials.json") {
 		t.Fatalf("credentials file = %q", loaded.CredentialsFile)
+	}
+}
+
+func TestLoadMergesAndValidatesPersistentResticCommands(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:test",
+          "commands":{"mount":{"args":["--allow-other"]}}
+        }`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "parent":"base",
+          "credentials_file":"credentials.json",
+          "commands":{"mount":{"args":["--no-default-permissions"]},"rewrite":{"args":["--dry-run"]}}
+        }`)
+
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Commands["mount"].Args; !slices.Equal(got, []string{"--allow-other", "--no-default-permissions"}) {
+		t.Fatalf("mount args = %v", got)
+	}
+
+	writePrivate(t, filepath.Join(directory, "invalid.json"), `{
+          "repository":"local:test","credentials_file":"credentials.json",
+          "commands":{"mont":{"args":[]}}
+        }`)
+	if _, err := Load(directory, "invalid"); err == nil || !strings.Contains(err.Error(), "unsupported Restic command") {
+		t.Fatalf("Load error = %v", err)
+	}
+
+	writePrivate(t, filepath.Join(directory, "reserved.json"), `{
+          "repository":"local:test","credentials_file":"credentials.json",
+          "commands":{"mount":{"args":["--password-file=secret"]}}
+        }`)
+	if _, err := Load(directory, "reserved"); err == nil || !strings.Contains(err.Error(), "must not override") {
+		t.Fatalf("Load error = %v", err)
 	}
 }
 

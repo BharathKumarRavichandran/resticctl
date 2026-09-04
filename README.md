@@ -77,8 +77,13 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
   "repository": "s3:https://s3.us-west-004.backblazeb2.com/my-bucket/restic",
   "credentials_file": "<profile>.credentials.json",
   "restic_args": ["--retry-lock", "2m"],
+  "commands": {
+    "backup": {"args": ["--exclude-caches", "--skip-if-unchanged"]},
+    "mount": {"args": ["--allow-other"]},
+    "rewrite": {"args": ["--dry-run"]}
+  },
   "backup_paths": ["~/Documents", "~/Pictures"],
-  "backup_args": ["--exclude-caches", "--skip-if-unchanged"],
+  "backup_args": [],
   "tags": ["personal"],
   "forget_args": [
     "--keep-daily", "7",
@@ -118,8 +123,17 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
 }
 ```
 
-`restic_args` are placed before the restic subcommand. The other argument lists
-only apply to the command named by the field.
+`restic_args` are Restic global flags and are placed before every supported
+Restic subcommand. `commands` contains persistent, command-specific raw argument
+vectors. The legacy `backup_args`, `check_args`, and `forget_args` fields remain
+supported for compatibility.
+
+Arguments are assembled in increasing precedence: resticctl orchestration
+defaults, legacy command arguments, the matching `commands` section, then CLI
+arguments. When an option is repeated, the CLI value is therefore last; Restic
+ultimately decides whether a repeated option is valid. Parent profile command
+arguments are appended before child arguments. Use `"commands"` in
+`replace_inherited` to replace all inherited command sections.
 
 `backup_paths` contains ordinary files and directories to include. Databases
 are listed separately in `sqlite_databases`, `postgresql_databases`,
@@ -728,18 +742,28 @@ boundaries:
 ```sh
 resticctl run <profile> tag --add old-tag new-tag
 resticctl run <profile> unlock --remove-all
+resticctl run <profile> mount /mnt/backup
+resticctl run <profile> rewrite --dry-run
 ```
 
 Supported commands are `backup`, `cache`, `cat`, `check`, `copy`, `diff`,
-`dump`, `find`, `forget`, `init`, `key`, `list`, `ls`, `migrate`, `prune`,
-`rebuild-index`, `recover`, `repair`, `restore`, `self-update`, `snapshots`,
-`stats`, `tag`, and `unlock`. Repository and password-source options, including
-attached short forms such as `-r/path` and `-p/path`, are reserved and cannot be
-passed through; `resticctl` supplies them securely. Arguments after `--` are
-treated as positional values.
-Profile `restic_args` remain global options, while command-specific profile
-options and orchestration defaults continue to be applied by their dedicated
-commands.
+`dump`, `features`, `find`, `forget`, `generate`, `init`, `key`, `list`, `ls`,
+`migrate`, `mount`, `options`, `prune`, `rebuild-index`, `recover`, `repair`,
+`restore`, `rewrite`, `self-update`, `snapshots`, `stats`, `tag`, `unlock`, and
+`version`. Persistent sections may also target `key add`, `key list`, `key
+passwd`, `key remove`, `repair index`, `repair packs`, and `repair snapshots`.
+The explicit catalog prevents misspelled commands from being silently passed
+through; supporting a new Restic command requires adding it to the catalog.
+New flags need no resticctl change and can be placed in a command section or on
+the `run` command line.
+
+Repository and password-source options, including attached short forms such as
+`-r/path` and `-p/path`, are reserved and cannot be passed through; resticctl
+supplies them securely. Arguments after `--` are treated as positional values.
+To see version-matched help, run `resticctl run <profile> <restic-command>
+--help`. Because `run` stops interpreting flags at the pass-through boundary,
+put global resticctl flags before `run`, for example `resticctl --config-dir
+/etc/resticctl run home mount --help`.
 
 ## Support
 

@@ -150,6 +150,47 @@ func TestRunResticPassesArgumentsThrough(t *testing.T) {
 	}
 }
 
+func TestRunResticAppliesPersistentArgumentsBeforeCommandLineArguments(t *testing.T) {
+	runner := &recordingRunner{}
+	backupProfile := profile.Profile{Commands: map[string]profile.ResticCommand{
+		"mount": {Args: []string{"--allow-other"}},
+	}}
+	if err := RunRestic(context.Background(), runner, backupProfile, "mount", []string{"/mnt/restic", "--no-default-permissions"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mount", "--allow-other", "/mnt/restic", "--no-default-permissions"}
+	if !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("arguments = %v, want %v", runner.runs[0].arguments, want)
+	}
+}
+
+func TestRunResticAppliesParentAndNestedCommandArguments(t *testing.T) {
+	runner := &recordingRunner{}
+	backupProfile := profile.Profile{Commands: map[string]profile.ResticCommand{
+		"repair":       {Args: []string{"--no-cache"}},
+		"repair packs": {Args: []string{"--dry-run"}},
+	}}
+	if err := RunRestic(context.Background(), runner, backupProfile, "repair", []string{"packs", "abc123"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"repair", "--no-cache", "packs", "--dry-run", "abc123"}
+	if !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("arguments = %v, want %v", runner.runs[0].arguments, want)
+	}
+}
+
+func TestRunResticSupportsPhaseSixCommands(t *testing.T) {
+	for _, command := range []string{"features", "mount", "rewrite"} {
+		runner := &recordingRunner{}
+		if err := RunRestic(context.Background(), runner, profile.Profile{}, command, []string{"--help"}); err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+		if got := runner.runs[0].arguments; !slices.Equal(got, []string{command, "--help"}) {
+			t.Fatalf("%s arguments = %v", command, got)
+		}
+	}
+}
+
 func TestResticRunnerReceivesOnlyRepositoryConfiguration(t *testing.T) {
 	runner := &recordingRunner{}
 	backupProfile := profile.Profile{
@@ -186,6 +227,12 @@ func TestRunResticRejectsReservedArgumentsAndUnknownCommands(t *testing.T) {
 	}
 	if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, "not-a-command", nil); err == nil {
 		t.Fatal("unknown command accepted")
+	}
+	for _, command := range []string{"key misspelled", "repair misspelled"} {
+		parts := strings.Split(command, " ")
+		if err := RunRestic(context.Background(), &recordingRunner{}, profile.Profile{}, parts[0], parts[1:]); err == nil {
+			t.Fatalf("unknown nested command %q accepted", command)
+		}
 	}
 }
 

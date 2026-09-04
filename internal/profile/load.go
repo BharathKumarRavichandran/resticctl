@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -103,6 +104,25 @@ func Load(configDir, name string) (Profile, error) {
 			}
 		}
 	}
+	commandNames := make([]string, 0, len(backupProfile.Commands))
+	for name := range backupProfile.Commands {
+		commandNames = append(commandNames, name)
+	}
+	sort.Strings(commandNames)
+	for _, name := range commandNames {
+		command := backupProfile.Commands[name]
+		if !IsSupportedResticCommand(name) {
+			return Profile{}, fmt.Errorf("commands contains unsupported Restic command %q", name)
+		}
+		for _, value := range command.Args {
+			if value == "" || strings.ContainsRune(value, 0) {
+				return Profile{}, fmt.Errorf("commands.%s.args must not contain empty strings or NUL bytes", name)
+			}
+			if IsReservedOption(value) {
+				return Profile{}, fmt.Errorf("commands.%s.args must not override repository or password options: %s", name, value)
+			}
+		}
+	}
 	if (backupProfile.PruneBefore || backupProfile.PruneAfter) && len(backupProfile.ForgetArgs) == 0 {
 		return Profile{}, errors.New("backup pruning requires non-empty forget_args")
 	}
@@ -184,32 +204,33 @@ func validScheduleBackend(value string) bool {
 // profileConfig uses pointers for scalars so inheritance can distinguish an
 // omitted value from an explicit false or empty value.
 type profileConfig struct {
-	Parent              string               `json:"parent,omitempty"`
-	ReplaceInherited    []string             `json:"replace_inherited,omitempty"`
-	Repository          *string              `json:"repository"`
-	CredentialsFile     *string              `json:"credentials_file"`
-	BackupPaths         []string             `json:"backup_paths"`
-	SQLiteDatabases     []SQLiteDatabase     `json:"sqlite_databases"`
-	PostgreSQLDatabases []PostgreSQLDatabase `json:"postgresql_databases,omitempty"`
-	MongoDBDatabases    []MongoDBDatabase    `json:"mongodb_databases,omitempty"`
-	MySQLDatabases      []MySQLDatabase      `json:"mysql_databases,omitempty"`
-	DatabaseConcurrency *int                 `json:"database_concurrency,omitempty"`
-	ResticArgs          []string             `json:"restic_args"`
-	BackupArgs          []string             `json:"backup_args"`
-	Tags                []string             `json:"tags"`
-	ForgetArgs          []string             `json:"forget_args"`
-	CheckArgs           []string             `json:"check_args"`
-	CheckBefore         *bool                `json:"check_before"`
-	CheckAfter          *bool                `json:"check_after"`
-	PruneBefore         *bool                `json:"prune_before"`
-	PruneAfter          *bool                `json:"prune_after"`
-	RunBefore           []Hook               `json:"run_before"`
-	RunAfter            []Hook               `json:"run_after"`
-	RunAfterFail        []Hook               `json:"run_after_fail"`
-	RunFinally          []Hook               `json:"run_finally"`
-	Schedule            *Schedule            `json:"schedule,omitempty"`
-	Forget              *ForgetSchedule      `json:"forget,omitempty"`
-	Monitoring          *Monitoring          `json:"monitoring,omitempty"`
+	Parent              string                   `json:"parent,omitempty"`
+	ReplaceInherited    []string                 `json:"replace_inherited,omitempty"`
+	Repository          *string                  `json:"repository"`
+	CredentialsFile     *string                  `json:"credentials_file"`
+	BackupPaths         []string                 `json:"backup_paths"`
+	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases"`
+	PostgreSQLDatabases []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
+	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
+	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
+	DatabaseConcurrency *int                     `json:"database_concurrency,omitempty"`
+	ResticArgs          []string                 `json:"restic_args"`
+	Commands            map[string]ResticCommand `json:"commands,omitempty"`
+	BackupArgs          []string                 `json:"backup_args"`
+	Tags                []string                 `json:"tags"`
+	ForgetArgs          []string                 `json:"forget_args"`
+	CheckArgs           []string                 `json:"check_args"`
+	CheckBefore         *bool                    `json:"check_before"`
+	CheckAfter          *bool                    `json:"check_after"`
+	PruneBefore         *bool                    `json:"prune_before"`
+	PruneAfter          *bool                    `json:"prune_after"`
+	RunBefore           []Hook                   `json:"run_before"`
+	RunAfter            []Hook                   `json:"run_after"`
+	RunAfterFail        []Hook                   `json:"run_after_fail"`
+	RunFinally          []Hook                   `json:"run_finally"`
+	Schedule            *Schedule                `json:"schedule,omitempty"`
+	Forget              *ForgetSchedule          `json:"forget,omitempty"`
+	Monitoring          *Monitoring              `json:"monitoring,omitempty"`
 }
 
 func resolve(configDir, name string, chain []string) (profileConfig, error) {

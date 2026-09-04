@@ -131,6 +131,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 		arguments = append(arguments, "--tag", tag)
 	}
 	arguments = append(arguments, backupProfile.BackupArgs...)
+	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "backup")
 	if dryRun {
 		arguments = append(arguments, "--dry-run")
 	}

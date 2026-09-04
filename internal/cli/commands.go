@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -224,12 +225,20 @@ func (cli *commandLine) checkCommand() *cobra.Command {
 
 func (cli *commandLine) runCommand() *cobra.Command {
 	command := &cobra.Command{
-		Use:               "run <profile> <restic-command> [args...]",
-		Short:             "Run a supported restic command",
-		Long:              "Run a supported restic command with arguments passed through unchanged. Repository and password flags are managed by resticctl.",
-		Args:              cobra.MinimumNArgs(2),
-		ValidArgsFunction: cli.completeFirstProfile,
+		Use:                "run <profile> <restic-command> [args...]",
+		Short:              "Run a supported restic command",
+		Long:               "Run a supported restic command with arguments passed through unchanged. Repository and password flags are managed by resticctl. Use <restic-command> --help to show help from the installed Restic version.",
+		DisableFlagParsing: true,
+		Args:               cobra.MinimumNArgs(2),
+		ValidArgsFunction:  cli.completeFirstProfile,
 		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			arguments, err := cli.extractRunConfigDir(arguments)
+			if err != nil {
+				return err
+			}
+			if len(arguments) < 2 {
+				return errors.New("run requires a profile and Restic command")
+			}
 			configDir, err := cli.resolveConfigDir()
 			if err != nil {
 				return err
@@ -250,6 +259,27 @@ func (cli *commandLine) runCommand() *cobra.Command {
 		}),
 	}
 	return command
+}
+
+func (cli *commandLine) extractRunConfigDir(arguments []string) ([]string, error) {
+	index := 0
+	for index < len(arguments) {
+		argument := arguments[index]
+		switch {
+		case argument == "--config-dir":
+			if index+1 == len(arguments) {
+				return nil, errors.New("--config-dir requires a value")
+			}
+			cli.configDir = arguments[index+1]
+			index += 2
+		case strings.HasPrefix(argument, "--config-dir="):
+			cli.configDir = strings.TrimPrefix(argument, "--config-dir=")
+			index++
+		default:
+			return arguments[index:], nil
+		}
+	}
+	return nil, nil
 }
 
 func (cli *commandLine) keyCommand() *cobra.Command {
