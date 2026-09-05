@@ -31,7 +31,8 @@ func List(configDir string) ([]string, error) {
 	var profiles []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.Type().IsRegular() && strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".credentials.json") {
+		if entry.Type().IsRegular() && strings.HasSuffix(name, ".json") &&
+			!strings.HasSuffix(name, ".credentials.json") && !strings.HasSuffix(name, ".private.json") {
 			profileName := strings.TrimSuffix(name, ".json")
 			if isPortableName(profileName) {
 				profiles = append(profiles, profileName)

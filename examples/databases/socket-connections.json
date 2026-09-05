@@ -1,0 +1,28 @@
+{
+  "databases": {
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "accounts",
+          "socket": "/var/run/postgresql",
+          "username": "backup",
+          "password": {
+            "file": "/etc/resticctl/postgresql-password"
+          }
+        }
+      }
+    },
+    "mysql": {
+      "orders": {
+        "connection": {
+          "database": "shop",
+          "socket": "/run/mysqld/mysqld.sock",
+          "username": "backup",
+          "password": {
+            "file": "/etc/resticctl/mysql-password"
+          }
+        }
+      }
+    }
+  }
+}

@@ -19,6 +19,7 @@ type Config struct {
 	Environment     map[string]string
 	PasswordCommand []string
 	PasswordFile    string
+	PasswordValue   string
 }
 
 // ExitError preserves Restic's process status for policy and monitoring code.

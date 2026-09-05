@@ -6,7 +6,7 @@
 A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
 
 A profile keeps the repository, paths, credentials, and retention rules in one place.
-resticctl can also stage SQLite, PostgreSQL, MongoDB, MySQL, and MariaDB
+resticctl can also stage SQLite, PostgreSQL, MongoDB, MySQL, MariaDB, and SQL Server
 databases, adding their snapshots or dumps to the same Restic snapshot as the
 other files.
 
@@ -47,7 +47,7 @@ resticctl create <profile>
 
 Replace `<profile>` with a name that describes the backup.
 
-This creates `<profile>.json` and `<profile>.credentials.json`. On Linux and macOS they
+This creates `<profile>.json` and `<profile>.private.json`. On Linux and macOS they
 live in `~/.config/resticctl`; on Windows they live in
 `%APPDATA%\resticctl`.
 
@@ -75,7 +75,7 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
 ```json
 {
   "repository": "s3:https://s3.us-west-004.backblazeb2.com/my-bucket/restic",
-  "credentials_file": "<profile>.credentials.json",
+  "private_file": "<profile>.private.json",
   "restic_args": ["--retry-lock", "2m"],
   "commands": {
     "backup": {"args": ["--exclude-caches", "--skip-if-unchanged"]},
@@ -115,10 +115,11 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "catch_up": true
   },
   "databases": {
-    "sqlite": [{
-      "name": "notes",
-      "path": "~/Library/Application Support/notes/data.sqlite3"
-    }]
+    "sqlite": {
+      "notes": {
+        "path": "~/Library/Application Support/notes/data.sqlite3"
+      }
+    }
   }
 }
 ```
@@ -131,56 +132,138 @@ supported for compatibility.
 Arguments are assembled in increasing precedence: resticctl orchestration
 defaults, legacy command arguments, the matching `commands` section, then CLI
 arguments. When an option is repeated, the CLI value is therefore last; Restic
-ultimately decides whether a repeated option is valid. Parent profile command
-arguments are appended before child arguments. Use `"commands"` in
-`replace_inherited` to replace all inherited command sections.
+ultimately decides whether a repeated option is valid. When a child profile
+supplies command arguments, its array replaces the inherited command arguments.
 
 `backup_paths` contains ordinary files and directories to include. Database
 settings live under `databases`, grouped by provider. For a database-only
 profile, set `backup_paths` to `[]`.
 
-PostgreSQL, MongoDB, MySQL, and MariaDB can be staged by client programs
+Profiles that are committed to source control can keep deployment details in a
+private override file:
+
+```json
+{
+  "repository": "local:development",
+  "private_file": "profile.private.json",
+  "databases": {
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "development_accounts",
+          "hosts": ["localhost:5432"],
+          "username": "developer"
+        },
+        "table_patterns": ["public.customers"]
+      }
+    }
+  }
+}
+```
+
+The mode-0600 private file supplies or overrides deployment values by logical
+database name:
+
+```json
+{
+  "repository": "s3:https://s3.example.net/private-backups",
+  "credentials": {
+    "environment": {"AWS_ACCESS_KEY_ID": "...", "AWS_SECRET_ACCESS_KEY": "..."},
+    "password": {"command": ["secret-tool", "lookup", "application", "restic"]}
+  },
+  "databases": {
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "production_accounts",
+          "hosts": ["pg1.internal:5432", "pg2.internal:5432"],
+          "username": "backup",
+          "password": {"file": "/private/postgres-password"}
+        }
+      }
+    }
+  }
+}
+```
+
+The private file follows the same repository, credentials, databases, provider,
+and named-entry structure as the public profile. It may contain only deployment
+overrides, not backup policy. Provider objects are joined by their backup-name
+keys. Private scalar values override public values, while private host lists
+replace public host lists. Password sources (`value`,
+`file`, or `command`) and the repository `environment` map each replace as one
+unit. `private_file` and the legacy
+`credentials_file` mode are mutually exclusive. Resolved-profile output keeps
+the same shape and renders private values as `"<redacted>"`. The merge uses
+strict `encoding/json` decoding and typed merge rules; it does not use a generic
+configuration merge library.
+
+PostgreSQL, MongoDB, MySQL, MariaDB, and SQL Server can be staged by client programs
 installed on the machine running `resticctl`:
 
 ```json
 {
   "databases": {
     "concurrency": 2,
-    "postgresql": [{
-      "name": "accounts",
-      "database": "app",
-      "host": "db.example.net",
-      "port": 5432,
-      "username": "backup",
-      "globals": true,
-      "table_patterns": ["public.customers", "public.orders"],
-      "args": ["--no-owner"]
-    }],
-    "mongodb": [{
-      "name": "events",
-      "database": "events",
-      "host": "mongo.example.net",
-      "config_file": "mongo-backup.yml",
-      "collection": "activity",
-      "exclude_collections": [],
-      "args": []
-    }],
-    "mysql": [{
-      "name": "orders",
-      "database": "shop",
-      "host": "mysql.example.net",
-      "port": 3306,
-      "username": "backup",
-      "routines": true,
-      "events": true,
-      "triggers": true,
-      "tables": []
-    }]
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "app",
+          "hosts": ["pg1.example.net:5432", "pg2.example.net:5432"],
+          "username": "backup"
+        },
+        "options": {"require_primary": true},
+        "globals": true,
+        "table_patterns": ["public.customers", "public.orders"],
+        "args": ["--no-owner"]
+      }
+    },
+    "mongodb": {
+      "events": {
+        "connection": {
+          "database": "events",
+          "hosts": ["mongo1.example.net:27017", "mongo2.example.net:27017"],
+          "username": "backup"
+        },
+        "options": {
+          "replica_set": "events-rs",
+          "config_file": "mongo-backup.yaml"
+        },
+        "collection": "activity",
+        "exclude_collections": [],
+        "args": []
+      }
+    },
+    "mysql": {
+      "orders": {
+        "connection": {
+          "database": "shop",
+          "hosts": ["mysql-router.example.net:3306"],
+          "username": "backup"
+        },
+        "routines": true,
+        "events": true,
+        "triggers": true,
+        "tables": []
+      }
+    },
+    "sqlserver": {
+      "warehouse": {
+        "connection": {
+          "database": "reporting",
+          "hosts": ["reporting-listener.example.net:1433"],
+          "username": "backup"
+        },
+        "backup_directory": "/var/opt/mssql/backup",
+        "compress": true,
+        "args": []
+      }
+    }
   }
 }
 ```
 
-`pg_dump`, `pg_dumpall`, `mongodump`, and `mysqldump` are resolved on the local
+`pg_dump`, `pg_dumpall`, `mongodump`, `mysqldump`, and `sqlcmd` are resolved on the local
 `PATH` by default. Set `executable` or `globals_executable` to an explicit
 client path.
 Set a MySQL entry's `executable` to `mariadb-dump` when appropriate.
@@ -202,12 +285,13 @@ schedule. Scheduled jobs still check again when they execute, since their
 recommended for scheduled database backups. Forget-only schedules do not
 require database clients. External database dumps run sequentially by default.
 Set `databases.concurrency` to a positive value greater than one to run at most
-that many PostgreSQL, MongoDB, or MySQL/MariaDB dumps concurrently; choose a
+that many PostgreSQL, MongoDB, MySQL/MariaDB, or SQL Server dumps concurrently; choose a
 limit that the database servers and backup host can sustain.
 
 Legacy top-level `database_concurrency`, `sqlite_databases`,
-`postgresql_databases`, `mongodb_databases`, and `mysql_databases` fields remain
-supported for compatibility. Do not mix them with `databases` in one profile.
+`postgresql_databases`, `mongodb_databases`, `mysql_databases`, and
+`sqlserver_databases` fields remain supported for compatibility. Do not mix
+them with `databases` in the same profile inheritance chain.
 
 ### Profile inheritance
 
@@ -225,46 +309,27 @@ directory:
 ```
 
 Inheritance may be nested. Scalar fields explicitly present in a child replace
-the parent value, including boolean fields set to `false`. Lists such as
-`backup_paths`, restic argument lists, tags, and hooks are appended parent-first.
-An empty child list therefore adds nothing; it does not clear an inherited
-list. Entries in each of the SQLite, PostgreSQL, MongoDB, and MySQL database
-lists are merged by case-insensitive `name`: a child entry replaces an inherited entry
-with the same name and new names are appended.
-`schedule` and `forget` objects are each inherited or replaced as a whole.
+the parent value, including boolean fields set to `false`. Every array follows
+the same rule: an array supplied by the child replaces the inherited array, an
+empty array clears it, and an omitted array preserves it. This applies to paths,
+arguments, tags, hooks, host lists, and database selection lists.
 
-To replace or clear inherited collections explicitly, list their JSON field
-names in `replace_inherited`. The child value then replaces the parent instead
-of being appended; an empty child list clears it. Listing `schedule` or `forget`
-clears an inherited schedule when the child omits that object. For example:
+Objects merge recursively, including database entries, command sections,
+`schedule`, `forget`, and `monitoring`. Entries with keys omitted by the child
+remain inherited. Password source objects replace as a unit so sources cannot
+be accidentally combined. Set an optional object to `null` to clear it.
 
-```json
-{
-  "parent": "shared",
-  "credentials_file": "laptop.credentials.json",
-  "replace_inherited": ["backup_paths", "tags", "run_before", "schedule"],
-  "backup_paths": ["~/Documents"],
-  "tags": [],
-  "run_before": []
-}
-```
-
-For nested database lists, use `databases.sqlite`, `databases.postgresql`,
-`databases.mongodb`, or `databases.mysql` in `replace_inherited`. Supported
-replacement fields are the backup paths, all four database lists,
-Restic argument lists, tags, hook lists, and the `schedule` and `forget`
-objects. Unknown or duplicate names are rejected.
-
-`credentials_file` is never inherited. Every profile used directly must name
-its own private credentials file; a profile used only as a parent may omit one.
+`private_file`, `credentials_file`, and inline `credentials` are never inherited.
+Every profile used directly must configure one of those credential sources; a
+profile used only as a parent may omit them.
 Parent names use the same portable-name rules as profile names. Missing or
 invalid parents and inheritance cycles are rejected, and all validation runs
 on the fully merged profile before credentials are loaded or a command runs.
 
 ## Credentials
 
-For Backblaze's S3-compatible API, put the application key in the credentials
-file:
+For Backblaze's S3-compatible API, put the application key in `credentials`
+inside the private file. The legacy standalone credentials-file shape is:
 
 ```json
 {
@@ -313,11 +378,12 @@ A password file also works:
 }
 ```
 
-Set exactly one of `password.command` and `password.file`.
+Set exactly one of `password.value`, `password.file`, or `password.command`.
 
-On Unix, profiles, credential files, and password files must be owned by the
-current user and inaccessible to group and other users. `resticctl create` uses
-mode `0600` for the files it creates.
+On Unix, credential files, password files, private override files, and profiles
+that contain inline secrets must be owned by the current user and inaccessible
+to group and other users. Public profiles without inline secrets may use normal
+read permissions. `resticctl create` uses mode `0600` for the files it creates.
 
 ## Commands
 
@@ -353,7 +419,7 @@ resticctl completion <shell>
 
 ### `create`
 
-Creates a profile JSON file and a matching credentials file. Replace
+Creates a profile JSON file and a matching private configuration file. Replace
 `<profile>` with a name for the backup.
 
 ### `list`
@@ -363,11 +429,12 @@ Lists the profiles found in the configuration directory.
 ### `show`
 
 Prints the fully resolved profile as JSON after inheritance, defaults, path
-expansion, and validation. Loaded credentials are omitted. Repository URL
+expansion, and validation. Private values and credential values remain in their
+structural locations but are rendered as `"<redacted>"`. Repository URL
 passwords, query strings, and fragments and monitoring endpoint paths, query
-strings, headers, bodies, and body templates are redacted. Other public profile
-values, including hook and Restic argument vectors, are shown as configured and
-must not contain secrets.
+strings, headers, bodies, and body templates are also redacted. Other public
+profile values, including hook and Restic argument vectors, are shown as
+configured and must not contain secrets.
 
 ### `init`
 
@@ -382,7 +449,7 @@ availability without connecting to a database or repository.
 ### `backup`
 
 Backs up the profile's files and configured SQLite, PostgreSQL, MongoDB, MySQL,
-and MariaDB databases. `--dry-run` passes the option to restic without writing
+MariaDB, and SQL Server databases. `--dry-run` passes the option to restic without writing
 a snapshot.
 
 Backup orchestration is configured with `check_before`, `check_after`,
@@ -393,7 +460,7 @@ Prune options apply `forget_args` to this profile and run Restic `forget
 still run and both backup and retention operations receive `--dry-run`.
 
 Database staging exists only for the backup step: resticctl creates SQLite
-snapshots and PostgreSQL, MongoDB, or MySQL/MariaDB dumps immediately before
+snapshots and PostgreSQL, MongoDB, MySQL/MariaDB, or SQL Server dumps immediately before
 Restic backup, then removes the staging directory before any check-after or
 prune-after operation.
 
@@ -698,10 +765,14 @@ psql --file databases/accounts-globals.sql postgres
 pg_restore --dbname app --clean --if-exists databases/accounts.dump
 ```
 
+For a PostgreSQL failover list, `options.require_primary` asks libpq to accept
+only a server that supports read-write transactions. This prevents a successful
+backup from silently landing on a standby when the listed roles change.
+
 MongoDB dumps are stored below `databases/<name>/` and can be restored with:
 
 ```sh
-mongorestore --config /private/mongo-restore.yml --drop databases/events
+mongorestore --config /private/mongo-restore.yaml --drop databases/events
 ```
 
 MySQL and MariaDB dumps are stored as `databases/<name>.sql`. Restore with the
@@ -712,28 +783,36 @@ mysql --defaults-extra-file=/private/mysql-restore.cnf shop < databases/orders.s
 # MariaDB: mariadb --defaults-extra-file=/private/mysql-restore.cnf shop < databases/orders.sql
 ```
 
-Database credentials should be scoped by configured database name in
-`database_environments` in the private credentials file:
+SQL Server native backups are stored as `databases/<name>.bak`. Restore them
+with SQL Server tooling after copying the file to a path visible to the target
+server.
+
+In legacy `credentials_file` mode, database credentials are scoped by configured
+database backup name under `databases`:
 
 ```json
 {
-  "database_environments": {
-    "accounts": {"PGPASSWORD": "..."},
-    "events": {"MONGO_TOKEN": "..."},
-    "orders": {"MYSQL_PASSWORD": "..."}
+  "databases": {
+    "accounts": {"password": {"value": "..."}},
+    "orders": {"password": {"file": "/private/mysql-password"}},
+    "warehouse": {"password": {"command": ["secret-tool", "lookup", "database", "warehouse"]}}
   }
 }
 ```
 
-Each named environment is made available only to that database provider. The older
-`database_environment` field remains available for values intentionally shared
-by every database client; named values override shared values. MongoDB secrets
-may instead live in the private YAML file named by `config_file`. Credentials
-are never added to generated schedules or client argument values. The MongoDB
-config file must be mode 0600 (or otherwise private under the platform checks
-used for profile credentials).
+Each entry is available only to the database backup with the same `name`.
+resticctl delivers `password` using the provider's secure mechanism rather than
+requiring users to know client-specific environment variables. The optional
+`environment` map is an advanced escape hatch. The deprecated
+`database_environment` and `database_environments` fields remain readable for
+compatibility, but cannot be mixed with `databases`. MongoDB passwords live in
+the private YAML file named by `options.config_file`; its credential entry may
+contain only additional environment values. Credentials are never added to
+generated schedules or client argument values. The MongoDB config file must be
+mode 0600 (or otherwise private under the platform checks used for profile
+credentials).
 
-For MySQL/MariaDB, resticctl writes `MYSQL_PASSWORD` and the configured
+For MySQL/MariaDB, resticctl writes the password and configured
 `username` to a temporary mode-0600 client option file, passes that file as the
 client's first option, blanks inherited `MYSQL_PWD`, and removes the file as
 soon as the dump exits. Use `socket` for a Unix socket, or `host` and optional
@@ -745,6 +824,23 @@ but omits the listed collections. These fields are mutually exclusive. Empty
 or omitted selection fields dump the whole configured database. Routines,
 events, and triggers are excluded from MySQL/MariaDB dumps unless their
 corresponding booleans are enabled.
+
+SQL Server backups use `sqlcmd` to run `BACKUP DATABASE` with `COPY_ONLY` and
+`CHECKSUM`; `compress` adds `COMPRESSION`. The configured database name is
+quoted as an identifier, and `SQLSERVER_PASSWORD` is exposed to the client only
+as `SQLCMDPASSWORD`. Because SQL Server writes native backups on the server,
+`backup_directory` must be an existing directory visible at the same absolute
+path to both SQL Server and resticctl. The provider copies the completed backup
+into private Restic staging and removes the shared temporary file. On Unix the
+directory must not be accessible by users outside its owner and group; on
+Windows it must have an explicit, inheritance-protected ACL. A typical
+ACL must not grant access to Everyone, Authenticated Users, or the built-in
+Users group. A typical remote SQL Server without a shared filesystem is not supported. The login needs
+permission to back up the database, and the SQL Server service needs write
+access to the configured directory.
+For an Availability Group, configure its listener as the single host rather
+than listing individual nodes. SQLCMD variants do not implement multi-subnet
+behavior consistently, so resticctl does not currently expose that option.
 
 `pg_dump` provides a transactionally consistent view of one PostgreSQL
 database, but globals are dumped separately and are not atomic with it.
@@ -765,7 +861,8 @@ MySQL/MariaDB dumps always use `--single-transaction`, which gives a consistent
 snapshot for transactional tables such as InnoDB without blocking writers.
 Non-transactional tables such as MyISAM are not made transactionally consistent;
 quiesce writes or arrange the required server-side locks before running the
-backup. A dump is not atomic with separately configured databases.
+backup. SQL Server produces a full native database backup, not a table-level
+export. A dump is not atomic with separately configured databases.
 
 ## Direct restic commands
 

@@ -17,8 +17,43 @@ func TestPasswordHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "secret from stderr")
 		os.Exit(9)
 	}
+	if os.Getenv("PASSWORD_HELPER_OVERSIZED") == "1" {
+		fmt.Print(strings.Repeat("x", maximumPasswordBytes+1))
+		os.Exit(0)
+	}
+	if os.Getenv("PASSWORD_HELPER_NUL") == "1" {
+		fmt.Print("secret\x00value")
+		os.Exit(0)
+	}
 	fmt.Print("test-password\n")
 	os.Exit(0)
+}
+
+func TestPasswordCommandRejectsOversizedOutput(t *testing.T) {
+	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
+	t.Setenv("PASSWORD_HELPER_OVERSIZED", "1")
+	config := Config{PasswordCommand: []string{os.Args[0], "-test.run=^TestPasswordHelper$"}}
+	_, _, err := preparePasswordFile(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 1 MiB") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPasswordCommandRejectsNUL(t *testing.T) {
+	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
+	t.Setenv("PASSWORD_HELPER_NUL", "1")
+	config := Config{PasswordCommand: []string{os.Args[0], "-test.run=^TestPasswordHelper$"}}
+	_, _, err := preparePasswordFile(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPasswordValueRejectsNUL(t *testing.T) {
+	_, _, err := preparePasswordFile(context.Background(), Config{PasswordValue: "secret\x00value"})
+	if err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func TestTemporaryPasswordFileIsPrivate(t *testing.T) {

@@ -1,0 +1,8 @@
+# MongoDB Database Tools configuration. Keep the real file private (mode 0600).
+# Use password by itself when resticctl supplies hosts, database, and username.
+password: "replace-with-mongodb-password"
+
+# These are the only other sensitive fields accepted by mongodump --config.
+# Do not enable uri when resticctl also supplies connection fields.
+# uri: "mongodb://user:password@mongo.example.net:27017/?authSource=admin"
+# sslPEMKeyPassword: "replace-with-private-key-password"

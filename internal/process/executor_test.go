@@ -16,6 +16,7 @@ import (
 type helperResult struct {
 	Directory string `json:"directory"`
 	Value     string `json:"value"`
+	Reserved  string `json:"reserved"`
 }
 
 func TestProcessHelper(t *testing.T) {
@@ -48,6 +49,7 @@ func TestProcessHelper(t *testing.T) {
 	if err := json.NewEncoder(os.Stdout).Encode(helperResult{
 		Directory: directory,
 		Value:     os.Getenv("PROCESS_HELPER_VALUE"),
+		Reserved:  os.Getenv("RESTIC_PASSWORD"),
 	}); err != nil {
 		os.Exit(3)
 	}
@@ -110,6 +112,40 @@ func TestRunDatabaseUsesEnvironmentAndWorkingDirectory(t *testing.T) {
 	}
 	if actualDirectory != resolvedDirectory || result.Value != "private-value" {
 		t.Fatalf("helper result = %#v", result)
+	}
+}
+
+func TestRunDatabaseFiltersAmbientReservedEnvironmentWithoutOverrides(t *testing.T) {
+	t.Setenv("GO_WANT_PROCESS_HELPER", "1")
+	t.Setenv("RESTIC_PASSWORD", "must-not-leak")
+	var output bytes.Buffer
+	executor := NewExecutor(nil, &output, nil, isResticEnvironment)
+	if err := executor.RunDatabase(context.Background(), []string{os.Args[0], "-test.run=TestProcessHelper"}, nil, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reserved != "" {
+		t.Fatal("database process inherited RESTIC_PASSWORD")
+	}
+}
+
+func TestRunHookPreservesAmbientEnvironment(t *testing.T) {
+	t.Setenv("GO_WANT_PROCESS_HELPER", "1")
+	t.Setenv("RESTIC_PASSWORD", "hook-secret")
+	var output bytes.Buffer
+	executor := NewExecutor(nil, &output, nil, isResticEnvironment)
+	if err := executor.RunHook(context.Background(), []string{os.Args[0], "-test.run=TestProcessHelper"}); err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reserved != "hook-secret" {
+		t.Fatalf("hook environment value = %q", result.Reserved)
 	}
 }
 

@@ -8,21 +8,37 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"resticctl/internal/process"
+	"resticctl/internal/secretvalue"
 	"resticctl/internal/securefile"
 )
+
+const maximumPasswordBytes = secretvalue.MaximumBytes
 
 func preparePasswordFile(ctx context.Context, config Config) (path string, temporary bool, err error) {
 	if config.PasswordFile != "" {
 		return config.PasswordFile, false, nil
+	}
+	if config.PasswordValue != "" {
+		if len(config.PasswordValue) > maximumPasswordBytes {
+			return "", false, errors.New("password value exceeds 1 MiB")
+		}
+		if strings.IndexByte(config.PasswordValue, 0) >= 0 {
+			return "", false, errors.New("password value contains a NUL byte")
+		}
+		password := []byte(config.PasswordValue)
+		defer clear(password)
+		return writeTemporaryPassword(password)
 	}
 	commandParts := config.PasswordCommand
 	if len(commandParts) == 0 {
 		return "", false, errors.New("password source is not configured")
 	}
 	command := exec.Command(commandParts[0], commandParts[1:]...)
-	var stdout bytes.Buffer
+	var stdout secretvalue.Buffer
+	defer func() { clear(stdout.Bytes()) }()
 	command.Stdout = &stdout
 	command.Stderr = io.Discard
 	if err := process.Run(ctx, command); err != nil {
@@ -35,11 +51,20 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 		}
 		return "", false, fmt.Errorf("cannot execute password command %s: %w", commandParts[0], err)
 	}
+	if stdout.Exceeded() {
+		return "", false, errors.New("password command output exceeds 1 MiB")
+	}
 	password := stdout.Bytes()
-	defer clear(password)
 	if len(bytes.TrimRight(password, "\r\n")) == 0 {
 		return "", false, errors.New("password command returned an empty password")
 	}
+	if bytes.IndexByte(password, 0) >= 0 {
+		return "", false, errors.New("password command returned a NUL byte")
+	}
+	return writeTemporaryPassword(password)
+}
+
+func writeTemporaryPassword(password []byte) (path string, temporary bool, err error) {
 	file, err := os.CreateTemp("", "resticctl-password-")
 	if err != nil {
 		return "", false, fmt.Errorf("cannot create temporary password file: %w", err)

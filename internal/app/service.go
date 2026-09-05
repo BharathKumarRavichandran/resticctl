@@ -44,6 +44,7 @@ func resticConfig(backupProfile profile.Profile) restic.Config {
 		Environment:     backupProfile.Credentials.Environment,
 		PasswordCommand: backupProfile.Credentials.Password.Command,
 		PasswordFile:    backupProfile.Credentials.Password.File,
+		PasswordValue:   backupProfile.Credentials.Password.Value,
 	}
 }
 
@@ -174,6 +175,9 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	for _, database := range backupProfile.MySQLDatabases {
 		providers = append(providers, databasebackup.MySQL{Database: database})
 	}
+	for _, database := range backupProfile.SQLServerDatabases {
+		providers = append(providers, databasebackup.SQLServer{Database: database})
+	}
 	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers, output); err != nil {
 		return err
 	}
@@ -200,6 +204,12 @@ func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, s
 	var firstErr error
 	var recordError sync.Once
 	var outputMu sync.Mutex
+	record := func(err error) {
+		recordError.Do(func() {
+			firstErr = err
+			cancel()
+		})
+	}
 	workers.Add(concurrency)
 	for range concurrency {
 		go func() {
@@ -213,16 +223,26 @@ func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, s
 					_, outputErr := fmt.Fprintf(output, "==> %s\n", progress)
 					outputMu.Unlock()
 					if outputErr != nil {
-						recordError.Do(func() { firstErr = fmt.Errorf("cannot write backup progress: %w", outputErr); cancel() })
+						record(fmt.Errorf("cannot write backup progress: %w", outputErr))
 						return
 					}
 				}
 				environment := backupProfile.Credentials.DatabaseEnvironmentFor(provider.Name())
+				if credential, ok := backupProfile.Credentials.DatabaseCredentialFor(provider.Name()); ok {
+					if credential.Password.Configured() {
+						password, err := databasebackup.ResolvePassword(workerCtx, credential.Password)
+						if err != nil {
+							record(fmt.Errorf("resolve database password for %s: %w", provider.Name(), err))
+							return
+						}
+						if environment == nil {
+							environment = make(map[string]string)
+						}
+						environment["RESTICCTL_DATABASE_PASSWORD"] = password
+					}
+				}
 				if err := provider.Stage(workerCtx, runner, staging, environment); err != nil {
-					recordError.Do(func() {
-						firstErr = err
-						cancel()
-					})
+					record(err)
 					return
 				}
 			}
@@ -261,5 +281,5 @@ func validateBackupSources(backupProfile profile.Profile) error {
 
 func databaseCount(backupProfile profile.Profile) int {
 	return len(backupProfile.SQLiteDatabases) + len(backupProfile.PostgreSQLDatabases) +
-		len(backupProfile.MongoDBDatabases) + len(backupProfile.MySQLDatabases)
+		len(backupProfile.MongoDBDatabases) + len(backupProfile.MySQLDatabases) + len(backupProfile.SQLServerDatabases)
 }

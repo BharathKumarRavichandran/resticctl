@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -21,28 +22,45 @@ func Load(configDir, name string) (Profile, error) {
 	}
 	backupProfile := configured.profile(name)
 	profilePath := filepath.Join(configDir, name+".json")
-	backupProfile.Name = name
+	base := filepath.Dir(profilePath)
+	if backupProfile.PrivateFile != "" {
+		if backupProfile.CredentialsFile != "" {
+			return Profile{}, errors.New("private_file must not be combined with credentials_file")
+		}
+		if err := validateRepositoryCredentialFields(&backupProfile.Credentials, base, "credentials", false); err != nil {
+			return Profile{}, err
+		}
+		privatePath, expandErr := expandPath(backupProfile.PrivateFile, base)
+		if expandErr != nil {
+			return Profile{}, fmt.Errorf("invalid private_file: %w", expandErr)
+		}
+		backupProfile.PrivateFile = privatePath
+		if err := bindPrivateConfig(&backupProfile, privatePath); err != nil {
+			return Profile{}, err
+		}
+	} else if backupProfile.CredentialsFile != "" {
+		if backupProfile.Credentials.Password.Configured() || backupProfile.Credentials.Environment != nil {
+			return Profile{}, errors.New("credentials must not be combined with credentials_file")
+		}
+		credentialsPath, expandErr := expandPath(backupProfile.CredentialsFile, base)
+		if expandErr != nil {
+			return Profile{}, fmt.Errorf("invalid credentials_file: %w", expandErr)
+		}
+		backupProfile.CredentialsFile = credentialsPath
+		credentials, loadErr := loadCredentials(credentialsPath)
+		if loadErr != nil {
+			return Profile{}, loadErr
+		}
+		backupProfile.Credentials = credentials
+	} else if err := validateRepositoryCredentials(&backupProfile.Credentials, base, "credentials"); err != nil {
+		return Profile{}, errors.New("set private_file, credentials_file, or valid inline credentials: " + err.Error())
+	}
 	if backupProfile.Repository == "" {
 		return Profile{}, errors.New("repository must be a non-empty string")
 	}
 	if strings.ContainsRune(backupProfile.Repository, 0) {
 		return Profile{}, errors.New("repository must not contain NUL bytes")
 	}
-	if backupProfile.CredentialsFile == "" {
-		return Profile{}, errors.New("credentials_file must be a non-empty string")
-	}
-
-	base := filepath.Dir(profilePath)
-	credentialsPath, err := expandPath(backupProfile.CredentialsFile, base)
-	if err != nil {
-		return Profile{}, fmt.Errorf("invalid credentials_file: %w", err)
-	}
-	backupProfile.CredentialsFile = credentialsPath
-	credentials, err := loadCredentials(credentialsPath)
-	if err != nil {
-		return Profile{}, err
-	}
-	backupProfile.Credentials = credentials
 
 	for index, path := range backupProfile.BackupPaths {
 		if path == "" {
@@ -53,6 +71,9 @@ func Load(configDir, name string) (Profile, error) {
 			return Profile{}, fmt.Errorf("invalid backup_paths entry: %w", expandErr)
 		}
 		backupProfile.BackupPaths[index] = expanded
+	}
+	if err := normalizeConnections(&backupProfile, base); err != nil {
+		return Profile{}, err
 	}
 
 	names := make(map[string]struct{})
@@ -80,7 +101,7 @@ func Load(configDir, name string) (Profile, error) {
 	if backupProfile.DatabaseConcurrency <= 0 {
 		return Profile{}, errors.New("databases.concurrency must be a positive integer (legacy: database_concurrency)")
 	}
-	if err := validateDatabaseEnvironmentNames(backupProfile); err != nil {
+	if err := validateDatabaseEnvironmentNames(&backupProfile); err != nil {
 		return Profile{}, err
 	}
 
@@ -207,18 +228,19 @@ func validScheduleBackend(value string) bool {
 	return value == "auto" || value == "cron" || value == "launchd" || value == "systemd" || value == "windows"
 }
 
-// profileConfig uses pointers for scalars so inheritance can distinguish an
-// omitted value from an explicit false or empty value.
+// profileConfig keeps optional values distinct from their runtime defaults.
 type profileConfig struct {
 	Parent              string                   `json:"parent,omitempty"`
-	ReplaceInherited    []string                 `json:"replace_inherited,omitempty"`
 	Repository          *string                  `json:"repository"`
 	CredentialsFile     *string                  `json:"credentials_file"`
+	PrivateFile         *string                  `json:"private_file,omitempty"`
+	Credentials         *RepositoryCredentials   `json:"credentials,omitempty"`
 	BackupPaths         []string                 `json:"backup_paths"`
 	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases"`
 	PostgreSQLDatabases []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
 	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
+	SQLServerDatabases  []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
 	DatabaseConcurrency *int                     `json:"database_concurrency,omitempty"`
 	Databases           *databaseConfig          `json:"databases,omitempty"`
 	ResticArgs          []string                 `json:"restic_args"`
@@ -241,88 +263,262 @@ type profileConfig struct {
 }
 
 type databaseConfig struct {
-	Concurrency *int                 `json:"concurrency,omitempty"`
-	SQLite      []SQLiteDatabase     `json:"sqlite,omitempty"`
-	PostgreSQL  []PostgreSQLDatabase `json:"postgresql,omitempty"`
-	MongoDB     []MongoDBDatabase    `json:"mongodb,omitempty"`
-	MySQL       []MySQLDatabase      `json:"mysql,omitempty"`
+	Concurrency *int                          `json:"concurrency,omitempty"`
+	SQLite      map[string]SQLiteDatabase     `json:"sqlite,omitempty"`
+	PostgreSQL  map[string]PostgreSQLDatabase `json:"postgresql,omitempty"`
+	MongoDB     map[string]MongoDBDatabase    `json:"mongodb,omitempty"`
+	MySQL       map[string]MySQLDatabase      `json:"mysql,omitempty"`
+	SQLServer   map[string]SQLServerDatabase  `json:"sqlserver,omitempty"`
 }
 
 func resolve(configDir, name string, chain []string) (profileConfig, error) {
-	if err := ValidateName(name); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid parent profile %q: %w", name, err)
-	}
-	for _, ancestor := range chain {
-		if strings.EqualFold(ancestor, name) {
-			return profileConfig{}, fmt.Errorf("profile inheritance cycle: %s", strings.Join(append(chain, name), " -> "))
-		}
-	}
-	path := filepath.Join(configDir, name+".json")
-	if err := ensurePrivateFile(path, "profile"); err != nil {
-		if len(chain) > 0 {
-			return profileConfig{}, fmt.Errorf("cannot load parent profile %q: %w", name, err)
-		}
-		return profileConfig{}, err
-	}
-	var child profileConfig
-	if err := decodeStrict(path, "profile", &child); err != nil {
-		return profileConfig{}, err
-	}
-	if err := child.normalizeDatabases(); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
-	}
-	if err := validateReplaceInherited(child.ReplaceInherited); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
-	}
-	if err := validateConfiguredDatabases(child.SQLiteDatabases); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
-	}
-	if err := validateConfiguredNames(child.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name }); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s PostgreSQL databases: %w", name, err)
-	}
-	if err := validateConfiguredNames(child.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s MongoDB databases: %w", name, err)
-	}
-	if err := validateConfiguredNames(child.MySQLDatabases, func(v MySQLDatabase) string { return v.Name }); err != nil {
-		return profileConfig{}, fmt.Errorf("invalid profile %s MySQL databases: %w", name, err)
-	}
-	if child.Parent == "" {
-		return child, nil
-	}
-	parent, err := resolve(configDir, child.Parent, append(chain, name))
+	document, err := resolveDocument(configDir, name, chain)
 	if err != nil {
 		return profileConfig{}, err
 	}
-	return merge(parent, child), nil
+	data, err := json.Marshal(document)
+	if err != nil {
+		return profileConfig{}, fmt.Errorf("merge profile %s: %w", name, err)
+	}
+	var configured profileConfig
+	if err := decodeStrictJSON(data, &configured); err != nil {
+		return profileConfig{}, fmt.Errorf("merge profile %s: %w", name, err)
+	}
+	if err := configured.normalizeDatabases(); err != nil {
+		return profileConfig{}, fmt.Errorf("invalid profile %s: %w", name, err)
+	}
+	return configured, nil
+}
+
+func resolveDocument(configDir, name string, chain []string) (map[string]json.RawMessage, error) {
+	if err := ValidateName(name); err != nil {
+		return nil, fmt.Errorf("invalid parent profile %q: %w", name, err)
+	}
+	for _, ancestor := range chain {
+		if strings.EqualFold(ancestor, name) {
+			return nil, fmt.Errorf("profile inheritance cycle: %s", strings.Join(append(chain, name), " -> "))
+		}
+	}
+	path := filepath.Join(configDir, name+".json")
+	data, info, err := readStrictJSONFile(path, "profile")
+	if err != nil {
+		if len(chain) > 0 {
+			return nil, fmt.Errorf("cannot load parent profile %q: %w", name, err)
+		}
+		return nil, err
+	}
+	var child profileConfig
+	if err := decodeStrictJSON(data, &child); err != nil {
+		return nil, fmt.Errorf("cannot load profile %s: %w", path, err)
+	}
+	validated := child
+	if err := validated.normalizeDatabases(); err != nil {
+		return nil, fmt.Errorf("invalid profile %s: %w", name, err)
+	}
+	if validated.containsInlineSecrets() {
+		if err := ensureFileSecurity(info, path, "profile containing secrets"); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateConfiguredDatabases(validated.SQLiteDatabases); err != nil {
+		return nil, fmt.Errorf("invalid profile %s: %w", name, err)
+	}
+	if err := validateConfiguredNames(validated.PostgreSQLDatabases, func(v PostgreSQLDatabase) string { return v.Name }); err != nil {
+		return nil, fmt.Errorf("invalid profile %s PostgreSQL databases: %w", name, err)
+	}
+	if err := validateConfiguredNames(validated.MongoDBDatabases, func(v MongoDBDatabase) string { return v.Name }); err != nil {
+		return nil, fmt.Errorf("invalid profile %s MongoDB databases: %w", name, err)
+	}
+	if err := validateConfiguredNames(validated.MySQLDatabases, func(v MySQLDatabase) string { return v.Name }); err != nil {
+		return nil, fmt.Errorf("invalid profile %s MySQL databases: %w", name, err)
+	}
+	if err := validateConfiguredNames(validated.SQLServerDatabases, func(v SQLServerDatabase) string { return v.Name }); err != nil {
+		return nil, fmt.Errorf("invalid profile %s SQL Server databases: %w", name, err)
+	}
+	var childDocument map[string]json.RawMessage
+	if err := decodeStrictJSON(data, &childDocument); err != nil {
+		return nil, fmt.Errorf("cannot load profile %s: %w", path, err)
+	}
+	if child.Parent == "" {
+		return childDocument, nil
+	}
+	parent, err := resolveDocument(configDir, child.Parent, append(chain, name))
+	if err != nil {
+		return nil, err
+	}
+	// Credentials and private-file selection always belong to the requested
+	// profile and must never flow down from a parent.
+	deleteJSONField(parent, "credentials")
+	deleteJSONField(parent, "credentials_file")
+	deleteJSONField(parent, "private_file")
+	merged, err := mergeJSONObjects(parent, childDocument)
+	if err != nil {
+		return nil, fmt.Errorf("merge profile %s: %w", name, err)
+	}
+	return merged, nil
+}
+
+func mergeJSONObjects(parent, child map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	return mergeJSONObjectsAtPath(parent, child, nil)
+}
+
+func mergeJSONObjectsAtPath(parent, child map[string]json.RawMessage, path []string) (map[string]json.RawMessage, error) {
+	if len(path) > 100 {
+		return nil, errors.New("profile objects are nested too deeply")
+	}
+	result := make(map[string]json.RawMessage, len(parent)+len(child))
+	for key, value := range parent {
+		result[key] = append(json.RawMessage(nil), value...)
+	}
+	for key, childValue := range child {
+		parentKey := matchingJSONKey(result, key)
+		if strings.EqualFold(key, "password") &&
+			(len(path) == 1 && strings.EqualFold(path[0], "credentials") ||
+				len(path) == 4 && strings.EqualFold(path[3], "connection")) {
+			delete(result, parentKey)
+			result[key] = append(json.RawMessage(nil), childValue...)
+			continue
+		}
+		var childObject map[string]json.RawMessage
+		var parentObject map[string]json.RawMessage
+		if json.Unmarshal(childValue, &childObject) == nil && childObject != nil &&
+			json.Unmarshal(result[parentKey], &parentObject) == nil && parentObject != nil {
+			mergedObject, err := mergeJSONObjectsAtPath(parentObject, childObject, append(path, key))
+			if err != nil {
+				return nil, err
+			}
+			merged, err := json.Marshal(mergedObject)
+			if err != nil {
+				return nil, err
+			}
+			delete(result, parentKey)
+			result[key] = merged
+			continue
+		}
+		delete(result, parentKey)
+		result[key] = append(json.RawMessage(nil), childValue...)
+	}
+	return result, nil
+}
+
+func deleteJSONField(object map[string]json.RawMessage, name string) {
+	delete(object, matchingJSONKey(object, name))
+}
+
+func matchingJSONKey(object map[string]json.RawMessage, name string) string {
+	for key := range object {
+		if strings.EqualFold(key, name) {
+			return key
+		}
+	}
+	return name
+}
+
+func (configured profileConfig) containsInlineSecrets() bool {
+	if configured.Repository != nil && redactRepository(*configured.Repository) != *configured.Repository {
+		return true
+	}
+	if configured.Credentials != nil && (configured.Credentials.Environment != nil || configured.Credentials.Password.Configured()) {
+		return true
+	}
+	if configured.Monitoring != nil && monitoringContainsSecrets(*configured.Monitoring) {
+		return true
+	}
+	for _, database := range configured.PostgreSQLDatabases {
+		if connectionHasPassword(database.Connection) {
+			return true
+		}
+	}
+	for _, database := range configured.MongoDBDatabases {
+		if connectionHasPassword(database.Connection) {
+			return true
+		}
+	}
+	for _, database := range configured.MySQLDatabases {
+		if connectionHasPassword(database.Connection) {
+			return true
+		}
+	}
+	for _, database := range configured.SQLServerDatabases {
+		if connectionHasPassword(database.Connection) {
+			return true
+		}
+	}
+	return false
+}
+
+func monitoringContainsSecrets(monitoring Monitoring) bool {
+	if monitoring.Pushgateway != nil &&
+		(endpointContainsSecrets(monitoring.Pushgateway.URL) || len(monitoring.Pushgateway.Headers) > 0) {
+		return true
+	}
+	for _, hook := range monitoring.HTTP {
+		if endpointContainsSecrets(hook.URL) || len(hook.Headers) > 0 || hook.Body != "" || hook.BodyTemplate != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointContainsSecrets(endpoint string) bool {
+	return endpoint != "" && redactEndpoint(endpoint) != endpoint
+}
+
+func connectionHasPassword(connection *DatabaseConnection) bool {
+	return connection != nil && connection.Password != nil && connection.Password.Configured()
 }
 
 func (configured *profileConfig) normalizeDatabases() error {
-	for index, field := range configured.ReplaceInherited {
-		switch field {
-		case "databases.sqlite":
-			configured.ReplaceInherited[index] = "sqlite_databases"
-		case "databases.postgresql":
-			configured.ReplaceInherited[index] = "postgresql_databases"
-		case "databases.mongodb":
-			configured.ReplaceInherited[index] = "mongodb_databases"
-		case "databases.mysql":
-			configured.ReplaceInherited[index] = "mysql_databases"
-		}
-	}
 	if configured.Databases == nil {
 		return nil
 	}
 	if configured.SQLiteDatabases != nil || configured.PostgreSQLDatabases != nil || configured.MongoDBDatabases != nil ||
-		configured.MySQLDatabases != nil || configured.DatabaseConcurrency != nil {
+		configured.MySQLDatabases != nil || configured.SQLServerDatabases != nil || configured.DatabaseConcurrency != nil {
 		return errors.New("databases must not be combined with legacy top-level database fields")
 	}
 	configured.DatabaseConcurrency = configured.Databases.Concurrency
-	configured.SQLiteDatabases = configured.Databases.SQLite
-	configured.PostgreSQLDatabases = configured.Databases.PostgreSQL
-	configured.MongoDBDatabases = configured.Databases.MongoDB
-	configured.MySQLDatabases = configured.Databases.MySQL
+	var err error
+	if configured.SQLiteDatabases, err = namedDatabaseValues(configured.Databases.SQLite, func(value SQLiteDatabase) string { return value.Name }, func(value *SQLiteDatabase, name string) { value.Name = name }); err != nil {
+		return fmt.Errorf("invalid databases.sqlite: %w", err)
+	}
+	if configured.PostgreSQLDatabases, err = namedDatabaseValues(configured.Databases.PostgreSQL, func(value PostgreSQLDatabase) string { return value.Name }, func(value *PostgreSQLDatabase, name string) { value.Name = name }); err != nil {
+		return fmt.Errorf("invalid databases.postgresql: %w", err)
+	}
+	if configured.MongoDBDatabases, err = namedDatabaseValues(configured.Databases.MongoDB, func(value MongoDBDatabase) string { return value.Name }, func(value *MongoDBDatabase, name string) { value.Name = name }); err != nil {
+		return fmt.Errorf("invalid databases.mongodb: %w", err)
+	}
+	if configured.MySQLDatabases, err = namedDatabaseValues(configured.Databases.MySQL, func(value MySQLDatabase) string { return value.Name }, func(value *MySQLDatabase, name string) { value.Name = name }); err != nil {
+		return fmt.Errorf("invalid databases.mysql: %w", err)
+	}
+	if configured.SQLServerDatabases, err = namedDatabaseValues(configured.Databases.SQLServer, func(value SQLServerDatabase) string { return value.Name }, func(value *SQLServerDatabase, name string) { value.Name = name }); err != nil {
+		return fmt.Errorf("invalid databases.sqlserver: %w", err)
+	}
 	configured.Databases = nil
 	return nil
+}
+
+func namedDatabaseValues[T any](values map[string]T, configuredName func(T) string, setName func(*T, string)) ([]T, error) {
+	if values == nil {
+		return nil, nil
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		if !isPortableName(name) {
+			return nil, fmt.Errorf("invalid backup name %q", name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]T, 0, len(names))
+	for _, name := range names {
+		value := values[name]
+		if configuredName(value) != "" {
+			return nil, fmt.Errorf("database %q must not contain a name field", name)
+		}
+		setName(&value, name)
+		result = append(result, value)
+	}
+	return result, nil
 }
 
 func validateConfiguredNames[T any](values []T, name func(T) string) error {
@@ -414,7 +610,7 @@ func validateExternalDatabases(p *Profile, base string) error {
 		if db.Executable == "" {
 			db.Executable = "mongodump"
 		}
-		if hasNUL(db.Database, db.Host, db.Executable, db.ConfigFile) {
+		if hasNUL(db.Database, db.Host, db.Username, db.Executable, db.ConfigFile) {
 			return fmt.Errorf("MongoDB configuration for %s must not contain NUL bytes", db.Name)
 		}
 		if db.Collection != "" && db.Database == "" {
@@ -435,7 +631,7 @@ func validateExternalDatabases(p *Profile, base string) error {
 		if (db.Collection != "" || len(db.ExcludeCollections) > 0) && containsAnyOption(db.Args, "--oplog", "--excludeCollectionsWithPrefix", "--query", "-q", "--queryFile") {
 			return fmt.Errorf("MongoDB selection for %s cannot be combined with other selection options", db.Name)
 		}
-		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d", "--collection", "-c", "--excludeCollection"); err != nil {
+		if err := validateDatabaseArgs("MongoDB", db.Args, "--out", "-o", "--archive", "--password", "-p", "--uri", "--config", "--host", "-h", "--port", "--db", "-d", "--username", "-u", "--collection", "-c", "--excludeCollection"); err != nil {
 			return err
 		}
 		if db.ConfigFile != "" {
@@ -482,6 +678,38 @@ func validateExternalDatabases(p *Profile, base string) error {
 			"--result-file", "-r", "--host", "-h", "--port", "-P", "--socket", "-S",
 			"--user", "-u", "--databases", "--all-databases", "--tables", "--single-transaction",
 			"--routines", "-R", "--events", "-E", "--triggers", "--skip-triggers"); err != nil {
+			return err
+		}
+	}
+	for i := range p.SQLServerDatabases {
+		db := &p.SQLServerDatabases[i]
+		if err := checkName("SQL Server", db.Name); err != nil {
+			return err
+		}
+		if db.Database == "" {
+			return fmt.Errorf("SQL Server database is missing: %s", db.Name)
+		}
+		if db.BackupDirectory == "" {
+			return fmt.Errorf("SQL Server backup_directory is missing: %s", db.Name)
+		}
+		if db.Port < 0 || db.Port > 65535 {
+			return fmt.Errorf("invalid SQL Server port for %s", db.Name)
+		}
+		if db.Port != 0 && db.Host == "" {
+			return fmt.Errorf("SQL Server port for %s requires a host", db.Name)
+		}
+		if db.Executable == "" {
+			db.Executable = "sqlcmd"
+		}
+		if hasNUL(db.Database, db.BackupDirectory, db.Host, db.Username, db.Executable) {
+			return fmt.Errorf("SQL Server configuration for %s must not contain NUL bytes", db.Name)
+		}
+		backupDirectory, err := expandPath(db.BackupDirectory, base)
+		if err != nil {
+			return fmt.Errorf("invalid SQL Server backup_directory for %s: %w", db.Name, err)
+		}
+		db.BackupDirectory = backupDirectory
+		if err := validateDatabaseArgs("SQL Server", db.Args, "-Q", "-q", "-i", "-o", "-P", "-S", "-U", "-d", "-M"); err != nil {
 			return err
 		}
 	}

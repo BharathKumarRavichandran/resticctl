@@ -15,7 +15,7 @@ import (
 func (cli *commandLine) createCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "create <profile>",
-		Short:             "Create a profile and credentials file",
+		Short:             "Create a public profile and private override file",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: execute(func(_ *cobra.Command, arguments []string) error {
@@ -23,7 +23,7 @@ func (cli *commandLine) createCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profilePath, credentialsPath, err := app.CreateProfile(configDir, arguments[0])
+			profilePath, privatePath, err := app.CreateProfile(configDir, arguments[0])
 			if err != nil {
 				return err
 			}
@@ -31,7 +31,7 @@ func (cli *commandLine) createCommand() *cobra.Command {
 				cli.stdout,
 				"Created profile:\n  %s\n  %s\nEdit both files before running: resticctl init %s\n",
 				profilePath,
-				credentialsPath,
+				privatePath,
 				arguments[0],
 			)
 		}),

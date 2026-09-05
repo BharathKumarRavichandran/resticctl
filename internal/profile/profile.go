@@ -6,60 +6,114 @@ import (
 )
 
 type SQLiteDatabase struct {
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 	Path string `json:"path"`
 }
 
+type DatabaseConnection struct {
+	Database string          `json:"database,omitempty"`
+	Hosts    []string        `json:"hosts,omitempty"`
+	Socket   string          `json:"socket,omitempty"`
+	Username string          `json:"username,omitempty"`
+	Password *PasswordSource `json:"password,omitempty"`
+}
+
+type MongoDBOptions struct {
+	ReplicaSet string `json:"replica_set,omitempty"`
+	ConfigFile string `json:"config_file,omitempty"`
+}
+
+type PostgreSQLOptions struct {
+	RequirePrimary bool `json:"require_primary,omitempty"`
+}
+
 type PostgreSQLDatabase struct {
-	Name              string   `json:"name"`
-	Database          string   `json:"database"`
-	Host              string   `json:"host,omitempty"`
-	Port              int      `json:"port,omitempty"`
-	Username          string   `json:"username,omitempty"`
-	Executable        string   `json:"executable,omitempty"`
-	Args              []string `json:"args,omitempty"`
-	TablePatterns     []string `json:"table_patterns,omitempty"`
-	Globals           bool     `json:"globals,omitempty"`
-	GlobalsExecutable string   `json:"globals_executable,omitempty"`
+	Connection        *DatabaseConnection `json:"connection,omitempty"`
+	Options           *PostgreSQLOptions  `json:"options,omitempty"`
+	Name              string              `json:"name,omitempty"`
+	Database          string              `json:"database,omitempty"`
+	Host              string              `json:"host,omitempty"`
+	Hosts             []string            `json:"-"`
+	Port              int                 `json:"port,omitempty"`
+	Username          string              `json:"username,omitempty"`
+	Executable        string              `json:"executable,omitempty"`
+	Args              []string            `json:"args,omitempty"`
+	TablePatterns     []string            `json:"table_patterns,omitempty"`
+	Globals           bool                `json:"globals,omitempty"`
+	GlobalsExecutable string              `json:"globals_executable,omitempty"`
 }
 
 type MongoDBDatabase struct {
-	Name               string   `json:"name"`
-	Database           string   `json:"database,omitempty"`
-	Host               string   `json:"host,omitempty"`
-	Port               int      `json:"port,omitempty"`
-	Executable         string   `json:"executable,omitempty"`
-	ConfigFile         string   `json:"config_file,omitempty"`
-	Args               []string `json:"args,omitempty"`
-	Collection         string   `json:"collection,omitempty"`
-	ExcludeCollections []string `json:"exclude_collections,omitempty"`
+	Connection         *DatabaseConnection `json:"connection,omitempty"`
+	Options            *MongoDBOptions     `json:"options,omitempty"`
+	Name               string              `json:"name,omitempty"`
+	Database           string              `json:"database,omitempty"`
+	Host               string              `json:"host,omitempty"`
+	Hosts              []string            `json:"-"`
+	Port               int                 `json:"port,omitempty"`
+	Username           string              `json:"username,omitempty"`
+	Executable         string              `json:"executable,omitempty"`
+	ConfigFile         string              `json:"config_file,omitempty"`
+	Args               []string            `json:"args,omitempty"`
+	Collection         string              `json:"collection,omitempty"`
+	ExcludeCollections []string            `json:"exclude_collections,omitempty"`
 }
 
 type MySQLDatabase struct {
-	Name       string   `json:"name"`
-	Database   string   `json:"database"`
-	Host       string   `json:"host,omitempty"`
-	Port       int      `json:"port,omitempty"`
-	Socket     string   `json:"socket,omitempty"`
-	Username   string   `json:"username,omitempty"`
-	Executable string   `json:"executable,omitempty"`
-	Args       []string `json:"args,omitempty"`
-	Tables     []string `json:"tables,omitempty"`
-	Routines   bool     `json:"routines,omitempty"`
-	Events     bool     `json:"events,omitempty"`
-	Triggers   bool     `json:"triggers,omitempty"`
+	Connection *DatabaseConnection `json:"connection,omitempty"`
+	Name       string              `json:"name,omitempty"`
+	Database   string              `json:"database,omitempty"`
+	Host       string              `json:"host,omitempty"`
+	Port       int                 `json:"port,omitempty"`
+	Socket     string              `json:"socket,omitempty"`
+	Username   string              `json:"username,omitempty"`
+	Executable string              `json:"executable,omitempty"`
+	Args       []string            `json:"args,omitempty"`
+	Tables     []string            `json:"tables,omitempty"`
+	Routines   bool                `json:"routines,omitempty"`
+	Events     bool                `json:"events,omitempty"`
+	Triggers   bool                `json:"triggers,omitempty"`
+}
+
+type SQLServerDatabase struct {
+	Connection      *DatabaseConnection `json:"connection,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	Database        string              `json:"database,omitempty"`
+	BackupDirectory string              `json:"backup_directory"`
+	Host            string              `json:"host,omitempty"`
+	Port            int                 `json:"port,omitempty"`
+	Username        string              `json:"username,omitempty"`
+	Executable      string              `json:"executable,omitempty"`
+	Args            []string            `json:"args,omitempty"`
+	Compress        bool                `json:"compress,omitempty"`
 }
 
 type PasswordSource struct {
-	Command []string `json:"command"`
-	File    string   `json:"file"`
+	Command []string `json:"command,omitempty"`
+	File    string   `json:"file,omitempty"`
+	Value   string   `json:"value,omitempty"`
+}
+
+func (source PasswordSource) Configured() bool {
+	return source.Value != "" || source.File != "" || source.Command != nil
+}
+
+type DatabaseCredential struct {
+	Password    PasswordSource    `json:"password,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
 }
 
 type Credentials struct {
-	Environment          map[string]string            `json:"environment"`
-	DatabaseEnvironment  map[string]string            `json:"database_environment,omitempty"`
-	DatabaseEnvironments map[string]map[string]string `json:"database_environments,omitempty"`
-	Password             PasswordSource               `json:"password"`
+	Environment          map[string]string             `json:"environment"`
+	DatabaseEnvironment  map[string]string             `json:"database_environment,omitempty"`
+	DatabaseEnvironments map[string]map[string]string  `json:"database_environments,omitempty"`
+	DatabaseCredentials  map[string]DatabaseCredential `json:"databases,omitempty"`
+	Password             PasswordSource                `json:"password"`
+}
+
+type RepositoryCredentials struct {
+	Environment map[string]string `json:"environment,omitempty"`
+	Password    PasswordSource    `json:"password"`
 }
 
 // DatabaseEnvironmentFor returns shared database values overlaid with values
@@ -80,9 +134,28 @@ func (credentials Credentials) DatabaseEnvironmentFor(name string) map[string]st
 		result[key] = value
 	}
 	for key, value := range specific {
-		result[key] = value
+		setEnvironmentValue(result, key, value)
 	}
 	return result
+}
+
+func setEnvironmentValue(environment map[string]string, key, value string) {
+	for existing := range environment {
+		if strings.EqualFold(existing, key) {
+			delete(environment, existing)
+			break
+		}
+	}
+	environment[key] = value
+}
+
+func (credentials Credentials) DatabaseCredentialFor(name string) (DatabaseCredential, bool) {
+	for configuredName, credential := range credentials.DatabaseCredentials {
+		if strings.EqualFold(configuredName, name) {
+			return credential, true
+		}
+	}
+	return DatabaseCredential{}, false
 }
 
 type Schedule struct {
@@ -151,12 +224,14 @@ type Profile struct {
 	Name                string                   `json:"-"`
 	Parent              string                   `json:"parent,omitempty"`
 	Repository          string                   `json:"repository"`
-	CredentialsFile     string                   `json:"credentials_file"`
+	CredentialsFile     string                   `json:"credentials_file,omitempty"`
+	PrivateFile         string                   `json:"private_file,omitempty"`
 	BackupPaths         []string                 `json:"backup_paths"`
-	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases"`
+	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases,omitempty"`
 	PostgreSQLDatabases []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
 	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
 	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
+	SQLServerDatabases  []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
 	DatabaseConcurrency int                      `json:"database_concurrency,omitempty"`
 	ResticArgs          []string                 `json:"restic_args"`
 	Commands            map[string]ResticCommand `json:"commands,omitempty"`

@@ -133,7 +133,13 @@ func validateMonitoring(p *Profile, base string) error {
 			return fmt.Errorf("monitoring.logs[%d].type is unsupported: %s", i, destination.Type)
 		}
 	}
-	sensitive := []string{filepath.Join(base, p.Name+".json"), p.CredentialsFile, p.Credentials.Password.File}
+	sensitive := []string{filepath.Join(base, p.Name+".json"), p.CredentialsFile, p.PrivateFile, p.Credentials.Password.File}
+	for _, credential := range p.Credentials.DatabaseCredentials {
+		sensitive = append(sensitive, credential.Password.File)
+	}
+	for _, database := range p.MongoDBDatabases {
+		sensitive = append(sensitive, database.ConfigFile)
+	}
 	outputs := []string{m.StatusFile, m.PrometheusTextfile}
 	for _, destination := range m.Logs {
 		if destination.Type == "file" {
@@ -146,7 +152,7 @@ func validateMonitoring(p *Profile, base string) error {
 		}
 		for _, protected := range sensitive {
 			if protected != "" && strings.EqualFold(filepath.Clean(output), filepath.Clean(protected)) {
-				return fmt.Errorf("monitoring output must not overwrite a profile or credential file: %s", output)
+				return fmt.Errorf("monitoring output must not overwrite a sensitive configuration file: %s", output)
 			}
 		}
 		for _, earlier := range outputs[:index] {

@@ -34,7 +34,7 @@ func TestCreateAndListCommands(t *testing.T) {
 	}
 }
 
-func TestShowCommandDisplaysResolvedProfileWithoutCredentials(t *testing.T) {
+func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T) {
 	directory := t.TempDir()
 	writePrivateCLIFile(t, filepath.Join(directory, "base.json"), `{
           "repository":"rest:https://backup:repository-secret@example.test/repository",
@@ -72,11 +72,11 @@ func TestShowCommandDisplaysResolvedProfileWithoutCredentials(t *testing.T) {
 	if decoded.Name != "example" || decoded.Parent != "base" {
 		t.Fatalf("show identity = %q, %q", decoded.Name, decoded.Parent)
 	}
-	wantPaths := []string{filepath.Join(directory, "parent"), filepath.Join(directory, "child")}
+	wantPaths := []string{filepath.Join(directory, "child")}
 	if !slices.Equal(decoded.BackupPaths, wantPaths) {
 		t.Fatalf("backup paths = %q, want %q", decoded.BackupPaths, wantPaths)
 	}
-	if !strings.Contains(output.String(), `"Authorization": "[REDACTED]"`) {
+	if !strings.Contains(output.String(), `"Authorization": "<redacted>"`) {
 		t.Fatalf("show output does not contain a redacted header:\n%s", output.String())
 	}
 	for _, secret := range []string{
@@ -91,8 +91,15 @@ func TestShowCommandDisplaysResolvedProfileWithoutCredentials(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
 		t.Fatalf("show output is not a JSON object: %v", err)
 	}
-	if _, exists := fields["credentials"]; exists {
-		t.Fatal("show output contains credentials")
+	credentials, exists := fields["credentials"].(map[string]any)
+	if !exists || credentials["password"] == nil {
+		t.Fatal("show output does not preserve redacted credential structure")
+	}
+	if _, exists := fields["databases"].(map[string]any); !exists {
+		t.Fatal("show output does not use the canonical databases object")
+	}
+	if _, exists := fields["postgresql_databases"]; exists {
+		t.Fatal("show output contains a legacy database key")
 	}
 }
 

@@ -38,21 +38,21 @@ func NewExecutor(stdin io.Reader, stdout, stderr io.Writer, blockedEnvironment f
 }
 
 func (executor *Executor) RunHook(ctx context.Context, arguments []string) error {
-	return executor.run(ctx, "hook", arguments, nil, "")
+	return executor.run(ctx, "hook", arguments, nil, "", nil)
 }
 
 func (executor *Executor) RunDatabase(ctx context.Context, arguments []string, environment map[string]string, cwd string) error {
-	return executor.run(ctx, "database client", arguments, environment, cwd)
+	return executor.run(ctx, "database client", arguments, environment, cwd, executor.blockedEnvironment)
 }
 
-func (executor *Executor) run(ctx context.Context, label string, arguments []string, environment map[string]string, cwd string) error {
+func (executor *Executor) run(ctx context.Context, label string, arguments []string, environment map[string]string, cwd string, blockedEnvironment func(string) bool) error {
 	if len(arguments) == 0 {
 		return fmt.Errorf("cannot execute %s: command is empty", label)
 	}
 	command := exec.Command(arguments[0], arguments[1:]...)
 	command.Dir = cwd
-	if environment != nil {
-		command.Env = mergeEnvironment(os.Environ(), environment, executor.blockedEnvironment)
+	if environment != nil || blockedEnvironment != nil {
+		command.Env = mergeEnvironment(os.Environ(), environment, blockedEnvironment)
 	}
 	command.Stdin = executor.stdin
 	command.Stdout = executor.stdout

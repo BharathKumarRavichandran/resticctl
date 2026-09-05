@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 
 	"resticctl/internal/profile"
 )
@@ -17,38 +18,36 @@ func Preflight(backupProfile profile.Profile) error {
 
 func preflight(backupProfile profile.Profile, lookPath func(string) (string, error)) error {
 	requested := make(map[string]string)
-	for _, database := range backupProfile.PostgreSQLDatabases {
-		executable := database.Executable
+	add := func(executable, fallback, purpose string) {
 		if executable == "" {
-			executable = "pg_dump"
+			executable = fallback
 		}
-		requested[executable] = "PostgreSQL dumps"
+		requested[executable] = purpose
+	}
+	for _, database := range backupProfile.PostgreSQLDatabases {
+		add(database.Executable, "pg_dump", "PostgreSQL dumps")
 		if database.Globals {
-			globalsExecutable := database.GlobalsExecutable
-			if globalsExecutable == "" {
-				globalsExecutable = "pg_dumpall"
-			}
-			requested[globalsExecutable] = "PostgreSQL globals"
+			add(database.GlobalsExecutable, "pg_dumpall", "PostgreSQL globals")
 		}
 	}
 	for _, database := range backupProfile.MongoDBDatabases {
-		executable := database.Executable
-		if executable == "" {
-			executable = "mongodump"
-		}
-		requested[executable] = "MongoDB dumps"
+		add(database.Executable, "mongodump", "MongoDB dumps")
 	}
 	for _, database := range backupProfile.MySQLDatabases {
-		executable := database.Executable
-		if executable == "" {
-			executable = "mysqldump"
-		}
-		requested[executable] = "MySQL/MariaDB dumps"
+		add(database.Executable, "mysqldump", "MySQL/MariaDB dumps")
+	}
+	for _, database := range backupProfile.SQLServerDatabases {
+		add(database.Executable, "sqlcmd", "SQL Server dumps")
 	}
 	var result error
-	for executable, purpose := range requested {
+	executables := make([]string, 0, len(requested))
+	for executable := range requested {
+		executables = append(executables, executable)
+	}
+	sort.Strings(executables)
+	for _, executable := range executables {
 		if _, err := lookPath(executable); err != nil {
-			result = errors.Join(result, fmt.Errorf("required database client for %s not found: %s", purpose, executable))
+			result = errors.Join(result, fmt.Errorf("required database client for %s not found: %s", requested[executable], executable))
 		}
 	}
 	return result

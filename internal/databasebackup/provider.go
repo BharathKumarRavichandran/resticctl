@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -59,6 +62,11 @@ func (p PostgreSQL) Progress() string { return "" }
 
 func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := p.Database
+	environment = providerPasswordEnvironment(environment, "PGPASSWORD")
+	if db.Options != nil && db.Options.RequirePrimary {
+		_, _ = takeEnvironmentValue(environment, "PGTARGETSESSIONATTRS")
+		environment["PGTARGETSESSIONATTRS"] = "read-write"
+	}
 	dump := filepath.Join("databases", db.Name+".dump")
 	temporaryDump, err := temporaryArtifact(directory, db.Name+"-*.dump")
 	if err != nil {
@@ -66,7 +74,7 @@ func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, 
 	}
 	defer os.Remove(temporaryDump)
 	args := []string{db.Executable, "--format=custom", "--file", temporaryDump}
-	args = appendConnection(args, db.Host, db.Port, db.Username)
+	args = appendPostgreSQLConnection(args, db)
 	for _, pattern := range db.TablePatterns {
 		args = append(args, "--table="+pattern)
 	}
@@ -89,7 +97,7 @@ func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, 
 		}
 		defer os.Remove(temporaryGlobals)
 		globals := []string{db.GlobalsExecutable, "--globals-only", "--file", temporaryGlobals}
-		globals = appendConnection(globals, db.Host, db.Port, db.Username)
+		globals = appendPostgreSQLConnection(globals, db)
 		if err := runner.RunDatabase(ctx, globals, environment, directory); err != nil {
 			return fmt.Errorf("dump PostgreSQL globals %s: %w", db.Name, err)
 		}
@@ -106,6 +114,27 @@ func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, 
 		}
 	}
 	return nil
+}
+
+func appendPostgreSQLConnection(args []string, db profile.PostgreSQLDatabase) []string {
+	if len(db.Hosts) == 0 {
+		return appendConnection(args, db.Host, db.Port, db.Username)
+	}
+	hosts := make([]string, 0, len(db.Hosts))
+	ports := make([]string, 0, len(db.Hosts))
+	for _, endpoint := range db.Hosts {
+		host, port := splitEndpoint(endpoint)
+		hosts = append(hosts, host)
+		ports = append(ports, port)
+	}
+	args = append(args, "--host", strings.Join(hosts, ","))
+	if slices.ContainsFunc(ports, func(port string) bool { return port != "" }) {
+		args = append(args, "--port", strings.Join(ports, ","))
+	}
+	if db.Username != "" {
+		args = append(args, "--username", db.Username)
+	}
+	return args
 }
 
 func appendConnection(args []string, host string, port int, username string) []string {
@@ -146,11 +175,21 @@ func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, env
 	if db.Host != "" {
 		args = append(args, "--host", db.Host)
 	}
+	if len(db.Hosts) > 0 {
+		host := strings.Join(db.Hosts, ",")
+		if db.Options != nil && db.Options.ReplicaSet != "" {
+			host = db.Options.ReplicaSet + "/" + host
+		}
+		args = append(args, "--host", host)
+	}
 	if db.Port != 0 {
 		args = append(args, "--port", strconv.Itoa(db.Port))
 	}
 	if db.Database != "" {
 		args = append(args, "--db", db.Database)
+	}
+	if db.Username != "" {
+		args = append(args, "--username", db.Username)
 	}
 	if db.Collection != "" {
 		args = append(args, "--collection", db.Collection)
@@ -188,6 +227,9 @@ func (m MySQL) Progress() string { return "" }
 
 func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) (stageErr error) {
 	db := m.Database
+	clientEnvironment := providerPasswordEnvironment(environment, "MYSQL_PASSWORD")
+	password, _ := takeEnvironmentValue(clientEnvironment, "MYSQL_PASSWORD")
+	clientEnvironment["MYSQL_PWD"] = ""
 	optionFile, err := os.CreateTemp(directory, ".mysql-client-*")
 	if err != nil {
 		return fmt.Errorf("create MySQL client option file for %s: %w", db.Name, err)
@@ -202,7 +244,8 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 		optionFile.Close()
 		return fmt.Errorf("protect MySQL client option file for %s: %w", db.Name, err)
 	}
-	contents := mysqlOptionFile(db.Username, environment["MYSQL_PASSWORD"])
+	contents := mysqlOptionFile(db.Username, password)
+	defer clear(contents)
 	if _, err := optionFile.Write(contents); err != nil {
 		optionFile.Close()
 		return fmt.Errorf("write MySQL client option file for %s: %w", db.Name, err)
@@ -244,7 +287,7 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 	args = append(args, db.Tables...)
 	// MYSQL_PWD is explicitly blanked so an ambient password cannot reach the
 	// client. The configured password exists only in the temporary option file.
-	if err := runner.RunDatabase(ctx, args, map[string]string{"MYSQL_PWD": ""}, directory); err != nil {
+	if err := runner.RunDatabase(ctx, args, clientEnvironment, directory); err != nil {
 		return fmt.Errorf("dump MySQL database %s: %w", db.Name, err)
 	}
 	if err := requireNonEmptyRegularFile(temporaryDump); err != nil {
@@ -266,6 +309,120 @@ type selectionManifest struct {
 	Database string   `json:"database"`
 	Kind     string   `json:"kind"`
 	Values   []string `json:"values"`
+}
+
+type SQLServer struct{ Database profile.SQLServerDatabase }
+
+func (s SQLServer) Name() string { return s.Database.Name }
+
+func (s SQLServer) Progress() string { return "" }
+
+func (s SQLServer) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) (stageErr error) {
+	db := s.Database
+	if err := securefile.ValidateSharedDirectory(db.BackupDirectory); err != nil {
+		return fmt.Errorf("unsafe SQL Server backup_directory for %s: %w", db.Name, err)
+	}
+	temporaryDump, err := reserveTemporaryPath(db.BackupDirectory, "."+db.Name+"-*.bak")
+	if err != nil {
+		return fmt.Errorf("prepare SQL Server dump %s: %w", db.Name, err)
+	}
+	defer func() {
+		if err := os.Remove(temporaryDump); err != nil && !errors.Is(err, os.ErrNotExist) {
+			stageErr = errors.Join(stageErr, fmt.Errorf("remove SQL Server dump %s: %w", db.Name, err))
+		}
+	}()
+
+	query := "BACKUP DATABASE " + quoteSQLServerIdentifier(db.Database) + " TO DISK = N'" +
+		quoteSQLServerString(temporaryDump) + "' WITH COPY_ONLY, CHECKSUM"
+	if db.Compress {
+		query += ", COMPRESSION"
+	}
+	args := []string{db.Executable, "-b", "-r", "1", "-x"}
+	if db.Host != "" {
+		server := db.Host
+		if db.Port != 0 {
+			server += "," + strconv.Itoa(db.Port)
+		}
+		args = append(args, "-S", server)
+	}
+	if db.Username != "" {
+		args = append(args, "-U", db.Username)
+	}
+	args = append(args, db.Args...)
+	args = append(args, "-d", "master", "-Q", query)
+	// Blank the client variable when no configured password exists so ambient
+	// credentials cannot silently change the authentication mode.
+	clientEnvironment := providerPasswordEnvironment(environment, "SQLSERVER_PASSWORD")
+	password, _ := takeEnvironmentValue(clientEnvironment, "SQLSERVER_PASSWORD")
+	clientEnvironment["SQLCMDPASSWORD"] = password
+	if err := runner.RunDatabase(ctx, args, clientEnvironment, directory); err != nil {
+		return fmt.Errorf("dump SQL Server database %s: %w", db.Name, err)
+	}
+	if err := requireNonEmptyRegularFile(temporaryDump); err != nil {
+		return fmt.Errorf("verify SQL Server database dump %s: %w", db.Name, err)
+	}
+	privateCopy, err := temporaryArtifact(directory, db.Name+"-*.bak")
+	if err != nil {
+		return fmt.Errorf("prepare private SQL Server dump %s: %w", db.Name, err)
+	}
+	defer os.Remove(privateCopy)
+	if err := copyRegularFile(temporaryDump, privateCopy); err != nil {
+		return fmt.Errorf("copy SQL Server database dump %s: %w", db.Name, err)
+	}
+	if err := os.Rename(privateCopy, filepath.Join(directory, "databases", db.Name+".bak")); err != nil {
+		return fmt.Errorf("publish SQL Server database dump %s: %w", db.Name, err)
+	}
+	return nil
+}
+
+func reserveTemporaryPath(directory, pattern string) (string, error) {
+	file, err := os.CreateTemp(directory, pattern)
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func copyRegularFile(source, destination string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	openedInfo, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	pathInfo, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if !pathInfo.Mode().IsRegular() || pathInfo.Size() == 0 || !os.SameFile(openedInfo, pathInfo) {
+		return errors.New("source artifact is not the expected non-empty regular file")
+	}
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	return errors.Join(copyErr, closeErr)
+}
+
+func quoteSQLServerIdentifier(value string) string {
+	return "[" + strings.ReplaceAll(value, "]", "]]") + "]"
+}
+
+func quoteSQLServerString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
 }
 
 func writeSelectionManifest(directory, name, provider, database, kind string, values []string) error {
@@ -300,19 +457,7 @@ func temporaryArtifact(directory, pattern string) (string, error) {
 	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
 		return "", err
 	}
-	file, err := os.CreateTemp(databaseDir, "."+pattern)
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if err := file.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	if err := os.Remove(path); err != nil {
-		return "", err
-	}
-	return path, nil
+	return reserveTemporaryPath(databaseDir, "."+pattern)
 }
 
 func requireNonEmptyRegularFile(path string) error {
@@ -383,4 +528,47 @@ func mysqlOptionFile(username, password string) []byte {
 func escapeMySQLOption(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\n", "\\n", "\r", "\\r", "\t", "\\t")
 	return replacer.Replace(value)
+}
+
+func splitEndpoint(value string) (string, string) {
+	if !strings.Contains(value, ":") {
+		return value, ""
+	}
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return value, ""
+	}
+	return host, port
+}
+
+func providerPasswordEnvironment(environment map[string]string, key string) map[string]string {
+	result := copyEnvironment(environment)
+	password, ok := takeEnvironmentValue(result, "RESTICCTL_DATABASE_PASSWORD")
+	if ok {
+		_, _ = takeEnvironmentValue(result, key)
+		result[key] = password
+	} else if configuredPassword, configured := takeEnvironmentValue(result, key); configured {
+		result[key] = configuredPassword
+	} else {
+		result[key] = ""
+	}
+	return result
+}
+
+func takeEnvironmentValue(environment map[string]string, key string) (string, bool) {
+	for configuredKey, value := range environment {
+		if strings.EqualFold(configuredKey, key) {
+			delete(environment, configuredKey)
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func copyEnvironment(environment map[string]string) map[string]string {
+	result := make(map[string]string, len(environment)+1)
+	for name, value := range environment {
+		result[name] = value
+	}
+	return result
 }

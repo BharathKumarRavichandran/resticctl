@@ -15,13 +15,13 @@ import (
 //go:embed templates/*.json
 var templateFiles embed.FS
 
-func CreateProfile(configDir, name string) (profilePath, credentialsPath string, err error) {
+func CreateProfile(configDir, name string) (profilePath, privatePath string, err error) {
 	if err := profile.ValidateName(name); err != nil {
 		return "", "", err
 	}
 	profilePath = filepath.Join(configDir, name+".json")
-	credentialsPath = filepath.Join(configDir, name+".credentials.json")
-	for _, path := range []string{profilePath, credentialsPath} {
+	privatePath = filepath.Join(configDir, name+".private.json")
+	for _, path := range []string{profilePath, privatePath} {
 		if _, statErr := os.Lstat(path); statErr == nil {
 			return "", "", fmt.Errorf("refusing to overwrite existing file: %s", path)
 		} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -39,9 +39,9 @@ func CreateProfile(configDir, name string) (profilePath, credentialsPath string,
 	if err != nil {
 		return "", "", fmt.Errorf("cannot read profile template: %w", err)
 	}
-	credentialsTemplate, err := templateFiles.ReadFile("templates/credentials.json")
+	privateTemplate, err := templateFiles.ReadFile("templates/private.json")
 	if err != nil {
-		return "", "", fmt.Errorf("cannot read credentials template: %w", err)
+		return "", "", fmt.Errorf("cannot read private configuration template: %w", err)
 	}
 	created := make([]string, 0, 2)
 	defer func() {
@@ -57,10 +57,10 @@ func CreateProfile(configDir, name string) (profilePath, credentialsPath string,
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
 	created = append(created, profilePath)
-	if err = createPrivateFile(credentialsPath, strings.ReplaceAll(string(credentialsTemplate), "<profile>", name)); err != nil {
+	if err = createPrivateFile(privatePath, strings.ReplaceAll(string(privateTemplate), "<profile>", name)); err != nil {
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
-	return profilePath, credentialsPath, nil
+	return profilePath, privatePath, nil
 }
 
 func createPrivateFile(path, content string) (err error) {

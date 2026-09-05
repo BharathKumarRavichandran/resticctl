@@ -1,103 +1,147 @@
 {
-    "repository": "s3:https://s3.<region>.backblazeb2.com/<bucket>/restic",
-    "credentials_file": "<profile>.credentials.json",
-    "restic_args": ["--retry-lock", "2m"],
-    "commands": {
-        "backup": {"args": ["--exclude-caches", "--skip-if-unchanged"]},
-        "mount": {"args": []},
-        "rewrite": {"args": []}
-    },
-    "backup_paths": ["~/path/to/files"],
-    "backup_args": [],
-    "tags": [],
-    "forget_args": [
-        "--keep-daily", "7",
-        "--keep-weekly", "5",
-        "--keep-monthly", "12",
-        "--keep-yearly", "3"
-    ],
-    "forget": {
-        "cron": "weekly",
-        "backend": "auto",
-        "catch_up": true,
-        "prune": false
-    },
-    "check_args": [],
-    "check_before": false,
-    "check_after": false,
-    "prune_before": false,
-    "prune_after": false,
-    "run_before": [],
-    "run_after": [],
-    "run_after_fail": [],
-    "run_finally": [],
-    "monitoring": {
-        "history_limit": 100,
-        "warning_policy": "warning",
-        "backup_statistics": false,
-        "status_file": "",
-        "prometheus_textfile": "",
-        "http": [],
-        "logs": []
-    },
-    "schedule": {
-        "backend": "auto",
-        "cron": "0 2 * * *",
-        "catch_up": true
-    },
-    "databases": {
-      "concurrency": 1,
-      "sqlite": [
-        {
-            "name": "primary",
-            "path": "~/path/to/application.sqlite3"
-        },
-        {
-            "name": "secondary",
-            "path": "~/path/to/another.sqlite3"
-        }
-      ],
-      "postgresql": [
-        {
-            "name": "application",
-            "database": "application",
-            "host": "localhost",
-            "port": 5432,
-            "username": "backup",
-            "executable": "pg_dump",
-            "globals": false,
-            "globals_executable": "pg_dumpall",
-            "args": ["--no-owner"],
-            "table_patterns": []
-        }
-      ],
-      "mongodb": [
-        {
-            "name": "events",
-            "database": "events",
-            "host": "localhost",
-            "port": 27017,
-            "executable": "mongodump",
-            "config_file": "mongo-backup.yml",
-            "args": [],
-            "collection": "",
-            "exclude_collections": []
-        }
-      ],
-      "mysql": [
-        {
-            "name": "orders",
-            "database": "shop",
-            "host": "localhost",
-            "port": 3306,
-            "username": "backup",
-            "executable": "mysqldump",
-            "args": [],
-            "tables": [],
-            "routines": false,
-            "events": false,
-            "triggers": true
-        }
+  "repository": "s3:https://s3.<region>.backblazeb2.com/<bucket>/restic",
+  "private_file": "<profile>.private.json",
+  "restic_args": [
+    "--retry-lock",
+    "2m"
+  ],
+  "commands": {
+    "backup": {
+      "args": [
+        "--exclude-caches",
+        "--skip-if-unchanged"
       ]
+    },
+    "mount": {
+      "args": []
+    },
+    "rewrite": {
+      "args": []
     }
+  },
+  "backup_paths": [
+    "~/path/to/files"
+  ],
+  "backup_args": [],
+  "tags": [],
+  "forget_args": [
+    "--keep-daily",
+    "7",
+    "--keep-weekly",
+    "5",
+    "--keep-monthly",
+    "12",
+    "--keep-yearly",
+    "3"
+  ],
+  "forget": {
+    "cron": "weekly",
+    "backend": "auto",
+    "catch_up": true,
+    "prune": false
+  },
+  "check_args": [],
+  "check_before": false,
+  "check_after": false,
+  "prune_before": false,
+  "prune_after": false,
+  "run_before": [],
+  "run_after": [],
+  "run_after_fail": [],
+  "run_finally": [],
+  "monitoring": {
+    "history_limit": 100,
+    "warning_policy": "warning",
+    "backup_statistics": false,
+    "status_file": "",
+    "prometheus_textfile": "",
+    "http": [],
+    "logs": []
+  },
+  "schedule": {
+    "backend": "auto",
+    "cron": "0 2 * * *",
+    "catch_up": true
+  },
+  "databases": {
+    "concurrency": 1,
+    "sqlite": {
+      "primary": {
+        "path": "~/path/to/application.sqlite3"
+      },
+      "secondary": {
+        "path": "~/path/to/another.sqlite3"
+      }
+    },
+    "postgresql": {
+      "application": {
+        "connection": {
+          "database": "application",
+          "hosts": [
+            "localhost:5432"
+          ],
+          "username": "backup"
+        },
+        "options": {
+          "require_primary": false
+        },
+        "executable": "pg_dump",
+        "globals": false,
+        "globals_executable": "pg_dumpall",
+        "args": [
+          "--no-owner"
+        ],
+        "table_patterns": []
+      }
+    },
+    "mongodb": {
+      "events": {
+        "connection": {
+          "database": "events",
+          "hosts": [
+            "localhost:27017"
+          ]
+        },
+        "options": {
+          "config_file": "mongo-backup.yaml"
+        },
+        "executable": "mongodump",
+        "args": [],
+        "collection": "",
+        "exclude_collections": []
+      }
+    },
+    "mysql": {
+      "orders": {
+        "connection": {
+          "database": "shop",
+          "hosts": [
+            "localhost:3306"
+          ],
+          "username": "backup"
+        },
+        "executable": "mysqldump",
+        "args": [],
+        "tables": [],
+        "routines": false,
+        "events": false,
+        "triggers": true
+      }
+    },
+    "sqlserver": {
+      "warehouse": {
+        "connection": {
+          "database": "reporting",
+          "hosts": [
+            "localhost:1433"
+          ],
+          "username": "backup"
+        },
+        "backup_directory": "/var/opt/mssql/backup",
+        "executable": "sqlcmd",
+        "args": [],
+        "compress": true
+      }
+    }
+  }
 }

@@ -1,0 +1,20 @@
+{
+  "repository": "s3:https://s3.<region>.backblazeb2.com/<bucket>/restic",
+  "credentials": {
+    "environment": {
+      "AWS_ACCESS_KEY_ID": "<application-key-id>",
+      "AWS_SECRET_ACCESS_KEY": "<application-key>"
+    },
+    "password": {
+      "command": [
+        "secret-tool",
+        "lookup",
+        "application",
+        "restic",
+        "profile",
+        "<profile>"
+      ]
+    }
+  },
+  "databases": {}
+}

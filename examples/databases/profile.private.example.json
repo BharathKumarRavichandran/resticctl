@@ -1,0 +1,92 @@
+{
+  "repository": "s3:https://s3.example.net/production-backups/restic",
+  "credentials": {
+    "environment": {
+      "AWS_ACCESS_KEY_ID": "replace-me",
+      "AWS_SECRET_ACCESS_KEY": "replace-me"
+    },
+    "password": {
+      "command": [
+        "secret-tool",
+        "lookup",
+        "application",
+        "restic",
+        "profile",
+        "profile"
+      ]
+    }
+  },
+  "databases": {
+    "sqlite": {
+      "local-cache": {
+        "path": "/srv/application/cache.sqlite3"
+      }
+    },
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "accounts_production",
+          "hosts": [
+            "pg1.internal.example.net:5432",
+            "pg2.internal.example.net:5432"
+          ],
+          "username": "backup_accounts",
+          "password": {
+            "command": [
+              "secret-tool",
+              "lookup",
+              "database",
+              "accounts"
+            ]
+          }
+        }
+      }
+    },
+    "mongodb": {
+      "events": {
+        "connection": {
+          "database": "events_production",
+          "hosts": [
+            "mongo1.internal.example.net:27017",
+            "mongo2.internal.example.net:27017",
+            "mongo3.internal.example.net:27017"
+          ],
+          "username": "backup_events"
+        },
+        "options": {
+          "replica_set": "events-rs",
+          "config_file": "/etc/resticctl/mongodb-backup.yaml"
+        }
+      }
+    },
+    "mysql": {
+      "orders": {
+        "connection": {
+          "database": "shop_production",
+          "hosts": [
+            "mysql-router.internal.example.net:3306"
+          ],
+          "username": "backup_orders",
+          "password": {
+            "file": "/etc/resticctl/mysql-password"
+          }
+        }
+      }
+    },
+    "sqlserver": {
+      "warehouse": {
+        "connection": {
+          "database": "reporting_production",
+          "hosts": [
+            "reporting-listener.internal.example.net:1433"
+          ],
+          "username": "backup_warehouse",
+          "password": {
+            "file": "/etc/resticctl/sqlserver-password"
+          }
+        },
+        "backup_directory": "/var/opt/mssql/backup"
+      }
+    }
+  }
+}

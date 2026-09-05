@@ -63,9 +63,9 @@ func TestBackupStagesExternalDatabasesWithBoundedConcurrencyAndIsolatedEnvironme
 			{Name: "accounts", Database: "accounts", Executable: os.Args[0]},
 			{Name: "events", Database: "events", Executable: os.Args[0]},
 		},
-		Credentials: profile.Credentials{DatabaseEnvironments: map[string]map[string]string{
-			"accounts": {"PGPASSWORD": "accounts-secret"},
-			"events":   {"PGPASSWORD": "events-secret"},
+		Credentials: profile.Credentials{DatabaseCredentials: map[string]profile.DatabaseCredential{
+			"accounts": {Password: profile.PasswordSource{Value: "accounts-secret"}},
+			"events":   {Password: profile.PasswordSource{Value: "events-secret"}},
 		}},
 	}
 	result := make(chan error, 1)

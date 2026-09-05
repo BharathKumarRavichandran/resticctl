@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
@@ -11,12 +12,12 @@ import (
 
 func TestCreateProfileIsPrivateAndRefusesOverwrite(t *testing.T) {
 	directory := t.TempDir()
-	profilePath, credentialsPath, err := CreateProfile(directory, "example")
+	profilePath, privatePath, err := CreateProfile(directory, "example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
-		for _, path := range []string{profilePath, credentialsPath} {
+		for _, path := range []string{profilePath, privatePath} {
 			info, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
@@ -30,17 +31,28 @@ func TestCreateProfileIsPrivateAndRefusesOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "example.credentials.json") {
-		t.Fatal("profile template does not reference its credentials file")
+	if !strings.Contains(string(content), "example.private.json") {
+		t.Fatal("profile template does not reference its private file")
 	}
-	credentialsContent, err := os.ReadFile(credentialsPath)
+	privateContent, err := os.ReadFile(privatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(credentialsContent), `"profile", "example"`) {
-		t.Fatal("credentials template does not contain the profile name")
+	var privateConfig struct {
+		Credentials struct {
+			Password struct {
+				Command []string `json:"command"`
+			} `json:"password"`
+		} `json:"credentials"`
 	}
-	if strings.Contains(string(content), "<profile>") || strings.Contains(string(credentialsContent), "<profile>") {
+	if err := json.Unmarshal(privateContent, &privateConfig); err != nil {
+		t.Fatalf("decode private configuration: %v", err)
+	}
+	command := privateConfig.Credentials.Password.Command
+	if len(command) == 0 || command[len(command)-1] != "example" {
+		t.Fatal("private configuration template does not contain the profile name")
+	}
+	if strings.Contains(string(content), "<profile>") || strings.Contains(string(privateContent), "<profile>") {
 		t.Fatal("generated files contain an unresolved profile placeholder")
 	}
 	profiles, err := profile.List(directory)

@@ -1,0 +1,103 @@
+{
+  "repository": "local:development-placeholder",
+  "private_file": "profile.private.json",
+  "backup_paths": [],
+  "databases": {
+    "concurrency": 3,
+    "sqlite": {
+      "local-cache": {
+        "path": "./development/cache.sqlite3"
+      }
+    },
+    "postgresql": {
+      "accounts": {
+        "connection": {
+          "database": "accounts_dev",
+          "hosts": [
+            "localhost:5432"
+          ],
+          "username": "developer"
+        },
+        "options": {
+          "require_primary": true
+        },
+        "executable": "pg_dump",
+        "args": [
+          "--no-owner",
+          "--no-privileges"
+        ],
+        "table_patterns": [
+          "public.customers",
+          "public.orders"
+        ],
+        "globals": true,
+        "globals_executable": "pg_dumpall"
+      }
+    },
+    "mongodb": {
+      "events": {
+        "connection": {
+          "database": "events_dev",
+          "hosts": [
+            "localhost:27017"
+          ],
+          "username": "developer"
+        },
+        "options": {
+          "config_file": "./development/mongodb.yaml"
+        },
+        "executable": "mongodump",
+        "args": [
+          "--gzip"
+        ],
+        "collection": "",
+        "exclude_collections": [
+          "temporary_events",
+          "expired_sessions"
+        ]
+      }
+    },
+    "mysql": {
+      "orders": {
+        "connection": {
+          "database": "shop_dev",
+          "hosts": [
+            "localhost:3306"
+          ],
+          "username": "developer"
+        },
+        "executable": "mysqldump",
+        "args": [
+          "--hex-blob",
+          "--set-gtid-purged=OFF"
+        ],
+        "tables": [
+          "customers",
+          "orders",
+          "order_items"
+        ],
+        "routines": true,
+        "events": true,
+        "triggers": true
+      }
+    },
+    "sqlserver": {
+      "warehouse": {
+        "connection": {
+          "database": "reporting_dev",
+          "hosts": [
+            "localhost:1433"
+          ],
+          "username": "developer"
+        },
+        "backup_directory": "/var/opt/mssql/backup",
+        "executable": "sqlcmd",
+        "args": [
+          "-l",
+          "30"
+        ],
+        "compress": true
+      }
+    }
+  }
+}

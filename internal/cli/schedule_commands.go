@@ -548,6 +548,7 @@ func writeRunStatus(cli *commandLine, status runstatus.Status) error {
 
 func writeJSON(writer io.Writer, value any) error {
 	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
 		return fmt.Errorf("cannot write command output: %w", err)

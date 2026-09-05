@@ -13,12 +13,13 @@ func TestPreflightReportsAllMissingClients(t *testing.T) {
 		PostgreSQLDatabases: []profile.PostgreSQLDatabase{{Executable: "pg-dump-missing", Globals: true, GlobalsExecutable: "pg-globals-missing"}},
 		MongoDBDatabases:    []profile.MongoDBDatabase{{Executable: "mongo-dump-missing"}},
 		MySQLDatabases:      []profile.MySQLDatabase{{Executable: "maria-dump-missing"}},
+		SQLServerDatabases:  []profile.SQLServerDatabase{{Executable: "sqlcmd-missing"}},
 	}
 	err := preflight(configured, func(name string) (string, error) { return "", errors.New("missing " + name) })
 	if err == nil {
 		t.Fatal("preflight succeeded")
 	}
-	for _, name := range []string{"pg-dump-missing", "pg-globals-missing", "mongo-dump-missing", "maria-dump-missing"} {
+	for _, name := range []string{"pg-dump-missing", "pg-globals-missing", "mongo-dump-missing", "maria-dump-missing", "sqlcmd-missing"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("error %q does not mention %s", err, name)
 		}
