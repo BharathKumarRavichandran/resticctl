@@ -186,6 +186,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		Expressions: normalizedExpressions, Permission: defaultString(spec.Permission, PermissionUser), CronFile: spec.CronFile,
 		User: spec.User, Priority: spec.Priority, Log: spec.Log, LockMode: spec.LockMode, LockWait: spec.LockWait,
 		Enabled: spec.Enabled, Start: spec.Start, Network: spec.Network, ACPower: spec.ACPower,
+		Executable: executable, EnvironmentPath: manager.environmentPath,
 	}
 	if backend == BackendLaunchd {
 		state.JobFile, err = manager.launchdJobPath(name, action)
@@ -248,6 +249,10 @@ func (manager Manager) apply(ctx context.Context, configDir string, state *State
 }
 
 func (manager Manager) restore(ctx context.Context, configDir string, state State, executable string) error {
+	if state.Executable != "" {
+		executable = state.Executable
+		manager.environmentPath = state.EnvironmentPath
+	}
 	if err := manager.apply(ctx, configDir, &state, executable); err != nil {
 		return fmt.Errorf("cannot restore previous schedule: %w", err)
 	}

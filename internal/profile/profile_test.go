@@ -1104,6 +1104,19 @@ func TestLoadRequiresPrivateCredentialsFile(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsTemporaryFileMonitoringLog(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "monitoring":{"logs":[{"type":"temporary-file"}]}
+        }`)
+	_, err := Load(directory, "example")
+	if err == nil || !strings.Contains(err.Error(), "temporary-file") || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func writePrivate(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

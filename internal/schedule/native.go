@@ -60,6 +60,9 @@ func (manager Manager) renderSystemd(configDir string, state State, executable s
 		service.WriteString("ConditionACPower=true\n")
 	}
 	service.WriteString("[Service]\nType=oneshot\nExecStart=" + strings.Join(quoted, " ") + "\n")
+	if manager.environmentPath != "" {
+		service.WriteString("Environment=" + systemdEscape("PATH="+manager.environmentPath) + "\n")
+	}
 	if state.User != "" && state.Permission == PermissionSystem {
 		service.WriteString("User=" + strings.ReplaceAll(state.User, "%", "%%") + "\n")
 	}
@@ -128,14 +131,27 @@ func (manager Manager) removeSystemd(ctx context.Context, state *State) error {
 	dir := manager.systemdDir(*state)
 	base := filepath.Join(dir, nativeID(*state))
 	args := systemctlArguments(*state)
-	_, _ = manager.executor.Run(ctx, nil, "systemctl", append(args, "disable", "--now", filepath.Base(base)+".timer")...)
+	var cleanupErrors []error
+	output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "disable", "--now", filepath.Base(base)+".timer")...)
+	if err != nil && !systemdUnitNotFound(output) {
+		cleanupErrors = append(cleanupErrors, commandError("disable systemd timer", output, err))
+	}
 	for _, suffix := range []string{".timer", ".service"} {
 		if err := os.Remove(base + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("cannot remove systemd unit %s: %w", base+suffix, err))
 		}
 	}
-	_, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "daemon-reload")...)
-	return err
+	output, err = manager.executor.Run(ctx, nil, "systemctl", append(args, "daemon-reload")...)
+	if err != nil {
+		cleanupErrors = append(cleanupErrors, commandError("reload systemd units", output, err))
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func systemdUnitNotFound(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "not loaded") || strings.Contains(message, "not found") ||
+		strings.Contains(message, "does not exist") || strings.Contains(message, "no such file")
 }
 
 func systemctlArguments(state State) []string {
@@ -185,6 +201,9 @@ func windowsTriggers(expressions []string) (string, error) {
 	var triggers strings.Builder
 	for _, expression := range expressions {
 		fields := strings.Fields(expression)
+		if len(fields) != 5 {
+			return "", errors.New("Windows backend requires five-field cron expressions")
+		}
 		if fields[2] != "*" || fields[3] != "*" || fields[4] != "*" {
 			return "", errors.New("Windows backend currently supports portable daily/hourly calendar fields only")
 		}
@@ -215,9 +234,39 @@ func windowsHour(field string) (int, string, error) {
 func windowsJoin(arguments []string) string {
 	quoted := make([]string, len(arguments))
 	for i, argument := range arguments {
-		quoted[i] = strconv.Quote(argument)
+		quoted[i] = windowsQuote(argument)
 	}
 	return strings.Join(quoted, " ")
+}
+
+// windowsQuote applies the CommandLineToArgvW quoting rules used by task
+// scheduler when it starts an executable. strconv.Quote uses Go string
+// escaping, which would pass literal backslashes to the Windows process.
+func windowsQuote(argument string) string {
+	if argument != "" && !strings.ContainsAny(argument, " \t\"") {
+		return argument
+	}
+	var output strings.Builder
+	output.WriteByte('"')
+	backslashes := 0
+	for _, character := range argument {
+		if character == '\\' {
+			backslashes++
+			continue
+		}
+		if character == '"' {
+			output.WriteString(strings.Repeat("\\", backslashes*2+1))
+			output.WriteRune(character)
+			backslashes = 0
+			continue
+		}
+		output.WriteString(strings.Repeat("\\", backslashes))
+		output.WriteRune(character)
+		backslashes = 0
+	}
+	output.WriteString(strings.Repeat("\\", backslashes*2))
+	output.WriteByte('"')
+	return output.String()
 }
 
 func (manager Manager) installWindows(ctx context.Context, configDir string, state *State, executable string) error {
@@ -242,13 +291,22 @@ func (manager Manager) installWindows(ctx context.Context, configDir string, sta
 
 func (manager Manager) removeWindows(ctx context.Context, state *State) error {
 	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Delete", "/TN", `\resticctl\`+nativeID(*state), "/F")
-	if err != nil {
-		return commandError("remove Windows task", output, err)
+	var cleanupErrors []error
+	if err != nil && !windowsTaskNotFound(output) {
+		cleanupErrors = append(cleanupErrors, commandError("remove Windows task", output, err))
 	}
 	if state.JobFile != "" {
-		_ = os.Remove(state.JobFile)
+		if err := os.Remove(state.JobFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("cannot remove Windows task definition %s: %w", state.JobFile, err))
+		}
 	}
-	return nil
+	return errors.Join(cleanupErrors...)
+}
+
+func windowsTaskNotFound(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "cannot find the file specified") ||
+		strings.Contains(message, "cannot find the task") || strings.Contains(message, "does not exist")
 }
 
 func (manager Manager) nativeDefinition(state State) ([]byte, error) {

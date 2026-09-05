@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,34 @@ import (
 
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/runstatus"
 )
+
+type statusSabotageRunner struct {
+	recordingRunner
+	statusDirectory string
+}
+
+func (runner *statusSabotageRunner) Run(context.Context, restic.Config, []string, string) error {
+	if err := os.Remove(runner.statusDirectory); err != nil {
+		return err
+	}
+	return os.Mkdir(runner.statusDirectory, 0o700)
+}
+
+type capturedMonitoringEvent struct {
+	phase  string
+	status runstatus.Status
+}
+
+type capturingReporter struct {
+	events *[]capturedMonitoringEvent
+}
+
+func (reporter capturingReporter) Report(_ context.Context, phase string, status runstatus.Status) error {
+	*reporter.events = append(*reporter.events, capturedMonitoringEvent{phase: phase, status: status})
+	return nil
+}
 
 type warningRunner struct{ recordingRunner }
 
@@ -54,5 +82,29 @@ func TestMonitoringFailureDoesNotMaskSuccessfulAction(t *testing.T) {
 	err := RunCheck(context.Background(), func() (Runner, error) { return &recordingRunner{}, nil }, directory, backupProfile, time.Now)
 	if err != nil {
 		t.Fatalf("RunCheck error = %v", err)
+	}
+}
+
+func TestStatusFinalizationFailureReportsControllerFailure(t *testing.T) {
+	var events []capturedMonitoringEvent
+	original := newMonitoringReporter
+	newMonitoringReporter = func(profile.Profile, io.Writer) monitoringReporter {
+		return capturingReporter{events: &events}
+	}
+	t.Cleanup(func() { newMonitoringReporter = original })
+	directory := t.TempDir()
+	runner := &statusSabotageRunner{statusDirectory: filepath.Join(directory, "status", "example.check.json")}
+	backupProfile := profile.Profile{Name: "example", Monitoring: profile.Monitoring{HistoryLimit: 1}}
+	err := RunCheck(context.Background(), func() (Runner, error) { return runner, nil }, directory, backupProfile, time.Now)
+	if err == nil {
+		t.Fatal("RunCheck succeeded despite status finalization failure")
+	}
+	if len(events) != 3 || events[0].phase != "send-before" || events[1].phase != "send-after-fail" || events[2].phase != "send-finally" {
+		t.Fatalf("monitoring phases = %#v", events)
+	}
+	for _, event := range events[1:] {
+		if event.status.State != "failed" || event.status.ErrorCategory != "controller" {
+			t.Fatalf("monitoring event = %#v", event)
+		}
 	}
 }

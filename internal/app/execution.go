@@ -17,6 +17,14 @@ import (
 // RunnerFactory creates the subprocess runner used by an application workflow.
 type RunnerFactory func() (Runner, error)
 
+type monitoringReporter interface {
+	Report(context.Context, string, runstatus.Status) error
+}
+
+var newMonitoringReporter = func(backupProfile profile.Profile, console io.Writer) monitoringReporter {
+	return monitoring.New(backupProfile, console)
+}
+
 // RunBackup executes a backup and records non-dry-run status.
 func RunBackup(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, dryRun bool, output io.Writer, now func() time.Time) error {
 	runner, err := newRunner()
@@ -181,21 +189,26 @@ func recordRun(ctx context.Context, configDir string, backupProfile profile.Prof
 }
 
 func finishRecordedRun(ctx context.Context, recorder *runstatus.Recorder, backupProfile profile.Profile, now func() time.Time, output io.Writer, run func(context.Context) error) error {
-	reporter := monitoring.New(backupProfile, output)
+	reporter := newMonitoringReporter(backupProfile, output)
 	_ = reporter.Report(ctx, "send-before", recorder.Status())
 	runCtx, observation := observe(ctx)
 	runErr := run(runCtx)
 	outcome := observation.outcome(runErr, backupProfile.Monitoring.HistoryLimit)
 	finishErr := recorder.FinishOutcome(outcome, now())
 	status := recorder.Status()
+	finalErr := errors.Join(runErr, finishErr)
+	if finishErr != nil {
+		status.State = "failed"
+		status.ErrorCategory = "controller"
+	}
 	if status.Warning {
 		_ = reporter.Report(ctx, "warning", status)
 	}
-	if runErr == nil {
+	if finalErr == nil {
 		_ = reporter.Report(ctx, "send-after", status)
 	} else {
 		_ = reporter.Report(ctx, "send-after-fail", status)
 	}
 	_ = reporter.Report(ctx, "send-finally", status)
-	return errors.Join(runErr, finishErr)
+	return finalErr
 }

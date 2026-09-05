@@ -28,6 +28,12 @@ type fakeExecutor struct {
 	callback        func(execution)
 }
 
+type executorFunc func(context.Context, []byte, string, ...string) ([]byte, error)
+
+func (function executorFunc) Run(ctx context.Context, input []byte, name string, arguments ...string) ([]byte, error) {
+	return function(ctx, input, name, arguments...)
+}
+
 func (executor *fakeExecutor) Run(_ context.Context, input []byte, name string, arguments ...string) ([]byte, error) {
 	current := execution{input: string(input), name: name, arguments: append([]string(nil), arguments...)}
 	executor.executions = append(executor.executions, current)
@@ -467,6 +473,7 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 		WithPlatform("linux", 1000),
 		WithSystemdDirs(units, filepath.Join(directory, "system")),
 		WithClock(time.Now),
+		WithEnvironmentPath(`/opt/restic/bin:/usr/bin:%h`),
 	)
 	state, err := manager.InstallSpec(context.Background(), Spec{
 		Name:        "example",
@@ -493,7 +500,7 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"ExecStart=" + systemdEscape(executable), "\"--action\" \"check\"", "Nice=10", "network-online.target", "StandardOutput=append:"} {
+	for _, expected := range []string{"ExecStart=" + systemdEscape(executable), "\"--action\" \"check\"", "Nice=10", "network-online.target", "StandardOutput=append:", `Environment="PATH=/opt/restic/bin:/usr/bin:%%h"`} {
 		if !strings.Contains(string(service), expected) {
 			t.Fatalf("service lacks %q:\n%s", expected, service)
 		}
@@ -514,6 +521,155 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	}
 	if err := manager.Verify(context.Background(), state); !errors.Is(err, ErrDrift) {
 		t.Fatalf("missing systemd timer error = %v, want drift", err)
+	}
+}
+
+func TestRollbackRestoresPreviousBackendExecutableAndPath(t *testing.T) {
+	directory := t.TempDir()
+	units := filepath.Join(directory, "units")
+	executor := &fakeExecutor{}
+	oldManager := NewManager(
+		WithExecutor(executor), WithPlatform("linux", 1000),
+		WithSystemdDirs(units, filepath.Join(directory, "system")),
+		WithEnvironmentPath("/old/bin:/usr/bin"), WithClock(time.Now),
+	)
+	oldState, err := oldManager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendSystemd,
+		Executable: "/old/resticctl", ConfigDir: directory, Expressions: []string{"0 2 * * *"},
+		Permission: PermissionUser, Enabled: true, Start: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDefinition, err := oldManager.installedDefinition(context.Background(), oldState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.crontabError = errors.New("crontab unavailable")
+	newManager := NewManager(
+		WithExecutor(executor), WithPlatform("linux", 1000),
+		WithSystemdDirs(units, filepath.Join(directory, "system")),
+		WithEnvironmentPath("/new/bin:/usr/bin"), WithClock(time.Now),
+	)
+	_, err = newManager.InstallSpec(context.Background(), Spec{
+		Name: "example", Action: ActionBackup, Backend: BackendCron,
+		Executable: "/new/resticctl", ConfigDir: directory, Expressions: []string{"0 3 * * *"},
+		Permission: PermissionUser, Enabled: true, Start: true,
+	})
+	if err == nil {
+		t.Fatal("backend change unexpectedly succeeded")
+	}
+	restored, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldExecutable, err := filepath.Abs("/old/resticctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Backend != BackendSystemd || restored.Executable != oldExecutable || restored.EnvironmentPath != "/old/bin:/usr/bin" {
+		t.Fatalf("restored state = %#v", restored)
+	}
+	definition, err := oldManager.installedDefinition(context.Background(), restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(definition, oldDefinition) || definitionHash(definition) != restored.DefinitionHash {
+		t.Fatalf("restored definition differs:\n%s", definition)
+	}
+}
+
+func TestSystemdRemovalConvergesWhenUnitIsMissing(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(
+		WithPlatform("linux", 1000), WithSystemdDirs(directory, directory),
+		WithExecutor(executorFunc(func(_ context.Context, _ []byte, _ string, arguments ...string) ([]byte, error) {
+			if slices.Contains(arguments, "disable") {
+				return []byte("Unit resticctl-backup-example.timer does not exist"), errors.New("exit 1")
+			}
+			return nil, nil
+		})),
+	)
+	state := State{Profile: "example", Action: ActionBackup, Backend: BackendSystemd, Permission: PermissionUser}
+	if err := manager.removeSystemd(context.Background(), &state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeRemovalAttemptsCleanupAfterCommandFailure(t *testing.T) {
+	directory := t.TempDir()
+	state := State{Profile: "example", Action: ActionBackup, Backend: BackendSystemd, Permission: PermissionUser}
+	base := filepath.Join(directory, nativeID(state))
+	for _, suffix := range []string{".timer", ".service"} {
+		if err := os.WriteFile(base+suffix, []byte("unit"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := NewManager(
+		WithPlatform("linux", 1000), WithSystemdDirs(directory, directory),
+		WithExecutor(executorFunc(func(_ context.Context, _ []byte, _ string, arguments ...string) ([]byte, error) {
+			if slices.Contains(arguments, "disable") {
+				return []byte("permission denied"), errors.New("exit 1")
+			}
+			return []byte("reload failed"), errors.New("exit 2")
+		})),
+	)
+	err := manager.removeSystemd(context.Background(), &state)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "reload failed") {
+		t.Fatalf("removeSystemd error = %v", err)
+	}
+	for _, suffix := range []string{".timer", ".service"} {
+		if _, statErr := os.Stat(base + suffix); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("unit %s was not removed: %v", suffix, statErr)
+		}
+	}
+}
+
+func TestLaunchdRemovalCleansFilesAfterUnloadFailure(t *testing.T) {
+	directory := t.TempDir()
+	launchAgents := filepath.Join(directory, "launchd")
+	if err := os.MkdirAll(launchAgents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(
+		WithPlatform("darwin", 501), WithLaunchAgentsDir(launchAgents),
+		WithExecutor(&fakeExecutor{launchctlOutput: []byte("permission denied"), launchctlError: errors.New("exit 1")}),
+	)
+	state := State{Profile: "example", Action: ActionBackup, Backend: BackendLaunchd}
+	jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFile := filepath.Join(directory, "schedules", launchdLabel(state.Profile, state.Action)+".plist")
+	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{jobFile, legacyFile} {
+		if err := os.WriteFile(path, []byte("job"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = manager.removeLaunchd(context.Background(), directory, state)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("removeLaunchd error = %v", err)
+	}
+	for _, path := range []string{jobFile, legacyFile} {
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("launchd file was not removed: %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestWindowsRemovalConvergesWhenTaskAndDefinitionAreMissing(t *testing.T) {
+	manager := NewManager(
+		WithPlatform("windows", 0),
+		WithExecutor(executorFunc(func(context.Context, []byte, string, ...string) ([]byte, error) {
+			return []byte("ERROR: The system cannot find the file specified."), errors.New("exit 1")
+		})),
+	)
+	state := State{Profile: "example", Action: ActionBackup, Backend: BackendWindows, JobFile: filepath.Join(t.TempDir(), "missing.xml")}
+	if err := manager.removeWindows(context.Background(), &state); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -591,6 +747,14 @@ func TestWindowsInstallDoesNotRunActionImmediately(t *testing.T) {
 		if slices.Contains(execution.arguments, "/Run") {
 			t.Fatalf("installation ran the scheduled action: %#v", execution)
 		}
+	}
+}
+
+func TestWindowsJoinUsesWindowsCommandLineQuoting(t *testing.T) {
+	arguments := windowsJoin([]string{`C:\Tools\resticctl.exe`, "--config-dir", `C:\Backup Data\config`})
+	want := `C:\Tools\resticctl.exe --config-dir "C:\Backup Data\config"`
+	if arguments != want {
+		t.Fatalf("windowsJoin() = %q, want %q", arguments, want)
 	}
 }
 

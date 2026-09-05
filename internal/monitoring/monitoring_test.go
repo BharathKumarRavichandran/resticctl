@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,6 +71,7 @@ func TestReporterDeliversHooksAndExports(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	sort.Strings(paths)
 	if len(paths) != 2 || paths[0] != "/event" || paths[1] != "/metrics/job/backups/site/test" {
 		t.Fatalf("request paths = %v", paths)
 	}
@@ -78,10 +81,40 @@ func TestReporterFailuresDoNotExposeSensitiveHeaders(t *testing.T) {
 	useHTTPFake(t, func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusBadGateway, Body: http.NoBody, Header: make(http.Header)}, nil
 	})
-	reporter := New(profile.Profile{Monitoring: profile.Monitoring{HTTP: []profile.HTTPHook{{URL: "https://monitor.example", Method: http.MethodPost, Phases: []string{"send-finally"}, Headers: map[string]string{"Authorization": "secret"}}}}}, nil)
+	var diagnostics strings.Builder
+	reporter := New(profile.Profile{Monitoring: profile.Monitoring{HTTP: []profile.HTTPHook{{Name: "healthcheck", URL: "https://monitor.example", Method: http.MethodPost, Phases: []string{"send-finally"}, Headers: map[string]string{"Authorization": "secret"}}}}}, nil, &diagnostics)
 	err := reporter.Report(context.Background(), "send-finally", runstatus.Status{Profile: "example", Action: "backup"})
 	if err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("error = %v", err)
+	}
+	if got := diagnostics.String(); !strings.Contains(got, "healthcheck failed") || strings.Contains(got, "secret") || strings.Contains(got, "https://") {
+		t.Fatalf("diagnostic = %q", got)
+	}
+}
+
+func TestReporterDeliversIndependentTargetsInParallel(t *testing.T) {
+	var started atomic.Int32
+	ready := make(chan struct{})
+	useHTTPFake(t, func(*http.Request) (*http.Response, error) {
+		if started.Add(1) == 2 {
+			close(ready)
+		}
+		select {
+		case <-ready:
+			return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+		case <-time.After(time.Second):
+			return nil, context.DeadlineExceeded
+		}
+	})
+	reporter := New(profile.Profile{Monitoring: profile.Monitoring{HTTP: []profile.HTTPHook{
+		{Name: "one", URL: "https://one.example", Method: http.MethodPost, Phases: []string{"send-before"}},
+		{Name: "two", URL: "https://two.example", Method: http.MethodPost, Phases: []string{"send-before"}},
+	}}}, nil, io.Discard)
+	if err := reporter.Report(context.Background(), "send-before", runstatus.Status{Action: "backup"}); err != nil {
+		t.Fatal(err)
+	}
+	if started.Load() != 2 {
+		t.Fatalf("started deliveries = %d", started.Load())
 	}
 }
 

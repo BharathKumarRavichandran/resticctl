@@ -44,5 +44,8 @@ func WriteAtomic(path string, data []byte) (err error) {
 		return fmt.Errorf("cannot replace %s: %w", path, err)
 	}
 	keep = true
+	if err := syncParent(path); err != nil {
+		return fmt.Errorf("cannot sync parent directory for %s: %w", path, err)
+	}
 	return nil
 }

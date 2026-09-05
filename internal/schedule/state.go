@@ -17,28 +17,30 @@ import (
 var ErrNotInstalled = errors.New("schedule is not installed")
 
 type State struct {
-	Profile        string    `json:"profile"`
-	Backend        string    `json:"backend"`
-	Expression     string    `json:"expression"`
-	Installed      time.Time `json:"installed_at"`
-	JobFile        string    `json:"job_file,omitempty"`
-	CatchUp        bool      `json:"catch_up"`
-	Action         string    `json:"action,omitempty"`
-	Prune          bool      `json:"prune,omitempty"`
-	DefinitionHash string    `json:"definition_hash,omitempty"`
-	Expressions    []string  `json:"expressions,omitempty"`
-	Permission     string    `json:"permission,omitempty"`
-	CronFile       string    `json:"cron_file,omitempty"`
-	User           string    `json:"user,omitempty"`
-	Priority       string    `json:"priority,omitempty"`
-	Log            string    `json:"log,omitempty"`
-	LockMode       string    `json:"lock_mode,omitempty"`
-	LockWait       string    `json:"lock_wait,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	Start          bool      `json:"start"`
-	Network        bool      `json:"network,omitempty"`
-	ACPower        bool      `json:"ac_power,omitempty"`
-	Rendered       string    `json:"-"`
+	Profile         string    `json:"profile"`
+	Backend         string    `json:"backend"`
+	Expression      string    `json:"expression"`
+	Installed       time.Time `json:"installed_at"`
+	JobFile         string    `json:"job_file,omitempty"`
+	CatchUp         bool      `json:"catch_up"`
+	Action          string    `json:"action,omitempty"`
+	Prune           bool      `json:"prune,omitempty"`
+	DefinitionHash  string    `json:"definition_hash,omitempty"`
+	Executable      string    `json:"executable,omitempty"`
+	EnvironmentPath string    `json:"environment_path,omitempty"`
+	Expressions     []string  `json:"expressions,omitempty"`
+	Permission      string    `json:"permission,omitempty"`
+	CronFile        string    `json:"cron_file,omitempty"`
+	User            string    `json:"user,omitempty"`
+	Priority        string    `json:"priority,omitempty"`
+	Log             string    `json:"log,omitempty"`
+	LockMode        string    `json:"lock_mode,omitempty"`
+	LockWait        string    `json:"lock_wait,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	Start           bool      `json:"start"`
+	Network         bool      `json:"network,omitempty"`
+	ACPower         bool      `json:"ac_power,omitempty"`
+	Rendered        string    `json:"-"`
 }
 
 func Load(configDir, name string) (State, error) {
@@ -140,6 +142,9 @@ func readState(path string) (State, error) {
 	}
 	if state.Installed.IsZero() {
 		return State{}, fmt.Errorf("schedule state %s has no installation time", path)
+	}
+	if state.Executable != "" && !filepath.IsAbs(state.Executable) {
+		return State{}, fmt.Errorf("schedule state %s has a relative executable", path)
 	}
 	return state, nil
 }

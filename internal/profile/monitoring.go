@@ -110,7 +110,7 @@ func validateMonitoring(p *Profile, base string) error {
 	for i := range m.Logs {
 		destination := &m.Logs[i]
 		switch destination.Type {
-		case "console", "temporary-file", "local-syslog":
+		case "console", "local-syslog":
 		case "file":
 			if destination.Path == "" {
 				return fmt.Errorf("monitoring.logs[%d].path is required", i)

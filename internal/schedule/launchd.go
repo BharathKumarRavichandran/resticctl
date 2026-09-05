@@ -129,8 +129,9 @@ func (manager Manager) removeLaunchd(ctx context.Context, configDir string, stat
 	}
 	domain := "gui/" + strconv.Itoa(manager.uid)
 	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
+	var cleanupErrors []error
 	if err != nil && !launchdJobNotLoaded(output) {
-		return commandError("unload launchd job", output, err)
+		cleanupErrors = append(cleanupErrors, commandError("unload launchd job", output, err))
 	}
 	jobFiles := []string{
 		jobFile,
@@ -138,10 +139,10 @@ func (manager Manager) removeLaunchd(ctx context.Context, configDir string, stat
 	}
 	for _, jobFile := range jobFiles {
 		if err := os.Remove(jobFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("cannot remove launchd job %s: %w", jobFile, err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("cannot remove launchd job %s: %w", jobFile, err))
 		}
 	}
-	return nil
+	return errors.Join(cleanupErrors...)
 }
 
 func launchdJobNotLoaded(output []byte) bool {

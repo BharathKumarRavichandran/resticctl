@@ -27,6 +27,7 @@ import (
 )
 
 const defaultTimeout = 10 * time.Second
+const cancellationCleanupTimeout = time.Second
 
 var newHTTPClient = httpClient
 var dialTimeout = net.DialTimeout
@@ -39,40 +40,95 @@ type Event struct {
 }
 
 type Reporter struct {
-	profile profile.Profile
-	console io.Writer
+	profile    profile.Profile
+	console    io.Writer
+	diagnostic io.Writer
 }
 
-func New(backupProfile profile.Profile, console io.Writer) *Reporter {
-	return &Reporter{profile: backupProfile, console: console}
+func New(backupProfile profile.Profile, console io.Writer, diagnostics ...io.Writer) *Reporter {
+	diagnostic := io.Writer(os.Stderr)
+	if len(diagnostics) > 0 {
+		diagnostic = diagnostics[0]
+	}
+	return &Reporter{profile: backupProfile, console: console, diagnostic: diagnostic}
 }
 
 // Report performs all configured deliveries and returns their joined errors.
 // Callers deliberately treat this result as non-fatal to the protected action.
 func (reporter *Reporter) Report(ctx context.Context, phase string, status runstatus.Status) error {
+	reportCtx, cancel := reportingContext(ctx)
+	defer cancel()
 	event := Event{Phase: phase, Status: status}
-	var deliveryErrors []error
+	type delivery struct {
+		name string
+		run  func() error
+	}
+	var deliveries []delivery
 	for _, hook := range reporter.profile.Monitoring.HTTP {
 		if matches(hook, phase, status.Action) {
-			if err := sendHTTP(ctx, hook, event); err != nil {
-				deliveryErrors = append(deliveryErrors, err)
+			name := hook.Name
+			if name == "" {
+				name = "HTTP target"
 			}
+			deliveries = append(deliveries, delivery{name: name, run: func() error { return sendHTTP(reportCtx, hook, event) }})
 		}
 	}
 	if phase == "send-finally" {
-		if err := reporter.export(status); err != nil {
-			deliveryErrors = append(deliveryErrors, err)
+		if reporter.profile.Monitoring.StatusFile != "" || reporter.profile.Monitoring.PrometheusTextfile != "" {
+			deliveries = append(deliveries, delivery{name: "status export", run: func() error { return reporter.export(status) }})
 		}
 		if gateway := reporter.profile.Monitoring.Pushgateway; gateway != nil {
-			if err := push(ctx, *gateway, status); err != nil {
-				deliveryErrors = append(deliveryErrors, err)
-			}
+			deliveries = append(deliveries, delivery{name: "Pushgateway", run: func() error { return push(reportCtx, *gateway, status) }})
 		}
 	}
-	if err := reporter.log(event); err != nil {
-		deliveryErrors = append(deliveryErrors, err)
+	if len(reporter.profile.Monitoring.Logs) > 0 {
+		deliveries = append(deliveries, delivery{name: "event log", run: func() error { return reporter.log(event) }})
+	}
+	type result struct {
+		index int
+		err   error
+	}
+	results := make(chan result, len(deliveries))
+	for index, item := range deliveries {
+		go func() { results <- result{index: index, err: item.run()} }()
+	}
+	deliveryErrors := make([]error, len(deliveries))
+	for remaining := len(deliveries); remaining > 0; remaining-- {
+		select {
+		case result := <-results:
+			deliveryErrors[result.index] = result.err
+		case <-reportCtx.Done():
+			reporter.reportDiagnostic("phase", reportCtx.Err())
+			deliveryErrors = append(deliveryErrors, reportCtx.Err())
+			remaining = 0
+		}
+	}
+	for index, err := range deliveryErrors[:len(deliveries)] {
+		if err != nil {
+			reporter.reportDiagnostic(deliveries[index].name, err)
+		}
 	}
 	return errors.Join(deliveryErrors...)
+}
+
+func reportingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() != nil {
+		return context.WithTimeout(context.WithoutCancel(ctx), cancellationCleanupTimeout)
+	}
+	return context.WithTimeout(ctx, defaultTimeout)
+}
+
+func (reporter *Reporter) reportDiagnostic(name string, err error) {
+	if reporter.diagnostic == nil {
+		return
+	}
+	reason := "delivery error"
+	if errors.Is(err, context.DeadlineExceeded) {
+		reason = "timeout"
+	} else if errors.Is(err, context.Canceled) {
+		reason = "cancelled"
+	}
+	fmt.Fprintf(reporter.diagnostic, "resticctl: monitoring %s failed: %s\n", name, reason)
 }
 
 func matches(hook profile.HTTPHook, phase, action string) bool {
@@ -115,7 +171,7 @@ func sendHTTP(ctx context.Context, hook profile.HTTPHook, event Event) error {
 		body = string(encoded)
 	}
 	timeout := parseTimeout(hook.Timeout)
-	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, hook.Method, hook.URL, strings.NewReader(body))
 	if err != nil {
@@ -220,7 +276,7 @@ func push(ctx context.Context, gateway profile.Pushgateway, status runstatus.Sta
 		endpoint += "/" + url.PathEscape(key) + "/" + url.PathEscape(gateway.Labels[key])
 	}
 	timeout := parseTimeout(gateway.Timeout)
-	requestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPut, endpoint, strings.NewReader(prometheus(status)))
 	if err != nil {
@@ -311,16 +367,6 @@ func (reporter *Reporter) log(event Event) error {
 			}
 		case "file":
 			err = appendPrivate(destination.Path, data)
-		case "temporary-file":
-			var file *os.File
-			file, err = os.CreateTemp("", "resticctl-log-*.jsonl")
-			if err == nil {
-				err = file.Chmod(0o600)
-				if err == nil {
-					_, err = file.Write(data)
-				}
-				err = errors.Join(err, file.Close())
-			}
 		case "local-syslog":
 			err = sendLocalSyslog(data)
 		case "remote-syslog":
