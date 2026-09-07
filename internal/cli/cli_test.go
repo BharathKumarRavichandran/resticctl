@@ -103,6 +103,74 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
 	}
 }
 
+func TestShowCommandExplainsInheritance(t *testing.T) {
+	directory := t.TempDir()
+	writePrivateCLIFile(t, filepath.Join(directory, "base.json"), `{
+          "repository":"local:base",
+          "backup_paths":["base"],
+          "tags":["base"],
+          "runtime":{"lock":{"path":"backup.lock","mode":"fail"}}
+        }`)
+	writePrivateCLIFile(t, filepath.Join(directory, "child.json"), `{
+          "parent":"base",
+          "repository":"local:child",
+          "credentials":{"password":{"value":"secret"}},
+          "backup_paths":["child"],
+          "runtime":{"lock":{"wait":"1m"}}
+        }`)
+
+	var output, stderr bytes.Buffer
+	status, err := runForTest(context.Background(), []string{"show", "--profile", "child", "--explain", "--config-dir", directory}, &output, &stderr)
+	if err != nil || status != 0 {
+		t.Fatalf("show --explain status=%d error=%v stderr=%s", status, err, stderr.String())
+	}
+	var decoded struct {
+		Profile struct {
+			Name string `json:"name"`
+		} `json:"profile"`
+		Explanation []struct {
+			Path   string `json:"path"`
+			Source string `json:"source"`
+			Action string `json:"action"`
+		} `json:"explanation"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("show --explain output is not JSON: %v", err)
+	}
+	if decoded.Profile.Name != "child" {
+		t.Fatalf("profile name = %q", decoded.Profile.Name)
+	}
+	want := map[string]string{
+		"backup_paths":      "child:replaced",
+		"repository":        "child:overridden",
+		"runtime.lock.mode": "base:inherited",
+		"runtime.lock.wait": "child:defined",
+		"tags":              "base:inherited",
+	}
+	for _, field := range decoded.Explanation {
+		if expected, exists := want[field.Path]; exists {
+			if got := field.Source + ":" + field.Action; got != expected {
+				t.Errorf("%s explanation = %s, want %s", field.Path, got, expected)
+			}
+			delete(want, field.Path)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing explanations: %v\n%s", want, output.String())
+	}
+	if strings.Contains(output.String(), "secret") {
+		t.Fatalf("show --explain exposed a secret:\n%s", output.String())
+	}
+}
+
+func TestShowCommandRejectsTwoProfileSelectors(t *testing.T) {
+	var output, stderr bytes.Buffer
+	status, err := runForTest(context.Background(), []string{"show", "child", "--profile", "other"}, &output, &stderr)
+	if err == nil || status != 2 || !strings.Contains(err.Error(), "either as an argument") {
+		t.Fatalf("show status=%d error=%v", status, err)
+	}
+}
+
 func TestCommandHelp(t *testing.T) {
 	var output, stderr bytes.Buffer
 	status, err := runForTest(context.Background(), []string{"backup", "--help"}, &output, &stderr)

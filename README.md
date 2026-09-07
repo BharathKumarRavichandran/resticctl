@@ -466,7 +466,7 @@ read permissions. `resticctl create` uses mode `0600` for the files it creates.
 ```text
 resticctl create <profile>
 resticctl list
-resticctl show <profile>
+resticctl show <profile> [--explain]
 resticctl init <profile>
 resticctl validate <profile>
 resticctl backup <profile> [--dry-run]
@@ -511,6 +511,16 @@ passwords, query strings, and fragments and monitoring endpoint paths, query
 strings, headers, bodies, and body templates are also redacted. Other public
 profile values, including hook and Restic argument vectors, are shown as
 configured and must not contain secrets.
+
+Add `--explain` to wrap the profile with field-level provenance showing whether
+each public configuration field was defined, inherited, overridden, replaced,
+or cleared:
+
+```sh
+resticctl show --profile child --explain
+```
+
+The positional form, `resticctl show child --explain`, is equivalent.
 
 ### `init`
 

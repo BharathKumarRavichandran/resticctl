@@ -62,23 +62,54 @@ func (cli *commandLine) listCommand() *cobra.Command {
 }
 
 func (cli *commandLine) showCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:               "show <profile>",
-		Short:             "Show a resolved profile with secrets redacted",
-		Args:              cobra.ExactArgs(1),
+	var explain bool
+	var profileName string
+	command := &cobra.Command{
+		Use:   "show [profile]",
+		Short: "Show a resolved profile with secrets redacted",
+		Args: func(command *cobra.Command, arguments []string) error {
+			if err := cobra.MaximumNArgs(1)(command, arguments); err != nil {
+				return err
+			}
+			if profileName != "" && len(arguments) != 0 {
+				return errors.New("profile must be provided either as an argument or with --profile, not both")
+			}
+			if profileName == "" && len(arguments) == 0 {
+				return errors.New("profile is required")
+			}
+			return nil
+		},
 		ValidArgsFunction: cli.completeProfiles,
 		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			name := profileName
+			if len(arguments) != 0 {
+				name = arguments[0]
+			}
 			configDir, err := cli.resolveConfigDir()
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(configDir, name)
 			if err != nil {
 				return err
 			}
-			return writeJSON(cli.stdout, profile.RedactedResolvedProfile(backupProfile))
+			resolved := profile.RedactedResolvedProfile(backupProfile)
+			if !explain {
+				return writeJSON(cli.stdout, resolved)
+			}
+			explanation, err := profile.ExplainInheritance(configDir, name)
+			if err != nil {
+				return err
+			}
+			return writeJSON(cli.stdout, struct {
+				Profile     profile.ResolvedProfile    `json:"profile"`
+				Explanation []profile.FieldExplanation `json:"explanation"`
+			}{Profile: resolved, Explanation: explanation})
 		}),
 	}
+	command.Flags().StringVar(&profileName, "profile", "", "profile to show")
+	command.Flags().BoolVar(&explain, "explain", false, "show where each configured field came from")
+	return command
 }
 
 func (cli *commandLine) initCommand() *cobra.Command {

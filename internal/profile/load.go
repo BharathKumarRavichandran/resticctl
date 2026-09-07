@@ -417,9 +417,7 @@ func mergeJSONObjectsAtPath(parent, child map[string]json.RawMessage, path []str
 	}
 	for key, childValue := range child {
 		parentKey := matchingJSONKey(result, key)
-		if strings.EqualFold(key, "password") &&
-			(len(path) == 1 && strings.EqualFold(path[0], "credentials") ||
-				len(path) == 4 && strings.EqualFold(path[3], "connection")) {
+		if passwordObjectIsAtomic(path, key) {
 			delete(result, parentKey)
 			result[key] = append(json.RawMessage(nil), childValue...)
 			continue
