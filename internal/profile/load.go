@@ -231,6 +231,9 @@ func Load(configDir, name string) (Profile, error) {
 	if err := validateMonitoring(&backupProfile, base); err != nil {
 		return Profile{}, err
 	}
+	if err := validateRuntime(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
 	return backupProfile, nil
 }
 
@@ -272,6 +275,7 @@ type profileConfig struct {
 	Schedule             *Schedule                `json:"schedule,omitempty"`
 	Forget               *ForgetSchedule          `json:"forget,omitempty"`
 	Monitoring           *Monitoring              `json:"monitoring,omitempty"`
+	Runtime              *Runtime                 `json:"runtime,omitempty"`
 }
 
 func validateStream(value Profile) error {

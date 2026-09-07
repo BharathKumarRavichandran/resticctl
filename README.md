@@ -175,6 +175,46 @@ deliberately conservative: if an installed Restic version or repository backend
 does not emit Restic's explicit `repository does not exist` diagnostic, perform
 `resticctl init` manually.
 
+The optional `runtime` object applies host-safety policy to backup, forget,
+check, and recorded Restic jobs:
+
+```json
+{
+  "runtime": {
+    "priority": "background",
+    "minimum_available_memory": 536870912,
+    "prevent_sleep": true,
+    "require_ac_power": true,
+    "require_network": true,
+    "lock": {
+      "path": "locks/storage.lock",
+      "mode": "wait",
+      "wait": "5m",
+      "stale_after": "12h",
+      "stale": "fail"
+    },
+    "repository_lock_recovery": {
+      "enabled": true,
+      "dry_run": false,
+      "min_age": "12h"
+    }
+  }
+}
+```
+
+`priority` is portable (`normal` or `background`). Unix profiles may add
+`"nice": 10`; Linux profiles may add
+`"ionice": {"class":"best-effort","level":7}`; and Windows profiles may add
+`"windows_priority":"below-normal"`. Windows priority also accepts `idle`,
+`below-normal`, `normal`, `above-normal`, or `high`. Memory values are bytes.
+AC power is checked only for scheduled jobs, and networking only for remote
+repositories. Lock mode is `fail`, `wait`, or `ignore`. A stale local lock is
+never cleared unless `stale` is explicitly `clear`, its age exceeds
+`stale_after`, it belongs to this host, and its PID is inactive. Repository
+lock recovery applies the same age, host, and process checks before asking
+Restic to remove stale locks; use `dry_run` to inspect eligibility without
+unlocking. Host state and local locks are restored on failure or cancellation.
+
 Profiles that are committed to source control can keep deployment details in a
 private override file:
 

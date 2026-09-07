@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type helperResult struct {
@@ -47,6 +48,15 @@ func TestResticHelper(t *testing.T) {
 			os.Exit(4)
 		}
 	}
+	if os.Getenv("RESTIC_HELPER_LOCKS") == "1" {
+		joined := strings.Join(arguments, " ")
+		switch {
+		case strings.Contains(joined, "list locks"):
+			_, _ = io.WriteString(os.Stdout, "abc123\n")
+		case strings.Contains(joined, "cat lock abc123"):
+			_, _ = io.WriteString(os.Stdout, os.Getenv("RESTIC_HELPER_LOCK_JSON"))
+		}
+	}
 	switch os.Getenv("RESTIC_HELPER_FAILURE") {
 	case "missing":
 		_, _ = io.WriteString(os.Stdout, "repository-config-must-not-leak")
@@ -60,6 +70,62 @@ func TestResticHelper(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestRecoverRepositoryLocksChecksAgeActivityAndDryRun(t *testing.T) {
+	previous := isProcessActive
+	t.Cleanup(func() { isProcessActive = previous })
+	isProcessActive = func(int) (bool, error) { return false, nil }
+	now := time.Now().UTC()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, _ := json.Marshal(repositoryLock{Time: now.Add(-2 * time.Hour), PID: 4242, Hostname: host})
+	logPath := filepath.Join(t.TempDir(), "restic.json")
+	client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdout: io.Discard, stderr: io.Discard}
+	config := Config{Repository: "local:repository", PasswordValue: "secret", Environment: map[string]string{
+		"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_LOCKS": "1", "RESTIC_HELPER_LOCK_JSON": string(lock), "RESTIC_HELPER_LOG": logPath,
+	}}
+	if err := client.RecoverRepositoryLocks(context.Background(), config, time.Hour, true, now); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(result.Arguments, " "), "unlock") {
+		t.Fatal("dry run invoked unlock")
+	}
+	if err := client.RecoverRepositoryLocks(context.Background(), config, time.Hour, false, now); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(result.Arguments, " "), "unlock") {
+		t.Fatalf("last command = %v", result.Arguments)
+	}
+
+	isProcessActive = func(int) (bool, error) { return true, nil }
+	if err := client.RecoverRepositoryLocks(context.Background(), config, time.Hour, false, now); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(logPath)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(result.Arguments, " "), "unlock") {
+		t.Fatal("active lock was unlocked")
+	}
 }
 
 func TestRepositoryExistsIsolatesAndBoundsProbeOutput(t *testing.T) {

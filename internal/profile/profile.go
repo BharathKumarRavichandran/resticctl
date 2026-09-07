@@ -227,6 +227,38 @@ type LogDestination struct {
 	Network string `json:"network,omitempty"`
 }
 
+type Runtime struct {
+	Priority               string              `json:"priority,omitempty"`
+	Nice                   *int                `json:"nice,omitempty"`
+	IOPriority             *IOPriority         `json:"ionice,omitempty"`
+	WindowsPriority        string              `json:"windows_priority,omitempty"`
+	MinimumAvailableMemory uint64              `json:"minimum_available_memory,omitempty"`
+	PreventSleep           bool                `json:"prevent_sleep,omitempty"`
+	RequireACPower         bool                `json:"require_ac_power,omitempty"`
+	RequireNetwork         bool                `json:"require_network,omitempty"`
+	Lock                   *RuntimeLock        `json:"lock,omitempty"`
+	RepositoryLockRecovery *RepositoryRecovery `json:"repository_lock_recovery,omitempty"`
+}
+
+type IOPriority struct {
+	Class string `json:"class"`
+	Level int    `json:"level,omitempty"`
+}
+
+type RuntimeLock struct {
+	Path       string `json:"path"`
+	Mode       string `json:"mode,omitempty"`
+	Wait       string `json:"wait,omitempty"`
+	StaleAfter string `json:"stale_after,omitempty"`
+	Stale      string `json:"stale,omitempty"`
+}
+
+type RepositoryRecovery struct {
+	Enabled bool   `json:"enabled"`
+	DryRun  bool   `json:"dry_run,omitempty"`
+	MinAge  string `json:"min_age"`
+}
+
 type Profile struct {
 	Name                 string                   `json:"-"`
 	Parent               string                   `json:"parent,omitempty"`
@@ -259,5 +291,6 @@ type Profile struct {
 	Schedule             *Schedule                `json:"schedule,omitempty"`
 	Forget               *ForgetSchedule          `json:"forget,omitempty"`
 	Monitoring           Monitoring               `json:"monitoring,omitempty"`
+	Runtime              Runtime                  `json:"runtime,omitempty"`
 	Credentials          Credentials              `json:"-"`
 }

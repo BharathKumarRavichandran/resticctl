@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"resticctl/internal/cronexpr"
+	"resticctl/internal/hostpolicy"
 	"resticctl/internal/monitoring"
 	"resticctl/internal/profile"
+	"resticctl/internal/restic"
 	"resticctl/internal/runstatus"
 	"resticctl/internal/schedule"
 )
@@ -25,58 +29,102 @@ var newMonitoringReporter = func(backupProfile profile.Profile, console io.Write
 	return monitoring.New(backupProfile, console)
 }
 
+type policyRunner interface {
+	Run(context.Context, profile.Runtime, bool, bool, func(context.Context) error) error
+}
+
+type repositoryLockRecoverer interface {
+	RecoverRepositoryLocks(context.Context, restic.Config, time.Duration, bool, time.Time) error
+}
+
+var newPolicyRunner = func() policyRunner { value := hostpolicy.New(); return value }
+
 // RunBackup executes a backup and records non-dry-run status.
 func RunBackup(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, dryRun bool, output io.Writer, now func() time.Time) error {
-	runner, err := newRunner()
-	if err != nil {
-		return err
-	}
-	if dryRun || configuredDryRun(backupProfile, schedule.ActionBackup) {
-		return Backup(ctx, runner, backupProfile, true, output)
-	}
-	return recordRun(ctx, configDir, backupProfile, schedule.ActionBackup, now, output, func(runCtx context.Context) error {
-		return Backup(runCtx, runner, backupProfile, false, output)
+	return runWithPolicy(ctx, newRunner, backupProfile, false, func(runCtx context.Context, runner Runner) error {
+		if dryRun || configuredDryRun(backupProfile, schedule.ActionBackup) {
+			return Backup(runCtx, runner, backupProfile, true, output)
+		}
+		return recordRun(runCtx, configDir, backupProfile, schedule.ActionBackup, now, output, func(recordCtx context.Context) error {
+			return Backup(recordCtx, runner, backupProfile, false, output)
+		})
 	})
 }
 
 // RunForget applies retention and records non-dry-run status.
 func RunForget(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, dryRun, prune bool, now func() time.Time) error {
-	runner, err := newRunner()
-	if err != nil {
-		return err
-	}
-	if dryRun || configuredDryRun(backupProfile, schedule.ActionForget) {
-		return Forget(ctx, runner, backupProfile, true, prune)
-	}
-	return recordRun(ctx, configDir, backupProfile, schedule.ActionForget, now, nil, func(runCtx context.Context) error {
-		return Forget(runCtx, runner, backupProfile, false, prune)
+	return runWithPolicy(ctx, newRunner, backupProfile, false, func(runCtx context.Context, runner Runner) error {
+		if dryRun || configuredDryRun(backupProfile, schedule.ActionForget) {
+			return Forget(runCtx, runner, backupProfile, true, prune)
+		}
+		return recordRun(runCtx, configDir, backupProfile, schedule.ActionForget, now, nil, func(recordCtx context.Context) error {
+			return Forget(recordCtx, runner, backupProfile, false, prune)
+		})
 	})
 }
 
 // RunCheck checks a repository and records the action independently.
 func RunCheck(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, now func() time.Time) error {
-	runner, err := newRunner()
-	if err != nil {
-		return err
-	}
-	return recordRun(ctx, configDir, backupProfile, schedule.ActionCheck, now, nil, func(runCtx context.Context) error {
-		return Check(runCtx, runner, backupProfile)
+	return runWithPolicy(ctx, newRunner, backupProfile, false, func(runCtx context.Context, runner Runner) error {
+		return recordRun(runCtx, configDir, backupProfile, schedule.ActionCheck, now, nil, func(recordCtx context.Context) error {
+			return Check(recordCtx, runner, backupProfile)
+		})
 	})
 }
 
 // RunRecordedRestic executes a raw monitored action while preserving the same
 // status, warning, and notification semantics as first-class commands.
 func RunRecordedRestic(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, command string, arguments []string, now func() time.Time, output io.Writer) error {
-	runner, err := newRunner()
-	if err != nil {
-		return err
-	}
-	if hasDryRunOption(arguments) || configuredDryRun(backupProfile, command) {
-		return RunRestic(ctx, runner, backupProfile, command, arguments)
-	}
-	return recordRun(ctx, configDir, backupProfile, command, now, output, func(runCtx context.Context) error {
-		return RunRestic(runCtx, runner, backupProfile, command, arguments)
+	return runWithPolicy(ctx, newRunner, backupProfile, false, func(runCtx context.Context, runner Runner) error {
+		if hasDryRunOption(arguments) || configuredDryRun(backupProfile, command) {
+			return RunRestic(runCtx, runner, backupProfile, command, arguments)
+		}
+		return recordRun(runCtx, configDir, backupProfile, command, now, output, func(recordCtx context.Context) error {
+			return RunRestic(recordCtx, runner, backupProfile, command, arguments)
+		})
 	})
+}
+
+func runWithPolicy(ctx context.Context, newRunner RunnerFactory, backupProfile profile.Profile, scheduled bool, run func(context.Context, Runner) error) error {
+	return newPolicyRunner().Run(ctx, backupProfile.Runtime, scheduled, repositoryIsRemote(backupProfile.Repository), func(runCtx context.Context) error {
+		runner, err := newRunner()
+		if err != nil {
+			return err
+		}
+		if err := recoverRepositoryLocks(runCtx, runner, backupProfile); err != nil {
+			return err
+		}
+		return run(runCtx, runner)
+	})
+}
+
+func repositoryIsRemote(repository string) bool {
+	if strings.HasPrefix(repository, "local:") {
+		return false
+	}
+	if filepath.IsAbs(repository) || strings.HasPrefix(repository, ".") {
+		return false
+	}
+	return strings.Contains(repository, ":")
+}
+
+func recoverRepositoryLocks(ctx context.Context, runner Runner, backupProfile profile.Profile) error {
+	policy := backupProfile.Runtime.RepositoryLockRecovery
+	if policy == nil || !policy.Enabled {
+		return nil
+	}
+	recoverer, ok := runner.(repositoryLockRecoverer)
+	if !ok {
+		return errors.New("runner does not support repository lock recovery")
+	}
+	minimumAge, err := time.ParseDuration(policy.MinAge)
+	if err != nil || minimumAge <= 0 {
+		return errors.New("repository lock recovery has an invalid minimum age")
+	}
+	if err := recoverer.RecoverRepositoryLocks(ctx, resticConfig(backupProfile), minimumAge, policy.DryRun, time.Now()); err != nil {
+		return fmt.Errorf("recover repository locks: %w", err)
+	}
+	return nil
 }
 
 func configuredDryRun(backupProfile profile.Profile, command string) bool {
@@ -124,11 +172,7 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 	if configuredDryRun(backupProfile, action) {
 		return false, fmt.Errorf("scheduled %s cannot use a configured Restic dry-run option", action)
 	}
-	run := func(runCtx context.Context) error {
-		runner, runnerErr := newRunner()
-		if runnerErr != nil {
-			return runnerErr
-		}
+	run := func(runCtx context.Context, runner Runner) error {
 		switch action {
 		case schedule.ActionBackup:
 			return Backup(runCtx, runner, backupProfile, false, output)
@@ -173,7 +217,24 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 	if err != nil || !due {
 		return due, err
 	}
-	return true, finishRecordedRun(ctx, recorder, backupProfile, now, output, run)
+	entered := false
+	policyErr := newPolicyRunner().Run(ctx, backupProfile.Runtime, true, repositoryIsRemote(backupProfile.Repository), func(runCtx context.Context) error {
+		entered = true
+		return finishRecordedRun(runCtx, recorder, backupProfile, now, output, func(recordCtx context.Context) error {
+			runner, runnerErr := newRunner()
+			if runnerErr != nil {
+				return runnerErr
+			}
+			if err := recoverRepositoryLocks(recordCtx, runner, backupProfile); err != nil {
+				return err
+			}
+			return run(recordCtx, runner)
+		})
+	})
+	if !entered {
+		policyErr = errors.Join(policyErr, recorder.Finish(policyErr, now()))
+	}
+	return true, policyErr
 }
 
 func scheduleActionError(action string) error {

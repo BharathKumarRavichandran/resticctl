@@ -6,10 +6,31 @@ import (
 	"os/exec"
 )
 
+type Priority struct {
+	Portable string
+	Nice     *int
+	IO       *IOPriority
+	Windows  string
+}
+
+type IOPriority struct {
+	Class string
+	Level int
+}
+
+type priorityKey struct{}
+
+func WithPriority(ctx context.Context, priority Priority) context.Context {
+	return context.WithValue(ctx, priorityKey{}, priority)
+}
+
 // Run starts command in an isolated process tree and terminates the whole tree
 // when ctx is cancelled.
 func Run(ctx context.Context, command *exec.Cmd) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := applyPriority(command, ctx.Value(priorityKey{})); err != nil {
 		return err
 	}
 	if err := prepareTree(command); err != nil {

@@ -14,6 +14,9 @@ func (configured profileConfig) profile(name string) Profile {
 	if configured.Monitoring != nil {
 		value.Monitoring = *configured.Monitoring
 	}
+	if configured.Runtime != nil {
+		value.Runtime = *configured.Runtime
+	}
 	if configured.Repository != nil {
 		value.Repository = *configured.Repository
 	}

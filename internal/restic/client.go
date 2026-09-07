@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
+	"time"
 
 	"resticctl/internal/process"
 )
@@ -112,6 +114,58 @@ type Client struct {
 	stdin           io.Reader
 	stdout          io.Writer
 	stderr          io.Writer
+}
+
+var lockIDPattern = regexp.MustCompile(`^[0-9a-f]+$`)
+var isProcessActive = processActive
+
+type repositoryLock struct {
+	Time     time.Time `json:"time"`
+	PID      int       `json:"pid"`
+	Hostname string    `json:"hostname"`
+}
+
+func (client *Client) RecoverRepositoryLocks(ctx context.Context, config Config, minimumAge time.Duration, dryRun bool, now time.Time) error {
+	var listed boundedBuffer
+	if _, err := client.runInput(ctx, config, []string{"list", "locks"}, "", nil, client.stdin, &listed, io.Discard); err != nil {
+		return err
+	}
+	ids := strings.Fields(listed.String())
+	if len(ids) == 0 {
+		return nil
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if !lockIDPattern.MatchString(id) {
+			return errors.New("restic returned an invalid lock ID")
+		}
+		var encoded boundedBuffer
+		if _, err := client.runInput(ctx, config, []string{"cat", "lock", id}, "", nil, client.stdin, &encoded, io.Discard); err != nil {
+			return err
+		}
+		var lock repositoryLock
+		if err := json.Unmarshal(encoded.data, &lock); err != nil {
+			return fmt.Errorf("decode repository lock %s: %w", id, err)
+		}
+		if lock.Time.IsZero() || lock.PID <= 0 || lock.Hostname != host || now.Sub(lock.Time) < minimumAge {
+			return nil
+		}
+		active, err := isProcessActive(lock.PID)
+		if err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+	}
+	if dryRun {
+		return nil
+	}
+	_, err = client.runInput(ctx, config, []string{"unlock"}, "", nil, client.stdin, client.stdout, client.stderr)
+	return err
 }
 
 func New(stdin io.Reader, stdout, stderr io.Writer) (*Client, error) {

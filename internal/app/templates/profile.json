@@ -50,6 +50,13 @@
   "run_after": [],
   "run_after_fail": [],
   "run_finally": [],
+  "runtime": {
+    "priority": "normal",
+    "minimum_available_memory": 0,
+    "prevent_sleep": false,
+    "require_ac_power": false,
+    "require_network": false
+  },
   "monitoring": {
     "history_limit": 100,
     "warning_policy": "warning",
