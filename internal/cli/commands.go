@@ -15,7 +15,60 @@ import (
 
 func (cli *commandLine) groupCommand() *cobra.Command {
 	command := &cobra.Command{Use: "group", Short: "Manage and run profile groups", Args: cobra.NoArgs}
-	command.AddCommand(cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupBackupCommand())
+	command.AddCommand(cli.groupCreateCommand(), cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupBackupCommand())
+	return command
+}
+
+func (cli *commandLine) groupCreateCommand() *cobra.Command {
+	var groupName string
+	var profileNames []string
+	var continueOnError bool
+	command := &cobra.Command{
+		Use:   "create <group> <profile>...",
+		Short: "Create a group from existing profiles",
+		Args: func(command *cobra.Command, arguments []string) error {
+			usingFlags := groupName != "" || len(profileNames) != 0
+			if !usingFlags {
+				return cobra.MinimumNArgs(2)(command, arguments)
+			}
+			if len(arguments) != 0 {
+				return errors.New("positional group and profiles must not be combined with --group or --profile")
+			}
+			if groupName == "" {
+				return errors.New("--group is required when using --profile")
+			}
+			if len(profileNames) == 0 {
+				return errors.New("at least one --profile is required when using --group")
+			}
+			return nil
+		},
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			if len(arguments) != 0 {
+				groupName = arguments[0]
+				profileNames = arguments[1:]
+			}
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			for _, name := range profileNames {
+				if _, err := profile.Load(profile.Dir(configDir), name); err != nil {
+					return fmt.Errorf("cannot add profile %s to group %s: %w", name, groupName, err)
+				}
+			}
+			path, err := group.Create(configDir, group.Group{
+				Name: groupName, Profiles: profileNames, ContinueOnError: continueOnError,
+			})
+			if err != nil {
+				return err
+			}
+			return writeOutput(cli.stdout, "Created group %s: %s\n", groupName, path)
+		}),
+	}
+	command.Flags().StringVar(&groupName, "group", "", "group name")
+	command.Flags().StringArrayVar(&profileNames, "profile", nil, "profile to include; may be specified multiple times")
+	command.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue running profiles after a failure")
 	return command
 }
 

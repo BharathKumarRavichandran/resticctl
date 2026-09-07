@@ -55,6 +55,59 @@ func TestGroupBackupRunsProfilesInOrderAndContinues(t *testing.T) {
 	}
 }
 
+func TestGroupCreateSupportsPositionalAndFlagForms(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments []string
+	}{
+		{"positional", []string{"group", "create", "daily", "home", "databases", "--continue-on-error"}},
+		{"flags", []string{"group", "create", "--group", "daily", "--profile", "home", "--profile", "databases", "--continue-on-error"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeGroupCLIProfile(t, directory, "home")
+			writeGroupCLIProfile(t, directory, "databases")
+			arguments := append(test.arguments, "--config-dir", directory)
+			var output bytes.Buffer
+			status, err := runForTest(context.Background(), arguments, &output, io.Discard)
+			if status != 0 || err != nil {
+				t.Fatalf("status=%d error=%v", status, err)
+			}
+			data, err := os.ReadFile(filepath.Join(directory, "groups", "daily.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var configured struct {
+				Name            string   `json:"name"`
+				Profiles        []string `json:"profiles"`
+				ContinueOnError bool     `json:"continue_on_error"`
+			}
+			if err := json.Unmarshal(data, &configured); err != nil {
+				t.Fatal(err)
+			}
+			if configured.Name != "daily" || strings.Join(configured.Profiles, ",") != "home,databases" || !configured.ContinueOnError {
+				t.Fatalf("group = %#v", configured)
+			}
+			if !strings.Contains(output.String(), "Created group daily") {
+				t.Fatalf("output = %q", output.String())
+			}
+		})
+	}
+}
+
+func TestGroupCreateRejectsMixedSelectors(t *testing.T) {
+	var stderr bytes.Buffer
+	status, err := runForTest(context.Background(), []string{
+		"group", "create", "daily", "home", "--profile", "databases",
+	}, io.Discard, &stderr)
+	if status != 2 || err == nil || !strings.Contains(err.Error(), "must not be combined") {
+		t.Fatalf("status=%d error=%v", status, err)
+	}
+	if !strings.Contains(stderr.String(), "Usage:") {
+		t.Fatalf("usage not printed:\n%s", stderr.String())
+	}
+}
+
 func TestGroupBackupStopsAfterFailureByDefault(t *testing.T) {
 	directory := t.TempDir()
 	writeGroupCLIProfile(t, directory, "home")

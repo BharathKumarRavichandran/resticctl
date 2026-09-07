@@ -86,12 +86,26 @@ group. Set `continue_on_error` to `true` to run the remaining profiles and
 return a failure after every member has been attempted.
 
 ```sh
+resticctl group create daily home databases
 resticctl group list
 resticctl group show daily
 resticctl group validate daily
 resticctl group backup daily --dry-run
 resticctl group backup daily
 ```
+
+`group create` creates the `groups` directory automatically and refuses to
+overwrite an existing group. The equivalent flag form is available for
+scripts that prefer named selectors:
+
+```sh
+resticctl group create --group daily \
+  --profile home \
+  --profile databases \
+  --continue-on-error
+```
+
+Do not mix positional group members with `--group` or `--profile` selectors.
 
 Group validation resolves every member before execution, so a missing or
 invalid profile cannot cause a partially started group run.

@@ -62,6 +62,28 @@ func TestListReturnsSortedGroups(t *testing.T) {
 	}
 }
 
+func TestCreateMakesDirectoryAndRefusesOverwrite(t *testing.T) {
+	directory := t.TempDir()
+	want := Group{Name: "daily", Profiles: []string{"home", "databases"}, ContinueOnError: true}
+	path, err := Create(directory, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(directory, "groups", "daily.json") {
+		t.Fatalf("path = %q", path)
+	}
+	got, err := Load(directory, "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != want.Name || got.ContinueOnError != want.ContinueOnError || !slices.Equal(got.Profiles, want.Profiles) {
+		t.Fatalf("group = %#v, want %#v", got, want)
+	}
+	if _, err := Create(directory, want); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("overwrite error = %v", err)
+	}
+}
+
 func writeGroup(t *testing.T, directory, name, content string) {
 	t.Helper()
 	groupsDir := filepath.Join(directory, "groups")

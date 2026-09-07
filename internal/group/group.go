@@ -21,6 +21,45 @@ type Group struct {
 	ContinueOnError bool     `json:"continue_on_error"`
 }
 
+// Create writes a new group configuration without replacing an existing file.
+func Create(configDir string, configured Group) (string, error) {
+	if err := validate(configured, configured.Name); err != nil {
+		return "", err
+	}
+	directory := filepath.Join(configDir, "groups")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("cannot create group directory: %w", err)
+	}
+	groupPath := filepath.Join(directory, configured.Name+".json")
+	file, err := os.OpenFile(groupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return "", fmt.Errorf("refusing to overwrite existing group: %s", groupPath)
+	}
+	if err != nil {
+		return "", fmt.Errorf("cannot create group file %s: %w", groupPath, err)
+	}
+	keep := false
+	defer func() {
+		file.Close()
+		if !keep {
+			_ = os.Remove(groupPath)
+		}
+	}()
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(configured); err != nil {
+		return "", fmt.Errorf("cannot write group file %s: %w", groupPath, err)
+	}
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("cannot sync group file %s: %w", groupPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("cannot close group file %s: %w", groupPath, err)
+	}
+	keep = true
+	return groupPath, nil
+}
+
 func Load(configDir, name string) (Group, error) {
 	if err := validateName(name); err != nil {
 		return Group{}, err
@@ -63,24 +102,34 @@ func Load(configDir, name string) (Group, error) {
 	if configured.Name == "" {
 		configured.Name = name
 	}
+	if err := validate(configured, name); err != nil {
+		return Group{}, err
+	}
+	return configured, nil
+}
+
+func validate(configured Group, name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
 	if configured.Name != name {
-		return Group{}, fmt.Errorf("group name %q does not match file name %q", configured.Name, name)
+		return fmt.Errorf("group name %q does not match file name %q", configured.Name, name)
 	}
 	if len(configured.Profiles) == 0 {
-		return Group{}, errors.New("group profiles must contain at least one profile")
+		return errors.New("group profiles must contain at least one profile")
 	}
 	seen := make(map[string]struct{}, len(configured.Profiles))
 	for _, member := range configured.Profiles {
 		if err := profile.ValidateName(member); err != nil {
-			return Group{}, fmt.Errorf("invalid group member %q: %w", member, err)
+			return fmt.Errorf("invalid group member %q: %w", member, err)
 		}
 		normalized := strings.ToLower(member)
 		if _, exists := seen[normalized]; exists {
-			return Group{}, fmt.Errorf("duplicate profile in group: %s", member)
+			return fmt.Errorf("duplicate profile in group: %s", member)
 		}
 		seen[normalized] = struct{}{}
 	}
-	return configured, nil
+	return nil
 }
 
 func rejectDuplicateFields(data []byte) error {
