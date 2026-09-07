@@ -232,6 +232,34 @@ func TestBackupAndForgetSchedulesAreIndependent(t *testing.T) {
 	}
 }
 
+func TestGroupScheduleHasDistinctIdentityAndInvocation(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(WithExecutor(&fakeExecutor{}), WithPlatform("linux", 1000), WithClock(time.Now))
+	state, err := manager.InstallSpec(context.Background(), Spec{
+		Name: "daily", TargetType: TargetGroup, Action: ActionCheck, Expressions: []string{"@daily"},
+		Backend: BackendCron, Executable: "/bin/resticctl", ConfigDir: directory,
+		Permission: PermissionUser, Enabled: true, Start: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Profile != "daily" || state.TargetType != TargetGroup || state.TargetName != "daily" {
+		t.Fatalf("state = %#v", state)
+	}
+	profileState := state
+	profileState.Profile = "group-daily"
+	profileState.TargetType = TargetProfile
+	profileState.TargetName = "group-daily"
+	if targetIdentity(state) == targetIdentity(profileState) || nativeID(state) == nativeID(profileState) {
+		t.Fatalf("group and profile identities collide: %q", targetIdentity(state))
+	}
+	for _, expected := range []string{"'schedule' 'run' 'daily'", "'--action' 'check'", "'--group'"} {
+		if !strings.Contains(state.Rendered, expected) {
+			t.Fatalf("rendered schedule does not contain %q:\n%s", expected, state.Rendered)
+		}
+	}
+}
+
 func TestListReturnsRecordedSchedulesInStableOrder(t *testing.T) {
 	directory := t.TempDir()
 	executor := &fakeExecutor{}

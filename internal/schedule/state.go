@@ -18,6 +18,8 @@ var ErrNotInstalled = errors.New("schedule is not installed")
 
 type State struct {
 	Profile         string    `json:"profile"`
+	TargetType      string    `json:"target_type,omitempty"`
+	TargetName      string    `json:"target_name,omitempty"`
 	Backend         string    `json:"backend"`
 	Expression      string    `json:"expression"`
 	Installed       time.Time `json:"installed_at"`
@@ -48,13 +50,21 @@ func Load(configDir, name string) (State, error) {
 }
 
 func LoadAction(configDir, name, action string) (State, error) {
+	return LoadTargetAction(configDir, TargetProfile, name, action)
+}
+
+func LoadTargetAction(configDir, targetType, name, action string) (State, error) {
 	if err := profile.ValidateName(name); err != nil {
 		return State{}, err
 	}
 	if err := validateAction(action); err != nil {
 		return State{}, err
 	}
-	path := statePath(configDir, name, action)
+	key, err := targetKey(targetType, name)
+	if err != nil {
+		return State{}, err
+	}
+	path := statePath(configDir, key, action)
 	state, err := readState(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return State{}, fmt.Errorf("%w for profile %s", ErrNotInstalled, name)
@@ -62,8 +72,8 @@ func LoadAction(configDir, name, action string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if state.Profile != name {
-		return State{}, fmt.Errorf("schedule state %s has profile %q, expected %q", path, state.Profile, name)
+	if state.Profile != name || state.TargetType != targetType {
+		return State{}, fmt.Errorf("schedule state %s has a different target, expected %s %s", path, targetType, name)
 	}
 	if state.Action != action {
 		return State{}, fmt.Errorf("schedule state %s has action %q, expected %q", path, state.Action, action)
@@ -95,6 +105,20 @@ func readState(path string) (State, error) {
 	}
 	if state.Action == "" {
 		state.Action = ActionBackup
+	}
+	if state.TargetType == "" {
+		state.TargetType = TargetProfile
+		state.TargetName = state.Profile
+	}
+	if state.TargetType != TargetProfile && state.TargetType != TargetGroup {
+		return State{}, fmt.Errorf("schedule state %s has invalid target type %q", path, state.TargetType)
+	}
+	if state.TargetName == "" {
+		return State{}, fmt.Errorf("schedule state %s has no target name", path)
+	}
+	_, err = targetKey(state.TargetType, state.TargetName)
+	if err != nil || state.TargetName != state.Profile {
+		return State{}, fmt.Errorf("schedule state %s has inconsistent target identity", path)
 	}
 	if err := profile.ValidateName(state.Profile); err != nil {
 		return State{}, fmt.Errorf("schedule state %s: %w", path, err)
@@ -176,7 +200,7 @@ func List(configDir, profileName string) ([]State, error) {
 		if profileName != "" && state.Profile != profileName {
 			continue
 		}
-		if filepath.Base(statePath(configDir, state.Profile, state.Action)) != entry.Name() {
+		if filepath.Base(statePath(configDir, targetIdentity(state), state.Action)) != entry.Name() {
 			return nil, fmt.Errorf("schedule state filename %s does not match its profile and action", entry.Name())
 		}
 		states = append(states, state)
@@ -196,6 +220,16 @@ func statePath(configDir, name, action string) string {
 		filename = name + "." + action + ".json"
 	}
 	return filepath.Join(configDir, "schedules", filename)
+}
+
+func targetKey(targetType, name string) (string, error) {
+	if targetType == "" || targetType == TargetProfile {
+		return name, nil
+	}
+	if targetType == TargetGroup {
+		return "group+" + name, nil
+	}
+	return "", fmt.Errorf("unsupported schedule target type %q", targetType)
 }
 
 func removeState(configDir, name, action string) error {
@@ -218,5 +252,14 @@ func writeState(configDir string, state State) error {
 		return fmt.Errorf("cannot encode schedule state: %w", err)
 	}
 	data = append(data, '\n')
-	return securefile.WriteAtomic(statePath(configDir, state.Profile, state.Action), data)
+	return securefile.WriteAtomic(statePath(configDir, targetIdentity(state), state.Action), data)
+}
+
+func targetIdentity(state State) string {
+	targetName := state.TargetName
+	if targetName == "" {
+		targetName = state.Profile
+	}
+	key, _ := targetKey(state.TargetType, targetName)
+	return key
 }

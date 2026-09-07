@@ -129,6 +129,15 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	if err := profile.ValidateName(name); err != nil {
 		return State{}, err
 	}
+	targetType := spec.TargetType
+	if targetType == "" {
+		targetType = TargetProfile
+	}
+	targetName := name
+	identity, err := targetKey(targetType, targetName)
+	if err != nil {
+		return State{}, err
+	}
 	if err := validateAction(action); err != nil {
 		return State{}, err
 	}
@@ -174,14 +183,15 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	}
 	var existing *State
 	if !spec.DryRun {
-		if installed, loadErr := LoadAction(configDir, name, action); loadErr == nil {
+		if installed, loadErr := LoadTargetAction(configDir, targetType, name, action); loadErr == nil {
 			existing = &installed
 		} else if loadErr != nil && !errors.Is(loadErr, ErrNotInstalled) {
 			return State{}, loadErr
 		}
 	}
 	state := State{
-		Profile: name, Backend: backend, Expression: normalized,
+		Profile: targetName, Backend: backend, Expression: normalized,
+		TargetType: targetType, TargetName: targetName,
 		Installed: manager.now().UTC(), CatchUp: catchUp, Action: action, Prune: prune,
 		Expressions: normalizedExpressions, Permission: defaultString(spec.Permission, PermissionUser), CronFile: spec.CronFile,
 		User: spec.User, Priority: spec.Priority, Log: spec.Log, LockMode: spec.LockMode, LockWait: spec.LockWait,
@@ -189,7 +199,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		Executable: executable, EnvironmentPath: manager.environmentPath,
 	}
 	if backend == BackendLaunchd {
-		state.JobFile, err = manager.launchdJobPath(name, action)
+		state.JobFile, err = manager.launchdJobPath(identity, action)
 		if err != nil {
 			return State{}, err
 		}
@@ -212,7 +222,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	rollbackCtx := context.WithoutCancel(ctx)
 	rollback := func(cause error) error {
 		if existing == nil {
-			return errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state), removeState(configDir, name, action))
+			return errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state), removeState(configDir, identity, action))
 		}
 		if switchedBackend {
 			cause = errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state))
@@ -272,7 +282,11 @@ func (manager Manager) Remove(ctx context.Context, configDir, name string) error
 }
 
 func (manager Manager) RemoveAction(ctx context.Context, configDir, name, action string) error {
-	state, err := LoadAction(configDir, name, action)
+	return manager.RemoveTargetAction(ctx, configDir, TargetProfile, name, action)
+}
+
+func (manager Manager) RemoveTargetAction(ctx context.Context, configDir, targetType, name, action string) error {
+	state, err := LoadTargetAction(configDir, targetType, name, action)
 	if err != nil {
 		return err
 	}
@@ -284,7 +298,7 @@ func (manager Manager) RemoveAction(ctx context.Context, configDir, name, action
 	if err != nil {
 		return err
 	}
-	if err := removeState(configDir, name, action); err != nil {
+	if err := removeState(configDir, targetIdentity(state), action); err != nil {
 		return err
 	}
 	return nil
@@ -362,7 +376,11 @@ func (manager Manager) jobArguments(executable, configDir string, state State) [
 }
 
 func scheduledArguments(executable, configDir string, state State) []string {
-	return []string{executable, "--config-dir", configDir, "schedule", "run", state.Profile, "--action", state.Action}
+	arguments := []string{executable, "--config-dir", configDir, "schedule", "run", state.TargetName, "--action", state.Action}
+	if state.TargetType == TargetGroup {
+		arguments = append(arguments, "--group")
+	}
+	return arguments
 }
 
 func validateAction(action string) error {

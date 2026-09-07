@@ -33,7 +33,7 @@ func (manager Manager) renderCron(state State, executable, configDir string) ([]
 		}
 		user = " " + state.User
 	}
-	begin, end := cronMarkers(state.Profile, state.Action)
+	begin, end := cronMarkers(targetIdentity(state), state.Action)
 	var b strings.Builder
 	b.WriteString(begin + "\n")
 	for _, expression := range state.Expressions {
@@ -54,7 +54,7 @@ func (manager Manager) installCronFile(state State, executable, configDir string
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("cannot read crontab file: %w", err)
 	}
-	updated, err := withoutCronJob(string(current), state.Profile, state.Action)
+	updated, err := withoutCronJob(string(current), targetIdentity(state), state.Action)
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,8 @@ import (
 )
 
 const (
+	TargetProfile      = "profile"
+	TargetGroup        = "group"
 	PermissionUser     = "user"
 	PermissionLoggedOn = "logged-on-user"
 	PermissionSystem   = "system"
@@ -20,6 +22,7 @@ const (
 // five-field cron syntax; backends may reject constructs they cannot preserve.
 type Spec struct {
 	Name        string
+	TargetType  string
 	Action      string
 	Backend     string
 	Executable  string

@@ -11,11 +11,16 @@ import (
 	"resticctl/internal/app"
 	"resticctl/internal/group"
 	"resticctl/internal/profile"
+	"resticctl/internal/runstatus"
+	"resticctl/internal/schedule"
 )
 
 func (cli *commandLine) groupCommand() *cobra.Command {
 	command := &cobra.Command{Use: "group", Short: "Manage and run profile groups", Args: cobra.NoArgs}
-	command.AddCommand(cli.groupCreateCommand(), cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupBackupCommand())
+	command.AddCommand(cli.groupCreateCommand(), cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupStatusCommand())
+	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+		command.AddCommand(cli.groupActionCommand(action))
+	}
 	return command
 }
 
@@ -125,22 +130,70 @@ func (cli *commandLine) groupValidateCommand() *cobra.Command {
 	}
 }
 
-func (cli *commandLine) groupBackupCommand() *cobra.Command {
-	var dryRun bool
+func (cli *commandLine) groupStatusCommand() *cobra.Command {
+	var action string
+	var jsonOutput bool
 	command := &cobra.Command{
-		Use: "backup <group>", Short: "Back up every profile in a group sequentially", Args: cobra.ExactArgs(1),
+		Use: "status <group>", Short: "Show the latest aggregate group run status", Args: cobra.ExactArgs(1),
 		ValidArgsFunction: cli.completeGroups,
-		RunE: execute(func(command *cobra.Command, arguments []string) error {
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			status, err := runstatus.LoadGroupAction(configDir, arguments[0], action)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeJSON(cli.stdout, status)
+			}
+			return writeRunStatus(cli, status)
+		}),
+	}
+	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "status action: backup, check, forget, prune, or copy")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
+	return command
+}
+
+func (cli *commandLine) groupActionCommand(action string) *cobra.Command {
+	var dryRun bool
+	var prune bool
+	command := &cobra.Command{
+		Use: action + " <group>", Short: "Run " + action + " for every profile in a group sequentially", Args: cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeGroups,
+		RunE: execute(func(command *cobra.Command, arguments []string) (returnErr error) {
 			configDir, configured, profiles, err := cli.loadGroup(arguments[0])
 			if err != nil {
 				return err
 			}
-			var failures []error
-			for index, backupProfile := range profiles {
-				if err := writeOutput(cli.stdout, "==> [%d/%d] Backing up profile %s\n", index+1, len(profiles), backupProfile.Name); err != nil {
+			configuredDryRun := false
+			for _, member := range profiles {
+				configuredDryRun = configuredDryRun || groupActionDryRun(member, action)
+			}
+			var recorder *runstatus.Recorder
+			finished := false
+			if !dryRun && !configuredDryRun {
+				recorder, err = runstatus.BeginGroupAction(configDir, configured.Name, action, cli.now())
+				if err != nil {
 					return err
 				}
-				err := cli.runBackup(command.Context(), configDir, backupProfile, dryRun)
+				defer func() {
+					if !finished {
+						returnErr = errors.Join(returnErr, recorder.Finish(returnErr, cli.now()))
+					}
+				}()
+			}
+			var failures []error
+			for index, backupProfile := range profiles {
+				message := "Running " + action + " for"
+				if action == schedule.ActionBackup {
+					message = "Backing up"
+				}
+				if err := writeOutput(cli.stdout, "==> [%d/%d] %s profile %s\n", index+1, len(profiles), message, backupProfile.Name); err != nil {
+					return err
+				}
+				err := cli.runGroupMember(command.Context(), configDir, backupProfile, action, dryRun, prune)
 				if err == nil {
 					if err := writeOutput(cli.stdout, "<== Profile %s succeeded\n", backupProfile.Name); err != nil {
 						return err
@@ -152,9 +205,13 @@ func (cli *commandLine) groupBackupCommand() *cobra.Command {
 				if outputErr := writeOutput(cli.stdout, "<== Profile %s failed: %v\n", backupProfile.Name, err); outputErr != nil {
 					return errors.Join(failure, outputErr)
 				}
-				if command.Context().Err() != nil || !configured.ContinueOnError {
+				if command.Context().Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || !configured.ContinueOnError {
 					if outputErr := writeOutput(cli.stdout, "<== Group %s failed\n", configured.Name); outputErr != nil {
 						return errors.Join(failure, outputErr)
+					}
+					if recorder != nil {
+						finished = true
+						return errors.Join(failure, recorder.Finish(failure, cli.now()))
 					}
 					return failure
 				}
@@ -163,13 +220,64 @@ func (cli *commandLine) groupBackupCommand() *cobra.Command {
 				if err := writeOutput(cli.stdout, "<== Group %s failed (%d profiles failed)\n", configured.Name, len(failures)); err != nil {
 					return errors.Join(errors.Join(failures...), err)
 				}
-				return errors.Join(failures...)
+				failure := errors.Join(failures...)
+				if recorder != nil {
+					finished = true
+					return errors.Join(failure, recorder.Finish(failure, cli.now()))
+				}
+				return failure
+			}
+			if recorder != nil {
+				finished = true
+				if err := recorder.Finish(nil, cli.now()); err != nil {
+					return err
+				}
 			}
 			return writeOutput(cli.stdout, "<== Group %s succeeded\n", configured.Name)
 		}),
 	}
-	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview each backup without writing snapshots")
+	if action != schedule.ActionCheck {
+		command.Flags().BoolVar(&dryRun, "dry-run", false, "preview each action without changing the repository")
+	}
+	if action == schedule.ActionForget {
+		command.Flags().BoolVar(&prune, "prune", false, "remove unreferenced repository data")
+	}
 	return command
+}
+
+func groupActionDryRun(backupProfile profile.Profile, action string) bool {
+	var arguments []string
+	if action == schedule.ActionBackup {
+		arguments = backupProfile.BackupArgs
+	} else if action == schedule.ActionForget {
+		arguments = backupProfile.ForgetArgs
+	}
+	arguments = append(arguments, backupProfile.Commands[action].Args...)
+	for _, argument := range arguments {
+		if profile.IsDryRunOption(argument) {
+			return true
+		}
+	}
+	return false
+}
+
+func (cli *commandLine) runGroupMember(ctx context.Context, configDir string, backupProfile profile.Profile, action string, dryRun, prune bool) error {
+	switch action {
+	case schedule.ActionBackup:
+		return cli.runBackup(ctx, configDir, backupProfile, dryRun)
+	case schedule.ActionCheck:
+		return app.RunCheck(ctx, cli.newRunner, configDir, backupProfile, cli.now)
+	case schedule.ActionForget:
+		return cli.runForget(ctx, configDir, backupProfile, dryRun, prune)
+	case schedule.ActionPrune, schedule.ActionCopy:
+		var arguments []string
+		if dryRun {
+			arguments = []string{"--dry-run"}
+		}
+		return app.RunRecordedRestic(ctx, cli.newRunner, configDir, backupProfile, action, arguments, cli.now, cli.stdout)
+	default:
+		return fmt.Errorf("unsupported group action %q", action)
+	}
 }
 
 func (cli *commandLine) loadGroup(name string) (string, group.Group, []profile.Profile, error) {

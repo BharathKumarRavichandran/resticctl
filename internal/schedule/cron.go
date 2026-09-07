@@ -17,7 +17,7 @@ func (manager Manager) installCron(ctx context.Context, state State, executable,
 	if err != nil {
 		return err
 	}
-	current, err = withoutCronJob(current, state.Profile, state.Action)
+	current, err = withoutCronJob(current, targetIdentity(state), state.Action)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func withoutCronJob(content, name, action string) (string, error) {
 }
 
 func cronJobDefinition(content string, state State) (string, error) {
-	begin, end := cronMarkers(state.Profile, state.Action)
+	begin, end := cronMarkers(targetIdentity(state), state.Action)
 	inJob := false
 	found := false
 	expressionFound := false

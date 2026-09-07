@@ -10,10 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/runstatus"
+	"resticctl/internal/schedule"
 	"resticctl/internal/securefile"
 )
 
@@ -121,6 +124,128 @@ func TestGroupBackupStopsAfterFailureByDefault(t *testing.T) {
 	status, err := cli.run(context.Background(), []string{"group", "backup", "daily", "--dry-run", "--config-dir", directory})
 	if status != 1 || err == nil || runner.runs != 1 {
 		t.Fatalf("status=%d error=%v runs=%d", status, err, runner.runs)
+	}
+}
+
+func TestGroupStopsAfterCancellationDespiteContinueOnError(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	writeGroupCLIProfile(t, directory, "databases")
+	writeCLIGroup(t, directory, `{"profiles":["home","databases"],"continue_on_error":true}`)
+	runner := &groupRunner{fail: map[int]error{1: context.Canceled}}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+
+	status, err := cli.run(context.Background(), []string{"group", "backup", "daily", "--dry-run", "--config-dir", directory})
+	if status != 1 || !errors.Is(err, context.Canceled) || runner.runs != 1 {
+		t.Fatalf("status=%d error=%v runs=%d", status, err, runner.runs)
+	}
+}
+
+func TestGroupCheckRecordsMemberAndAggregateStatus(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	writeGroupCLIProfile(t, directory, "databases")
+	writeCLIGroup(t, directory, `{"profiles":["home","databases"]}`)
+	runner := &groupRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+
+	statusCode, err := cli.run(context.Background(), []string{"group", "check", "daily", "--config-dir", directory})
+	if statusCode != 0 || err != nil {
+		t.Fatalf("status=%d error=%v", statusCode, err)
+	}
+	if runner.runs != 2 {
+		t.Fatalf("runs = %d, want 2", runner.runs)
+	}
+	groupStatus, err := runstatus.LoadGroupAction(directory, "daily", "check")
+	if err != nil || groupStatus.State != "succeeded" {
+		t.Fatalf("group status = %#v, error = %v", groupStatus, err)
+	}
+	for _, name := range []string{"home", "databases"} {
+		memberStatus, err := runstatus.LoadAction(directory, name, "check")
+		if err != nil || memberStatus.State != "succeeded" {
+			t.Fatalf("member %s status = %#v, error = %v", name, memberStatus, err)
+		}
+	}
+}
+
+func TestGroupActionCannotOverlapMemberAction(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	writeCLIGroup(t, directory, `{"profiles":["home"]}`)
+	member, err := runstatus.BeginAction(directory, "home", schedule.ActionCheck, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer member.Finish(nil, time.Now())
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return &groupRunner{}, nil }
+
+	statusCode, err := cli.run(context.Background(), []string{"group", "check", "daily", "--config-dir", directory})
+	if statusCode != 1 || !errors.Is(err, runstatus.ErrLocked) {
+		t.Fatalf("status=%d error=%v", statusCode, err)
+	}
+	groupStatus, loadErr := runstatus.LoadGroupAction(directory, "daily", schedule.ActionCheck)
+	if loadErr != nil || groupStatus.State != "failed" {
+		t.Fatalf("group status = %#v, error = %v", groupStatus, loadErr)
+	}
+}
+
+func TestScheduledGroupActionRunsMembersAndRecordsStatus(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	writeGroupCLIProfile(t, directory, "databases")
+	writeCLIGroup(t, directory, `{"profiles":["home","databases"]}`)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	_, err := manager.InstallSpec(context.Background(), schedule.Spec{
+		Name: "daily", TargetType: schedule.TargetGroup, Action: schedule.ActionCheck,
+		Expressions: []string{"@daily"}, Backend: schedule.BackendCron, Executable: "/bin/resticctl",
+		ConfigDir: directory, Permission: schedule.PermissionUser, Enabled: true, Start: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &groupRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+
+	statusCode, err := cli.run(context.Background(), []string{"schedule", "run", "daily", "--group", "--action", "check", "--config-dir", directory})
+	if statusCode != 0 || err != nil || runner.runs != 2 {
+		t.Fatalf("status=%d error=%v runs=%d", statusCode, err, runner.runs)
+	}
+	groupStatus, err := runstatus.LoadGroupAction(directory, "daily", schedule.ActionCheck)
+	if err != nil || groupStatus.State != "succeeded" {
+		t.Fatalf("group status = %#v, error = %v", groupStatus, err)
+	}
+}
+
+func TestGroupScheduleReconcileInstallsAndRemovesDeclarations(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	writeCLIGroup(t, directory, `{"profiles":["home"],"schedules":{"backup":{"cron":"@daily","backend":"cron","catch_up":true}}}`)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+
+	statusCode, err := cli.run(context.Background(), []string{"schedule", "reconcile", "daily", "--group", "--config-dir", directory})
+	if statusCode != 0 || err != nil {
+		t.Fatalf("install status=%d error=%v", statusCode, err)
+	}
+	state, err := schedule.LoadTargetAction(directory, schedule.TargetGroup, "daily", schedule.ActionBackup)
+	if err != nil || !state.CatchUp {
+		t.Fatalf("state = %#v, error = %v", state, err)
+	}
+	writeCLIGroup(t, directory, `{"profiles":["home"]}`)
+	statusCode, err = cli.run(context.Background(), []string{"schedule", "reconcile", "daily", "--group", "--config-dir", directory})
+	if statusCode != 0 || err != nil {
+		t.Fatalf("remove status=%d error=%v", statusCode, err)
+	}
+	if _, err := schedule.LoadTargetAction(directory, schedule.TargetGroup, "daily", schedule.ActionBackup); !errors.Is(err, schedule.ErrNotInstalled) {
+		t.Fatalf("schedule was not removed: %v", err)
 	}
 }
 

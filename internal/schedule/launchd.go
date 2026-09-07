@@ -17,7 +17,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 	if err != nil {
 		return "", err
 	}
-	path, err := manager.launchdJobPath(state.Profile, state.Action)
+	path, err := manager.launchdJobPath(targetIdentity(state), state.Action)
 	if err != nil {
 		return "", err
 	}
@@ -31,7 +31,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 	if !state.Start {
 		return path, nil
 	}
-	label := launchdLabel(state.Profile, state.Action)
+	label := launchdLabel(targetIdentity(state), state.Action)
 	domain := "gui/" + strconv.Itoa(manager.uid)
 	_, _ = manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+label)
 	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootstrap", domain, path)
@@ -48,7 +48,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 
 func (manager Manager) verifyLaunchd(ctx context.Context, state State) error {
 	domain := "gui/" + strconv.Itoa(manager.uid)
-	output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(state.Profile, state.Action))
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(targetIdentity(state), state.Action))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect launchd job", output, err))
 	}
@@ -56,7 +56,7 @@ func (manager Manager) verifyLaunchd(ctx context.Context, state State) error {
 }
 
 func (manager Manager) launchdDefinition(state State) ([]byte, error) {
-	jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+	jobFile, err := manager.launchdJobPath(targetIdentity(state), state.Action)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (manager Manager) renderLaunchd(configDir string, state State, executable s
 	if len(calendars) > 1 {
 		calendar = "<array>" + calendar + "</array>"
 	}
-	label := launchdLabel(state.Profile, state.Action)
+	label := launchdLabel(targetIdentity(state), state.Action)
 	arguments := scheduledArguments(executable, configDir, state)
 	var argumentXML strings.Builder
 	for _, argument := range arguments {
@@ -123,19 +123,19 @@ func launchdPolicy(state State) string {
 }
 
 func (manager Manager) removeLaunchd(ctx context.Context, configDir string, state State) error {
-	jobFile, err := manager.launchdJobPath(state.Profile, state.Action)
+	jobFile, err := manager.launchdJobPath(targetIdentity(state), state.Action)
 	if err != nil {
 		return err
 	}
 	domain := "gui/" + strconv.Itoa(manager.uid)
-	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(state.Profile, state.Action))
+	output, err := manager.executor.Run(ctx, nil, "launchctl", "bootout", domain+"/"+launchdLabel(targetIdentity(state), state.Action))
 	var cleanupErrors []error
 	if err != nil && !launchdJobNotLoaded(output) {
 		cleanupErrors = append(cleanupErrors, commandError("unload launchd job", output, err))
 	}
 	jobFiles := []string{
 		jobFile,
-		filepath.Join(configDir, "schedules", launchdLabel(state.Profile, state.Action)+".plist"),
+		filepath.Join(configDir, "schedules", launchdLabel(targetIdentity(state), state.Action)+".plist"),
 	}
 	for _, jobFile := range jobFiles {
 		if err := os.Remove(jobFile); err != nil && !errors.Is(err, os.ErrNotExist) {

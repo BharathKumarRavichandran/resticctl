@@ -13,7 +13,7 @@ import (
 )
 
 func nativeID(state State) string {
-	return "resticctl-" + state.Action + "-" + state.Profile
+	return "resticctl-" + state.Action + "-" + targetIdentity(state)
 }
 
 func (manager Manager) render(configDir string, state State, executable string) ([]byte, error) {

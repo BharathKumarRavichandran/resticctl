@@ -11,14 +11,24 @@ import (
 	"sort"
 	"strings"
 
+	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 )
 
 // Group is an ordered collection of profiles that are run sequentially.
 type Group struct {
-	Name            string   `json:"name"`
-	Profiles        []string `json:"profiles"`
-	ContinueOnError bool     `json:"continue_on_error"`
+	Name            string              `json:"name"`
+	Profiles        []string            `json:"profiles"`
+	ContinueOnError bool                `json:"continue_on_error"`
+	Schedules       map[string]Schedule `json:"schedules,omitempty"`
+}
+
+// Schedule declares one independently managed group action schedule.
+type Schedule struct {
+	Cron    string `json:"cron"`
+	Backend string `json:"backend,omitempty"`
+	CatchUp bool   `json:"catch_up,omitempty"`
+	Prune   bool   `json:"prune,omitempty"`
 }
 
 // Create writes a new group configuration without replacing an existing file.
@@ -128,6 +138,23 @@ func validate(configured Group, name string) error {
 			return fmt.Errorf("duplicate profile in group: %s", member)
 		}
 		seen[normalized] = struct{}{}
+	}
+	for action, scheduled := range configured.Schedules {
+		if action != "backup" && action != "check" && action != "forget" && action != "prune" && action != "copy" {
+			return fmt.Errorf("unsupported group schedule action %q", action)
+		}
+		if strings.TrimSpace(scheduled.Cron) == "" {
+			return fmt.Errorf("group %s schedule has no cron expression", action)
+		}
+		if _, err := cronexpr.Normalize(scheduled.Cron); err != nil {
+			return fmt.Errorf("group %s schedule: %w", action, err)
+		}
+		if scheduled.Backend != "" && scheduled.Backend != "auto" && scheduled.Backend != "cron" && scheduled.Backend != "launchd" && scheduled.Backend != "systemd" && scheduled.Backend != "windows" {
+			return fmt.Errorf("group %s schedule has unsupported backend %q", action, scheduled.Backend)
+		}
+		if scheduled.Prune && action != "forget" {
+			return fmt.Errorf("prune is only valid for a forget group schedule")
+		}
 	}
 	return nil
 }

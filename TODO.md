@@ -178,15 +178,15 @@ shell-execution behavior exactly.
 
 ## Phase 9: Profile groups and group schedules
 
-- [ ] Allow every supported profile action to run against a named group.
+- [x] Allow every batch-safe profile action to run against a named group.
 - [x] Preserve deterministic profile ordering within a group.
 - [x] Report each member's result and an aggregate group result for backups.
 - [x] Support group-level continue-on-error policy for backups.
-- [ ] Install, inspect, reconcile, and remove schedules at group scope.
-- [ ] Schedule group backup, check, forget, prune, and copy actions.
-- [ ] Prevent group and member schedules from causing unsafe overlapping runs.
-- [ ] Record group status without replacing individual profile status.
-- [ ] Add tests for partial failure, cancellation, locking, status, and scheduled
+- [x] Install, inspect, reconcile, and remove schedules at group scope.
+- [x] Schedule group backup, check, forget, prune, and copy actions.
+- [x] Prevent group and member schedules from causing unsafe overlapping runs.
+- [x] Record group status without replacing individual profile status.
+- [x] Add tests for partial failure, cancellation, locking, status, and scheduled
   group execution.
 
 ## Phase 10: Complete scheduler coverage

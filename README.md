@@ -70,7 +70,11 @@ Groups run an ordered list of profiles sequentially. Store each group in
 {
   "name": "daily",
   "profiles": ["home", "databases"],
-  "continue_on_error": true
+  "continue_on_error": true,
+  "schedules": {
+    "backup": {"cron": "0 2 * * *", "backend": "auto", "catch_up": true},
+    "check": {"cron": "0 5 * * 0", "backend": "auto"}
+  }
 }
 ```
 
@@ -85,6 +89,11 @@ resticctl group show daily
 resticctl group validate daily
 resticctl group backup daily --dry-run
 resticctl group backup daily
+resticctl group check daily
+resticctl group forget daily --prune
+resticctl group prune daily
+resticctl group copy daily
+resticctl group status daily --action check
 ```
 
 `group create` creates the directory and refuses to overwrite an existing
@@ -100,7 +109,23 @@ resticctl group create --group daily \
 Do not mix positional group members with `--group` or `--profile` selectors.
 
 Every member is resolved before execution, preventing partial runs caused by a
-missing or invalid profile.
+missing or invalid profile. Group execution is supported for the batch-safe
+`backup`, `check`, `forget`, `prune`, and `copy` actions. Each member retains
+its own lock and status; the group also has an aggregate lock and status.
+
+Install a group schedule explicitly with `schedule install --group`, or declare
+action schedules in the group's `schedules` object and reconcile them:
+
+```sh
+resticctl schedule install daily backup --group --cron "0 2 * * *"
+resticctl schedule reconcile daily --group
+resticctl schedule status daily backup --group
+resticctl schedule remove daily backup --group
+```
+
+A group schedule installs one sequential group job, not one job per member.
+Profile locks prevent that job from overlapping an independently running or
+scheduled action for any member.
 
 ## Profile format
 
@@ -512,6 +537,10 @@ resticctl schedule reconcile --all [--dry-run]
 resticctl schedule list [profile] [--json]
 resticctl schedule status <profile> [backup|check|forget|prune|copy] [--json]
 resticctl schedule remove <profile> [backup|check|forget|prune|copy] [--dry-run]
+resticctl schedule install <group> [backup|check|forget|prune|copy] --group ...
+resticctl schedule reconcile <group> --group [--dry-run]
+resticctl schedule status <group> [backup|check|forget|prune|copy] --group [--json]
+resticctl schedule remove <group> [backup|check|forget|prune|copy] --group [--dry-run]
 resticctl run <profile> <restic-command> [args...]
 resticctl completion <shell>
 ```
@@ -743,7 +772,7 @@ recorded jobs and reports each as `ok` or `drift`. `uninstall` is an alias for
 `remove`; both support `--dry-run`.
 
 Generated jobs contain only the absolute resticctl path, configuration
-directory, profile name, and scheduled action. Repository and database
+directory, target name and type, and scheduled action. Repository and database
 credentials are loaded at runtime and are never written into the scheduler
 configuration. The current `PATH` is captured when installing a schedule so
 the scheduled process can find restic and configured credential commands;

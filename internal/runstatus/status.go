@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"resticctl/internal/profile"
@@ -16,8 +17,17 @@ import (
 var ErrNotRecorded = errors.New("run status has not been recorded")
 var ErrLocked = errors.New("another action is already running for this profile")
 
+func validateTargetName(name string) error {
+	if strings.HasPrefix(name, "group+") {
+		return profile.ValidateName(strings.TrimPrefix(name, "group+"))
+	}
+	return profile.ValidateName(name)
+}
+
 type Status struct {
 	Profile       string      `json:"profile"`
+	TargetType    string      `json:"target_type,omitempty"`
+	TargetName    string      `json:"target_name,omitempty"`
 	Action        string      `json:"action,omitempty"`
 	Command       string      `json:"command,omitempty"`
 	State         string      `json:"state"`
@@ -80,6 +90,33 @@ func BeginAction(configDir, name, action string, now time.Time) (*Recorder, erro
 	return beginActionLocked(path, name, action, now, lastSuccess, release)
 }
 
+func BeginGroupAction(configDir, name, action string, now time.Time) (*Recorder, error) {
+	key := "group+" + name
+	recorder, err := BeginAction(configDir, key, action, now)
+	if err == nil {
+		recorder.status.TargetType = "group"
+		recorder.status.TargetName = name
+		if writeErr := write(recorder.path, recorder.status); writeErr != nil {
+			_ = recorder.release()
+			return nil, writeErr
+		}
+	}
+	return recorder, err
+}
+
+func BeginGroupActionIf(ctx context.Context, configDir, name, action string, wait time.Duration, now func() time.Time, shouldRun func(*time.Time) (bool, error)) (*Recorder, bool, error) {
+	recorder, due, err := BeginActionIf(ctx, configDir, "group+"+name, action, wait, now, shouldRun)
+	if err == nil && due {
+		recorder.status.TargetType = "group"
+		recorder.status.TargetName = name
+		if writeErr := write(recorder.path, recorder.status); writeErr != nil {
+			_ = recorder.release()
+			return nil, false, writeErr
+		}
+	}
+	return recorder, due, err
+}
+
 // BeginActionIf acquires the action lock and evaluates shouldRun against the
 // latest successful run while holding it. A zero wait fails immediately on
 // contention; a positive wait retries for the bounded duration.
@@ -106,7 +143,7 @@ func BeginActionIf(ctx context.Context, configDir, name, action string, wait tim
 }
 
 func acquireAction(ctx context.Context, configDir, name, action string, wait time.Duration) (func() error, string, error) {
-	if err := profile.ValidateName(name); err != nil {
+	if err := validateTargetName(name); err != nil {
 		return nil, "", err
 	}
 	if err := validateAction(action); err != nil {
@@ -210,7 +247,7 @@ func Load(configDir, name string) (Status, error) {
 }
 
 func LoadAction(configDir, name, action string) (Status, error) {
-	if err := profile.ValidateName(name); err != nil {
+	if err := validateTargetName(name); err != nil {
 		return Status{}, err
 	}
 	if err := validateAction(action); err != nil {
@@ -245,6 +282,17 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	}
 	if status.StartedAt.IsZero() {
 		return Status{}, fmt.Errorf("run status %s has no start time", path)
+	}
+	return status, nil
+}
+
+func LoadGroupAction(configDir, name, action string) (Status, error) {
+	status, err := LoadAction(configDir, "group+"+name, action)
+	if err != nil {
+		return Status{}, err
+	}
+	if status.TargetType != "group" || status.TargetName != name {
+		return Status{}, fmt.Errorf("group run status has inconsistent target identity")
 	}
 	return status, nil
 }

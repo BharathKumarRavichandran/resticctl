@@ -40,9 +40,9 @@ func (b cronBackend) install(ctx context.Context, configDir string, state *State
 }
 func (b cronBackend) remove(ctx context.Context, _ string, state *State) error {
 	if state.CronFile != "" {
-		return removeCronFile(state.CronFile, state.Profile, state.Action)
+		return removeCronFile(state.CronFile, targetIdentity(*state), state.Action)
 	}
-	return b.removeCron(ctx, state.Profile, state.Action)
+	return b.removeCron(ctx, targetIdentity(*state), state.Action)
 }
 func (b cronBackend) definition(ctx context.Context, state State) ([]byte, error) {
 	return b.cronDefinition(ctx, state)

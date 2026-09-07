@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"resticctl/internal/app"
+	"resticctl/internal/cronexpr"
+	"resticctl/internal/group"
 	"resticctl/internal/profile"
 	"resticctl/internal/runstatus"
 	"resticctl/internal/schedule"
@@ -26,7 +29,7 @@ func (cli *commandLine) scheduleCommand() *cobra.Command {
 func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	var expression, backend string
 	var calendars []string
-	var catchUp, prune, dryRun, noStart, noEnable, network, acPower bool
+	var catchUp, prune, dryRun, noStart, noEnable, network, acPower, groupTarget bool
 	var permission, cronFile, user, priority, logPath, lockMode, lockWait string
 	command := &cobra.Command{
 		Use:   "install <profile> [backup|check|forget|prune|copy]",
@@ -45,16 +48,20 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
-			if err != nil {
+			var backupProfile profile.Profile
+			if groupTarget {
+				if _, _, _, err = cli.loadGroup(arguments[0]); err != nil {
+					return err
+				}
+			} else if backupProfile, err = profile.Load(profile.Dir(configDir), arguments[0]); err != nil {
 				return err
 			}
-			if action == schedule.ActionBackup {
+			if !groupTarget && action == schedule.ActionBackup {
 				if err := app.ValidateDatabaseTools(backupProfile); err != nil {
 					return err
 				}
 			}
-			if action == schedule.ActionBackup && backupProfile.Schedule != nil {
+			if !groupTarget && action == schedule.ActionBackup && backupProfile.Schedule != nil {
 				if !command.Flags().Changed("cron") {
 					expression = backupProfile.Schedule.Cron
 				}
@@ -65,7 +72,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 					catchUp = backupProfile.Schedule.CatchUp
 				}
 			}
-			if action == schedule.ActionForget && backupProfile.Forget != nil {
+			if !groupTarget && action == schedule.ActionForget && backupProfile.Forget != nil {
 				if !command.Flags().Changed("cron") {
 					expression = backupProfile.Forget.Cron
 				}
@@ -95,7 +102,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				return fmt.Errorf("cannot find resticctl executable: %w", err)
 			}
 			state, err := cli.newScheduleManager().InstallSpec(command.Context(), schedule.Spec{
-				Name: arguments[0], Action: action, Expressions: calendars, Backend: backend, Executable: executable, ConfigDir: configDir,
+				Name: arguments[0], TargetType: targetType(groupTarget), Action: action, Expressions: calendars, Backend: backend, Executable: executable, ConfigDir: configDir,
 				CatchUp: catchUp, Prune: prune, DryRun: dryRun, Permission: permission, CronFile: cronFile, User: user,
 				Priority: priority, Log: logPath, LockMode: lockMode, LockWait: lockWait, Enabled: !noEnable, Start: !noStart,
 				Network: network, ACPower: acPower,
@@ -106,7 +113,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if dryRun {
 				return writeOutput(cli.stdout, "%s", state.Rendered)
 			}
-			return writeOutput(cli.stdout, "Installed %s %s schedule for %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.Profile, strings.Join(state.Expressions, ", "), state.CatchUp)
+			return writeOutput(cli.stdout, "Installed %s %s schedule for %s %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.TargetType, state.TargetName, strings.Join(state.Expressions, ", "), state.CatchUp)
 		}),
 	}
 	command.Flags().StringVar(&expression, "cron", "", "five-field cron expression")
@@ -126,11 +133,19 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	command.Flags().BoolVar(&network, "require-network", false, "run only when network is available where supported")
 	command.Flags().BoolVar(&acPower, "require-ac-power", false, "run only on AC power where supported")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "render scheduler changes without installing")
+	command.Flags().BoolVar(&groupTarget, "group", false, "schedule a named group instead of a profile")
 	return command
 }
 
+func targetType(groupTarget bool) string {
+	if groupTarget {
+		return schedule.TargetGroup
+	}
+	return schedule.TargetProfile
+}
+
 func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
-	var all, dryRun bool
+	var all, dryRun, groupTarget bool
 	command := &cobra.Command{
 		Use:   "reconcile [profile]",
 		Short: "Reconcile profile-declared schedules",
@@ -153,6 +168,20 @@ func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
 				return err
 			}
 			names := arguments
+			if groupTarget && all {
+				return errors.New("--group and --all cannot be used together")
+			}
+			if groupTarget {
+				configured, loadErr := group.Load(configDir, arguments[0])
+				if loadErr != nil {
+					return loadErr
+				}
+				executable, executableErr := cli.executable()
+				if executableErr != nil {
+					return executableErr
+				}
+				return cli.reconcileGroupSchedules(command.Context(), cli.newScheduleManager(), configDir, executable, configured, dryRun)
+			}
 			if all {
 				names, err = profile.List(profile.Dir(configDir))
 				if err != nil {
@@ -178,7 +207,57 @@ func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&all, "all", false, "reconcile schedules for every profile")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "show scheduler changes without applying them")
+	command.Flags().BoolVar(&groupTarget, "group", false, "reconcile a named group instead of a profile")
 	return command
+}
+
+func (cli *commandLine) reconcileGroupSchedules(ctx context.Context, manager schedule.Manager, configDir, executable string, configured group.Group, dryRun bool) error {
+	declared := make(map[string]struct{}, len(configured.Schedules))
+	actions := make([]string, 0, len(configured.Schedules))
+	for action := range configured.Schedules {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	for _, action := range actions {
+		item := configured.Schedules[action]
+		declared[action] = struct{}{}
+		spec := schedule.Spec{Name: configured.Name, TargetType: schedule.TargetGroup, Action: action, Backend: item.Backend, Executable: executable, ConfigDir: configDir, Expressions: []string{item.Cron}, CatchUp: item.CatchUp, Prune: item.Prune, Permission: schedule.PermissionUser, Enabled: true, Start: true, DryRun: dryRun}
+		installed, err := schedule.LoadTargetAction(configDir, schedule.TargetGroup, configured.Name, action)
+		if err == nil {
+			preserveSchedulePolicy(&spec, installed)
+		} else if !errors.Is(err, schedule.ErrNotInstalled) {
+			return err
+		}
+		state, err := manager.InstallSpec(ctx, spec)
+		if err != nil {
+			return fmt.Errorf("cannot reconcile group %s %s schedule: %w", configured.Name, action, err)
+		}
+		if dryRun {
+			if err := writeOutput(cli.stdout, "# group %s %s\n%s", configured.Name, action, state.Rendered); err != nil {
+				return err
+			}
+		} else if err := writeOutput(cli.stdout, "Reconciled %s schedule for group %s\n", action, configured.Name); err != nil {
+			return err
+		}
+	}
+	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+		if _, ok := declared[action]; ok {
+			continue
+		}
+		if _, err := schedule.LoadTargetAction(configDir, schedule.TargetGroup, configured.Name, action); errors.Is(err, schedule.ErrNotInstalled) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if dryRun {
+			if err := writeOutput(cli.stdout, "Would remove %s schedule for group %s\n", action, configured.Name); err != nil {
+				return err
+			}
+		} else if err := manager.RemoveTargetAction(ctx, configDir, schedule.TargetGroup, configured.Name, action); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (cli *commandLine) reconcileProfileSchedules(ctx context.Context, manager schedule.Manager, configDir, executable string, backupProfile profile.Profile, dryRun bool) error {
@@ -282,6 +361,7 @@ func preserveSchedulePolicy(spec *schedule.Spec, installed schedule.State) {
 
 func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 	var action string
+	var groupTarget bool
 	command := &cobra.Command{
 		Use:               "run <profile>",
 		Short:             "Run an overdue scheduled backup",
@@ -292,6 +372,9 @@ func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 			configDir, err := cli.resolveConfigDir()
 			if err != nil {
 				return err
+			}
+			if groupTarget {
+				return cli.runScheduledGroup(command.Context(), configDir, arguments[0], action)
 			}
 			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
@@ -308,11 +391,71 @@ func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 		}),
 	}
 	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "scheduled action")
+	command.Flags().BoolVar(&groupTarget, "group", false, "run a named group schedule")
 	return command
 }
 
+func (cli *commandLine) runScheduledGroup(ctx context.Context, configDir, name, action string) error {
+	_, configured, profiles, err := cli.loadGroup(name)
+	if err != nil {
+		return err
+	}
+	state, err := schedule.LoadTargetAction(configDir, schedule.TargetGroup, name, action)
+	if err != nil {
+		return err
+	}
+	if err := cli.newScheduleManager().Verify(ctx, state); err != nil {
+		return err
+	}
+	for _, member := range profiles {
+		if groupActionDryRun(member, action) {
+			return fmt.Errorf("scheduled %s cannot use a configured Restic dry-run option in profile %s", action, member.Name)
+		}
+	}
+	wait := time.Duration(0)
+	if state.LockMode == schedule.LockWait {
+		wait, err = time.ParseDuration(state.LockWait)
+		if err != nil {
+			return err
+		}
+	}
+	recorder, due, err := runstatus.BeginGroupActionIf(ctx, configDir, name, action, wait, cli.now, func(lastSuccess *time.Time) (bool, error) {
+		if !state.CatchUp {
+			return true, nil
+		}
+		if lastSuccess == nil {
+			lastSuccess = &state.Installed
+		}
+		for _, expression := range state.Expressions {
+			due, dueErr := cronexpr.Due(expression, lastSuccess, cli.now())
+			if dueErr != nil || due {
+				return due, dueErr
+			}
+		}
+		return false, nil
+	})
+	if err != nil || !due {
+		if !due && err == nil {
+			return writeOutput(cli.stdout, "Scheduled %s for group %s is not due\n", action, name)
+		}
+		return err
+	}
+	var failures []error
+	for _, member := range profiles {
+		memberErr := cli.runGroupMember(ctx, configDir, member, action, false, state.Prune)
+		if memberErr != nil {
+			failures = append(failures, fmt.Errorf("profile %s: %w", member.Name, memberErr))
+			if ctx.Err() != nil || errors.Is(memberErr, context.Canceled) || errors.Is(memberErr, context.DeadlineExceeded) || !configured.ContinueOnError {
+				break
+			}
+		}
+	}
+	runErr := errors.Join(failures...)
+	return errors.Join(runErr, recorder.Finish(runErr, cli.now()))
+}
+
 func (cli *commandLine) scheduleRemoveCommand() *cobra.Command {
-	var dryRun bool
+	var dryRun, groupTarget bool
 	command := &cobra.Command{
 		Use:               "remove <profile> [backup|check|forget|prune|copy]",
 		Aliases:           []string{"uninstall"},
@@ -329,18 +472,19 @@ func (cli *commandLine) scheduleRemoveCommand() *cobra.Command {
 				return err
 			}
 			if dryRun {
-				if _, err := schedule.LoadAction(configDir, arguments[0], action); err != nil {
+				if _, err := schedule.LoadTargetAction(configDir, targetType(groupTarget), arguments[0], action); err != nil {
 					return err
 				}
 				return writeOutput(cli.stdout, "Would remove %s schedule for %s\n", action, arguments[0])
 			}
-			if err := cli.newScheduleManager().RemoveAction(command.Context(), configDir, arguments[0], action); err != nil {
+			if err := cli.newScheduleManager().RemoveTargetAction(command.Context(), configDir, targetType(groupTarget), arguments[0], action); err != nil {
 				return err
 			}
 			return writeOutput(cli.stdout, "Removed %s schedule for %s\n", action, arguments[0])
 		}),
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "show the removal without applying it")
+	command.Flags().BoolVar(&groupTarget, "group", false, "remove a named group schedule")
 	return command
 }
 
@@ -350,7 +494,7 @@ type scheduleListItem struct {
 }
 
 func (cli *commandLine) scheduleListCommand() *cobra.Command {
-	var jsonOutput bool
+	var jsonOutput, groupTarget bool
 	command := &cobra.Command{
 		Use:               "list [profile]",
 		Short:             "List installed schedules",
@@ -365,9 +509,22 @@ func (cli *commandLine) scheduleListCommand() *cobra.Command {
 			if len(arguments) == 1 {
 				name = arguments[0]
 			}
-			states, err := schedule.List(configDir, name)
+			listName := name
+			if groupTarget {
+				listName = ""
+			}
+			states, err := schedule.List(configDir, listName)
 			if err != nil {
 				return err
+			}
+			if groupTarget {
+				filtered := states[:0]
+				for _, state := range states {
+					if state.TargetType == schedule.TargetGroup && (name == "" || state.TargetName == name) {
+						filtered = append(filtered, state)
+					}
+				}
+				states = filtered
 			}
 			manager := cli.newScheduleManager()
 			items := make([]scheduleListItem, 0, len(states))
@@ -387,7 +544,11 @@ func (cli *commandLine) scheduleListCommand() *cobra.Command {
 				return writeOutput(cli.stdout, "No installed schedules.\n")
 			}
 			for _, item := range items {
-				if err := writeOutput(cli.stdout, "%s\t%s\t%s\t%s\t%s\n", item.Schedule.Profile, item.Schedule.Action, item.Schedule.Backend, item.Schedule.Expression, item.Status); err != nil {
+				target := item.Schedule.TargetName
+				if item.Schedule.TargetType == schedule.TargetGroup {
+					target = "group:" + target
+				}
+				if err := writeOutput(cli.stdout, "%s\t%s\t%s\t%s\t%s\n", target, item.Schedule.Action, item.Schedule.Backend, item.Schedule.Expression, item.Status); err != nil {
 					return err
 				}
 			}
@@ -395,11 +556,12 @@ func (cli *commandLine) scheduleListCommand() *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
+	command.Flags().BoolVar(&groupTarget, "group", false, "list group schedules")
 	return command
 }
 
 func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
-	var jsonOutput bool
+	var jsonOutput, groupTarget bool
 	command := &cobra.Command{
 		Use:               "status <profile> [backup|check|forget|prune|copy]",
 		Short:             "Show a schedule and its latest run status",
@@ -414,14 +576,20 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, err := schedule.LoadAction(configDir, arguments[0], action)
+			state, err := schedule.LoadTargetAction(configDir, targetType(groupTarget), arguments[0], action)
 			if err != nil {
 				return err
 			}
 			if err := cli.newScheduleManager().Verify(command.Context(), state); err != nil {
 				return err
 			}
-			status, statusErr := runstatus.LoadAction(configDir, arguments[0], action)
+			var status runstatus.Status
+			var statusErr error
+			if groupTarget {
+				status, statusErr = runstatus.LoadGroupAction(configDir, arguments[0], action)
+			} else {
+				status, statusErr = runstatus.LoadAction(configDir, arguments[0], action)
+			}
 			if statusErr != nil && !errors.Is(statusErr, runstatus.ErrNotRecorded) {
 				return statusErr
 			}
@@ -433,6 +601,7 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
+	command.Flags().BoolVar(&groupTarget, "group", false, "show a named group schedule")
 	return command
 }
 
@@ -501,7 +670,11 @@ func (cli *commandLine) writeScheduleStatus(result scheduleStatusOutput, jsonOut
 	if jsonOutput {
 		return writeJSON(cli.stdout, result)
 	}
-	if err := writeOutput(cli.stdout, "Profile: %s\nAction: %s\nBackend: %s\nSchedule: %s\nCatch up: %t\nInstalled: %s\n", result.Schedule.Profile, result.Schedule.Action, result.Schedule.Backend, result.Schedule.Expression, result.Schedule.CatchUp, result.Schedule.Installed.Format(time.RFC3339)); err != nil {
+	targetLabel := "Profile: " + result.Schedule.TargetName
+	if result.Schedule.TargetType == schedule.TargetGroup {
+		targetLabel = "Group: " + result.Schedule.TargetName
+	}
+	if err := writeOutput(cli.stdout, "%s\nAction: %s\nBackend: %s\nSchedule: %s\nCatch up: %t\nInstalled: %s\n", targetLabel, result.Schedule.Action, result.Schedule.Backend, result.Schedule.Expression, result.Schedule.CatchUp, result.Schedule.Installed.Format(time.RFC3339)); err != nil {
 		return err
 	}
 	if result.LastRun == nil {
