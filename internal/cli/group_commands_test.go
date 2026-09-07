@@ -14,6 +14,7 @@ import (
 	"resticctl/internal/app"
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/securefile"
 )
 
 type groupRunner struct {
@@ -156,7 +157,11 @@ func writeGroupCLIProfile(t *testing.T, directory, name string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(profilesDir, name+".json"), data, 0o600); err != nil {
+	path := filepath.Join(profilesDir, name+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := securefile.Protect(path); err != nil {
 		t.Fatal(err)
 	}
 }

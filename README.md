@@ -3,14 +3,11 @@
 [![CI](https://github.com/BharathKumarRavichandran/resticctl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BharathKumarRavichandran/resticctl/actions/workflows/ci.yml)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
-A profile-based command-line wrapper around [restic](https://restic.net/) for backups.
-
-A profile keeps the repository, paths, credentials, and retention rules in one place.
-resticctl can also stage SQLite, PostgreSQL, MongoDB, MySQL, MariaDB, and SQL Server
-databases, adding their snapshots or dumps to the same Restic snapshot as the
-other files.
-
-Restic handles the backup, encryption, restore, and repository maintenance.
+A profile-based command-line wrapper around [restic](https://restic.net/).
+Profiles keep repositories, paths, credentials, and retention rules together.
+resticctl can also stage SQLite, PostgreSQL, MongoDB, MySQL, MariaDB, and SQL
+Server databases alongside ordinary files. Restic handles encryption, storage,
+restore, and repository maintenance.
 
 ## Requirements
 
@@ -23,15 +20,14 @@ Build the binary from the repository root:
 go build -o resticctl ./cmd/resticctl
 ```
 
-On Windows, use `go build -o resticctl.exe ./cmd/resticctl`.
-
-Install the binary in a directory on your `PATH`, for example:
+On Windows, name the output `resticctl.exe`. Install the binary in a directory
+on `PATH`, for example:
 
 ```sh
 # Linux or macOS (user-local)
 install -m 0755 resticctl ~/.local/bin/resticctl
 
-# macOS or Linux (system-wide, if /usr/local/bin is on your PATH)
+# macOS or Linux (system-wide)
 sudo install -m 0755 resticctl /usr/local/bin/resticctl
 ```
 
@@ -44,8 +40,6 @@ Create a profile:
 ```sh
 resticctl create <profile>
 ```
-
-Replace `<profile>` with a name that describes the backup.
 
 This creates `profiles/<profile>.json` and
 `profiles/<profile>.private.json`. The configuration directory is
@@ -80,10 +74,9 @@ Groups run an ordered list of profiles sequentially. Store each group in
 }
 ```
 
-`name` is optional; when present, it must match the file name. Profile names
-must be unique within a group. By default, the first failed profile stops the
-group. Set `continue_on_error` to `true` to run the remaining profiles and
-return a failure after every member has been attempted.
+`name` is optional, but must match the filename when set. Profile names must be
+unique within a group. By default, the first failure stops the group. With
+`continue_on_error`, resticctl attempts every profile before returning failure.
 
 ```sh
 resticctl group create daily home databases
@@ -94,9 +87,8 @@ resticctl group backup daily --dry-run
 resticctl group backup daily
 ```
 
-`group create` creates the `groups` directory automatically and refuses to
-overwrite an existing group. The equivalent flag form is available for
-scripts that prefer named selectors:
+`group create` creates the directory and refuses to overwrite an existing
+group. Scripts can use named selectors instead:
 
 ```sh
 resticctl group create --group daily \
@@ -107,8 +99,8 @@ resticctl group create --group daily \
 
 Do not mix positional group members with `--group` or `--profile` selectors.
 
-Group validation resolves every member before execution, so a missing or
-invalid profile cannot cause a partially started group run.
+Every member is resolved before execution, preventing partial runs caused by a
+missing or invalid profile.
 
 ## Profile format
 
@@ -173,11 +165,10 @@ Restic subcommand. `commands` contains persistent, command-specific raw argument
 vectors. The legacy `backup_args`, `check_args`, and `forget_args` fields remain
 supported for compatibility.
 
-Arguments are assembled in increasing precedence: resticctl orchestration
-defaults, legacy command arguments, the matching `commands` section, then CLI
-arguments. When an option is repeated, the CLI value is therefore last; Restic
-ultimately decides whether a repeated option is valid. When a child profile
-supplies command arguments, its array replaces the inherited command arguments.
+Argument precedence is: resticctl defaults, legacy command arguments, the
+matching `commands` section, then CLI arguments. Restic decides whether a
+repeated option is valid. A child profile's command arguments replace the
+inherited array.
 
 `backup_paths` contains ordinary files and directories to include. Database
 settings live under `databases`, grouped by provider. For a database-only
@@ -204,19 +195,17 @@ Or it can run a producer directly, without a shell or plaintext staging file:
 }
 ```
 
-Streaming is mutually exclusive with `backup_paths` and database staging. A
-stdin stream cannot be scheduled because a scheduled process has no dependable
-input; a configured producer command can be scheduled. Hooks, cancellation,
-dry runs, and recorded status use the normal backup workflow.
+Streaming cannot be combined with `backup_paths` or database staging. Standard
+input cannot be scheduled, but a configured producer command can. Hooks,
+cancellation, dry runs, and status recording work as they do for other backups.
 
-Set `initialize_repository` to `true` to opt into repository creation on the
-first backup. resticctl initializes only after Restic explicitly reports that
-the repository is missing. Network, authentication, permission, and other
-ambiguous probe failures stop the backup. Dry runs never initialize, and a
-second probe handles concurrent initialization by another process. Detection is
-deliberately conservative: if an installed Restic version or repository backend
-does not emit Restic's explicit `repository does not exist` diagnostic, perform
-`resticctl init` manually.
+Set `initialize_repository` to `true` to create a missing repository during the
+first backup. Initialization occurs only when Restic explicitly reports that
+the repository does not exist; authentication, permission, network, and other
+probe failures stop the backup. Dry runs never initialize. If the installed
+Restic version or backend does not emit the expected diagnostic, run
+`resticctl init` manually. A second probe avoids racing another process that
+initializes the repository concurrently.
 
 The optional `runtime` object applies host-safety policy to backup, forget,
 check, and recorded Restic jobs:
@@ -245,11 +234,11 @@ check, and recorded Restic jobs:
 }
 ```
 
-`priority` is portable (`normal` or `background`). Unix profiles may add
-`"nice": 10`; Linux profiles may add
-`"ionice": {"class":"best-effort","level":7}`; and Windows profiles may add
-`"windows_priority":"below-normal"`. Windows priority also accepts `idle`,
-`below-normal`, `normal`, `above-normal`, or `high`. Memory values are bytes.
+`priority` is portable (`normal` or `background`). Unix also supports
+`"nice": 10`; Linux supports `"ionice":
+{"class":"best-effort","level":7}`; and Windows supports
+`"windows_priority":"below-normal"` (`idle`, `normal`, `above-normal`, and
+`high` are also valid). Memory values are bytes.
 AC power is checked only for scheduled jobs, and networking only for remote
 repositories. Lock mode is `fail`, `wait`, or `ignore`. A stale local lock is
 never cleared unless `stale` is explicitly `clear`, its age exceeds
@@ -305,17 +294,14 @@ database name:
 }
 ```
 
-The private file follows the same repository, credentials, databases, provider,
-and named-entry structure as the public profile. It may contain only deployment
-overrides, not backup policy. Provider objects are joined by their backup-name
-keys. Private scalar values override public values, while private host lists
-replace public host lists. Password sources (`value`,
-`file`, or `command`) and the repository `environment` map each replace as one
-unit. `private_file` and the legacy
-`credentials_file` mode are mutually exclusive. Resolved-profile output keeps
-the same shape and renders private values as `"<redacted>"`. The merge uses
-strict `encoding/json` decoding and typed merge rules; it does not use a generic
-configuration merge library.
+The private file mirrors the public profile's repository, credentials, and
+database structure, but may contain only deployment overrides—not backup
+policy. Database providers merge by backup name. Private scalars override
+public values; host lists, password sources (`value`, `file`, or `command`),
+and the repository `environment` map replace their public counterparts as
+units. `private_file` and legacy `credentials_file` mode are mutually
+exclusive. Resolved profiles preserve this structure and render private values
+as `"<redacted>"`.
 
 PostgreSQL, MongoDB, MySQL, MariaDB, and SQL Server can be staged by client programs
 installed on the machine running `resticctl`:
@@ -382,10 +368,9 @@ installed on the machine running `resticctl`:
 }
 ```
 
-`pg_dump`, `pg_dumpall`, `mongodump`, `mysqldump`, and `sqlcmd` are resolved on the local
-`PATH` by default. Set `executable` or `globals_executable` to an explicit
-client path.
-Set a MySQL entry's `executable` to `mariadb-dump` when appropriate.
+`pg_dump`, `pg_dumpall`, `mongodump`, `mysqldump`, and `sqlcmd` are resolved on
+`PATH`. Use `executable` or `globals_executable` for an explicit path, and set a
+MySQL entry's `executable` to `mariadb-dump` when appropriate.
 Hosts may be localhost, remote DNS/IP endpoints, or a supported Unix-socket
 path. Client arguments are passed directly without a shell; output, archive,
 URI, and password options are reserved so profiles cannot bypass secure
@@ -398,14 +383,10 @@ database:
 resticctl validate <profile>
 ```
 
-The same preflight runs before every backup and before installing a backup
-schedule. Scheduled jobs still check again when they execute, since their
-`PATH` or installed tools may differ later. Explicit absolute client paths are
-recommended for scheduled database backups. Forget-only schedules do not
-require database clients. External database dumps run sequentially by default.
-Set `databases.concurrency` to a positive value greater than one to run at most
-that many PostgreSQL, MongoDB, MySQL/MariaDB, or SQL Server dumps concurrently; choose a
-limit that the database servers and backup host can sustain.
+The same preflight runs before backups, schedule installation, and scheduled
+execution. Use absolute client paths for scheduled database backups. Forget-only
+schedules do not require database clients. Dumps run sequentially by default;
+set `databases.concurrency` above one to limit concurrent external dumps.
 
 Legacy top-level `database_concurrency`, `sqlite_databases`,
 `postgresql_databases`, `mongodb_databases`, `mysql_databases`, and
@@ -438,12 +419,11 @@ Objects merge recursively, including database entries, command sections,
 remain inherited. Password source objects replace as a unit so sources cannot
 be accidentally combined. Set an optional object to `null` to clear it.
 
-`private_file`, `credentials_file`, and inline `credentials` are never inherited.
-Every profile used directly must configure one of those credential sources; a
-profile used only as a parent may omit them.
-Parent names use the same portable-name rules as profile names. Missing or
-invalid parents and inheritance cycles are rejected, and all validation runs
-on the fully merged profile before credentials are loaded or a command runs.
+`private_file`, `credentials_file`, and inline `credentials` are never
+inherited. A directly used profile must configure one of them; a profile used
+only as a parent may omit credentials. Parent names follow profile-name rules.
+Missing or invalid parents and inheritance cycles are rejected. Validation runs
+on the merged profile before credentials are loaded or commands run.
 
 ## Credentials
 
@@ -538,8 +518,7 @@ resticctl completion <shell>
 
 ### `create`
 
-Creates a profile JSON file and a matching private configuration file. Replace
-`<profile>` with a name for the backup.
+Creates a profile and its matching private configuration file.
 
 ### `list`
 
@@ -547,13 +526,12 @@ Lists the profiles found in the configuration directory.
 
 ### `show`
 
-Prints the fully resolved profile as JSON after inheritance, defaults, path
-expansion, and validation. Private values and credential values remain in their
-structural locations but are rendered as `"<redacted>"`. Repository URL
-passwords, query strings, and fragments and monitoring endpoint paths, query
-strings, headers, bodies, and body templates are also redacted. Other public
-profile values, including hook and Restic argument vectors, are shown as
-configured and must not contain secrets.
+Prints the resolved profile as JSON after inheritance, defaults, path expansion,
+and validation. Credentials and private values remain in place but appear as
+`"<redacted>"`. Redaction also covers repository URL passwords, queries, and
+fragments, plus monitoring endpoint paths, queries, headers, bodies, and body
+templates. Other public values—including hooks and Restic arguments—are shown
+as configured and must not contain secrets.
 
 Add `--explain` to wrap the profile with field-level provenance showing whether
 each public configuration field was defined, inherited, overridden, replaced,
@@ -577,9 +555,8 @@ availability without connecting to a database or repository.
 
 ### `backup`
 
-Backs up the profile's files and configured SQLite, PostgreSQL, MongoDB, MySQL,
-MariaDB, and SQL Server databases, or its configured input stream. `--dry-run`
-passes the option to restic without writing a snapshot.
+Backs up the profile's files, staged databases, or configured input stream.
+`--dry-run` passes the option to Restic without writing a snapshot.
 
 Backup orchestration is configured with `check_before`, `check_after`,
 `prune_before`, and `prune_after`. The order is check-before, prune-before,
@@ -588,10 +565,9 @@ Prune options apply `forget_args` to this profile and run Restic `forget
 --prune`, so they require non-empty `forget_args`. During `--dry-run`, checks
 still run and both backup and retention operations receive `--dry-run`.
 
-Database staging exists only for the backup step: resticctl creates SQLite
-snapshots and PostgreSQL, MongoDB, MySQL/MariaDB, or SQL Server dumps immediately before
-Restic backup, then removes the staging directory before any check-after or
-prune-after operation.
+Database staging exists only for the backup step. resticctl creates snapshots
+or dumps immediately before Restic runs, then removes them before any
+check-after or prune-after operation.
 
 Backup hooks use argument vectors and never invoke a shell implicitly. Each
 hook is an object with a non-empty `command` array and an optional Go-style
@@ -608,9 +584,8 @@ password files are cleaned before failure/finally processing.
 
 ### `snapshots`
 
-`snapshots` lists the backups stored in the repository, including their IDs,
-dates, host names, paths, and tags. Use an ID (or `latest`) with `restore` to
-retrieve one:
+Lists backups with their IDs, dates, hosts, paths, and tags. Pass an ID or
+`latest` to `restore`:
 
 ```sh
 resticctl snapshots <profile>
@@ -619,8 +594,7 @@ resticctl restore <profile> latest <restore-directory>
 
 ### `check`
 
-Checks the repository for errors. This reads repository data but does not
-change retention or remove files.
+Checks the repository for errors without changing retention or removing files.
 
 ### Repository inspection
 
@@ -634,11 +608,10 @@ its filtering and formatting flags.
 
 ### `key`
 
-`key list` lists the keys that can unlock the repository. `key add` uses
-the profile's configured password to unlock the repository, then securely asks
-for a new password twice. `key remove` removes the specified key; restic refuses
-to remove the key currently being used by the profile. These commands change
-repository key metadata, not snapshots or backed-up data.
+`key list` lists repository keys. `key add` unlocks the repository with the
+profile password, then securely prompts twice for a new password. `key remove`
+removes a key; Restic refuses to remove the one in current use. These commands
+change key metadata, not snapshots or backed-up data.
 
 ### `forget`
 
@@ -726,12 +699,10 @@ The older `forget.schedule` field remains accepted as an input alias for
 compatibility, but new and generated profiles should use `forget.cron`. Setting
 both fields is rejected.
 
-The default `auto` backend uses launchd on macOS, Windows Task Scheduler on
-Windows, and cron on other Unix-like systems. Native systemd timers are
-available explicitly with `--backend systemd`. Repeat `--calendar` to attach
-multiple calendars to the same action; `--cron` remains a compatible alias for
-one expression. `--dry-run` renders the definition without writing scheduler
-or state files.
+The `auto` backend selects launchd on macOS, Task Scheduler on Windows, and cron
+on other Unix-like systems. Select systemd explicitly with `--backend systemd`.
+Repeat `--calendar` for multiple expressions; `--cron` is an alias for one.
+`--dry-run` renders the definition without writing scheduler or state files.
 
 The portable calendar syntax is a standard five-field cron expression in local
 time: minute, hour, day of month, month, and day of week. Cron preserves the
@@ -745,9 +716,9 @@ The portable aliases `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, and
 `@annually` are also accepted, as are the same names without `@`. Aliases are
 normalized to five-field expressions before installation.
 
-With `catch_up` enabled, resticctl runs at most one overdue backup or retention
-action when its scheduler starts again. It compares the cron schedule with the
-last successful run of that action; it does not replay every missed occurrence.
+With `catch_up`, resticctl runs at most one overdue action when the scheduler
+starts again. It compares the schedule with the action's last successful run
+rather than replaying every missed occurrence.
 Cron uses an additional `@reboot` entry. launchd uses `RunAtLoad` after login
 and also coalesces calendar events missed while the laptop was asleep into one
 event after wake. A powered-off machine cannot run the job until cron starts
@@ -766,11 +737,10 @@ resticctl schedule remove <profile>
 resticctl schedule uninstall <profile>
 ```
 
-`schedule status` verifies that the recorded cron entry or loaded launchd job
-still exists and reports drift instead of trusting its state file alone. Run
-`schedule install` again to reconcile a missing or edited job.
-`schedule list` verifies every recorded job and reports each as `ok` or
-`drift`. `uninstall` is an alias for `remove`, and removal supports `--dry-run`.
+`schedule status` verifies the installed job and reports drift. Run `schedule
+install` again to reconcile a missing or edited job. `schedule list` checks all
+recorded jobs and reports each as `ok` or `drift`. `uninstall` is an alias for
+`remove`; both support `--dry-run`.
 
 Generated jobs contain only the absolute resticctl path, configuration
 directory, profile name, and scheduled action. Repository and database
@@ -814,9 +784,8 @@ or temporary credential-file names. Dry runs do not replace status.
 
 ### Monitoring, notifications, and logs
 
-The optional `monitoring` object controls external status export. All delivery
-failures are non-fatal: they never change or hide the result of the Restic
-action. For example:
+The optional `monitoring` object exports status. Delivery failures are non-fatal
+and never replace the Restic action's result. For example:
 
 ```json
 {
