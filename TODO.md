@@ -50,12 +50,13 @@ shell-execution behavior exactly.
 - [ ] Validate profile names and reject duplicate names.
 - [ ] Define how credentials, defaults, and inheritance are scoped.
 - [ ] Add profile descriptions and display them in profile listings.
-- [ ] Add named groups that run multiple profiles sequentially.
-- [ ] Define group failure behavior, including an explicit continue-on-error
+- [x] Add named groups that run multiple profiles sequentially.
+- [x] Define group failure behavior, including an explicit continue-on-error
   option.
 - [ ] Support running every configured profile without constructing a group.
-- [ ] Detect missing profiles, cycles, and duplicate membership in groups.
-- [ ] Update profile discovery and user-facing documentation.
+- [x] Detect missing profiles and duplicate membership in groups. Nested groups
+  are not supported, so group cycles cannot occur.
+- [x] Update profile discovery and user-facing documentation.
 - [ ] Add migration, inheritance, group-execution, and compatibility tests.
 
 ## Phase 5: Scheduling foundations and status
@@ -178,9 +179,9 @@ shell-execution behavior exactly.
 ## Phase 9: Profile groups and group schedules
 
 - [ ] Allow every supported profile action to run against a named group.
-- [ ] Preserve deterministic profile ordering within a group.
-- [ ] Report each member's result and an aggregate group result.
-- [ ] Support group-level continue-on-error policy.
+- [x] Preserve deterministic profile ordering within a group.
+- [x] Report each member's result and an aggregate group result for backups.
+- [x] Support group-level continue-on-error policy for backups.
 - [ ] Install, inspect, reconcile, and remove schedules at group scope.
 - [ ] Schedule group backup, check, forget, prune, and copy actions.
 - [ ] Prevent group and member schedules from causing unsafe overlapping runs.

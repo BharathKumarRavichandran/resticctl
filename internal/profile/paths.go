@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+const profilesDirectory = "profiles"
+
+// Dir returns the directory containing profile and credential files.
+func Dir(configDir string) string {
+	return filepath.Join(configDir, profilesDirectory)
+}
+
 func DefaultDir() (string, error) {
 	if value := os.Getenv("RESTICCTL_CONFIG_DIR"); value != "" {
 		return expandPath(value, "")

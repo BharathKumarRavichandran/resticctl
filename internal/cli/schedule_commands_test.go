@@ -178,7 +178,7 @@ func TestScheduleInstallRejectsMissingDatabaseClient(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)
 	setCLIProfileSchedule(t, directory, &profile.Schedule{Cron: "0 2 * * *", Backend: "cron"})
-	path := filepath.Join(directory, "example.json")
+	path := filepath.Join(profile.Dir(directory), "example.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +400,7 @@ func newCronManager(executor schedule.Executor, now func() time.Time) schedule.M
 
 func setCLIProfileSchedule(t *testing.T, directory string, configured *profile.Schedule) {
 	t.Helper()
-	path := filepath.Join(directory, "example.json")
+	path := filepath.Join(profile.Dir(directory), "example.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -421,7 +421,7 @@ func setCLIProfileSchedule(t *testing.T, directory string, configured *profile.S
 
 func setCLIProfileForget(t *testing.T, directory string, configured *profile.ForgetSchedule) {
 	t.Helper()
-	path := filepath.Join(directory, "example.json")
+	path := filepath.Join(profile.Dir(directory), "example.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

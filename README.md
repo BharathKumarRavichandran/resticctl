@@ -47,9 +47,9 @@ resticctl create <profile>
 
 Replace `<profile>` with a name that describes the backup.
 
-This creates `<profile>.json` and `<profile>.private.json`. On Linux and macOS they
-live in `~/.config/resticctl`; on Windows they live in
-`%APPDATA%\resticctl`.
+This creates `profiles/<profile>.json` and
+`profiles/<profile>.private.json`. The configuration directory is
+`~/.config/resticctl` on Linux and macOS and `%APPDATA%\resticctl` on Windows.
 
 Edit both files, then initialize the repository:
 
@@ -66,6 +66,35 @@ resticctl backup <profile>
 
 The config directory can be changed with `--config-dir` or
 `RESTICCTL_CONFIG_DIR`.
+
+## Profile groups
+
+Groups run an ordered list of profiles sequentially. Store each group in
+`groups/<group>.json` under the configuration directory:
+
+```json
+{
+  "name": "daily",
+  "profiles": ["home", "databases"],
+  "continue_on_error": true
+}
+```
+
+`name` is optional; when present, it must match the file name. Profile names
+must be unique within a group. By default, the first failed profile stops the
+group. Set `continue_on_error` to `true` to run the remaining profiles and
+return a failure after every member has been attempted.
+
+```sh
+resticctl group list
+resticctl group show daily
+resticctl group validate daily
+resticctl group backup daily --dry-run
+resticctl group backup daily
+```
+
+Group validation resolves every member before execution, so a missing or
+invalid profile cannot cause a partially started group run.
 
 ## Profile format
 

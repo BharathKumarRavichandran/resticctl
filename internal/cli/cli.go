@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"resticctl/internal/app"
+	"resticctl/internal/group"
 	"resticctl/internal/profile"
 	"resticctl/internal/schedule"
 )
@@ -92,12 +93,13 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 		&cli.configDir,
 		"config-dir",
 		"",
-		"profile directory (default: platform config directory)",
+		"configuration directory (default: platform config directory)",
 	)
 	root.AddCommand(
 		cli.createCommand(),
 		cli.listCommand(),
 		cli.showCommand(),
+		cli.groupCommand(),
 		cli.initCommand(),
 		cli.backupCommand(),
 		cli.validateCommand(),
@@ -123,7 +125,7 @@ func (cli *commandLine) executeForProfile(ctx context.Context, name string, acti
 	if err != nil {
 		return err
 	}
-	backupProfile, err := profile.Load(configDir, name)
+	backupProfile, err := profile.Load(profile.Dir(configDir), name)
 	if err != nil {
 		return err
 	}
@@ -146,7 +148,32 @@ func (cli *commandLine) completeProfiles(
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	names, err := profile.List(configDir)
+	names, err := profile.List(profile.Dir(configDir))
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	matching := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.HasPrefix(name, toComplete) {
+			matching = append(matching, name)
+		}
+	}
+	return matching, cobra.ShellCompDirectiveNoFileComp
+}
+
+func (cli *commandLine) completeGroups(
+	_ *cobra.Command,
+	arguments []string,
+	toComplete string,
+) ([]string, cobra.ShellCompDirective) {
+	if len(arguments) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	configDir, err := cli.resolveConfigDir()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names, err := group.List(configDir)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

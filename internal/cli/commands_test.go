@@ -67,7 +67,7 @@ func TestProfileCommandDispatch(t *testing.T) {
 			name:      "backup flags",
 			arguments: []string{"backup", "example", "--dry-run"},
 			want: []string{
-				"backup", "--group-by", "host,tags", "--tag", "profile:example", "--dry-run", "--", directory,
+				"backup", "--group-by", "host,tags", "--tag", "profile:example", "--dry-run", "--", profile.Dir(directory),
 			},
 		},
 		{
@@ -211,6 +211,10 @@ func TestExecutionErrorDoesNotPrintUsage(t *testing.T) {
 
 func writeCLIProfile(t *testing.T, directory string) {
 	t.Helper()
+	directory = profile.Dir(directory)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	files := []struct {
 		name  string
 		value any

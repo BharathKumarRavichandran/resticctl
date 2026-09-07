@@ -9,8 +9,138 @@ import (
 	"github.com/spf13/cobra"
 
 	"resticctl/internal/app"
+	"resticctl/internal/group"
 	"resticctl/internal/profile"
 )
+
+func (cli *commandLine) groupCommand() *cobra.Command {
+	command := &cobra.Command{Use: "group", Short: "Manage and run profile groups", Args: cobra.NoArgs}
+	command.AddCommand(cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupBackupCommand())
+	return command
+}
+
+func (cli *commandLine) groupListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "list", Short: "List configured groups", Args: cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: execute(func(_ *cobra.Command, _ []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			groups, err := group.List(configDir)
+			if err != nil {
+				return err
+			}
+			if len(groups) == 0 {
+				return fmt.Errorf("no groups found in %s", configDir)
+			}
+			return writeOutput(cli.stdout, "%s\n", strings.Join(groups, "\n"))
+		}),
+	}
+}
+
+func (cli *commandLine) groupShowCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "show <group>", Short: "Show a group", Args: cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeGroups,
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			configured, err := group.Load(configDir, arguments[0])
+			if err != nil {
+				return err
+			}
+			return writeJSON(cli.stdout, configured)
+		}),
+	}
+}
+
+func (cli *commandLine) groupValidateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "validate <group>", Short: "Validate a group and all its profiles", Args: cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeGroups,
+		RunE: execute(func(_ *cobra.Command, arguments []string) error {
+			configDir, configured, _, err := cli.loadGroup(arguments[0])
+			if err != nil {
+				return err
+			}
+			return writeOutput(cli.stdout, "Group %s is valid (%d profiles in %s)\n", configured.Name, len(configured.Profiles), configDir)
+		}),
+	}
+}
+
+func (cli *commandLine) groupBackupCommand() *cobra.Command {
+	var dryRun bool
+	command := &cobra.Command{
+		Use: "backup <group>", Short: "Back up every profile in a group sequentially", Args: cobra.ExactArgs(1),
+		ValidArgsFunction: cli.completeGroups,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, configured, profiles, err := cli.loadGroup(arguments[0])
+			if err != nil {
+				return err
+			}
+			var failures []error
+			for index, backupProfile := range profiles {
+				if err := writeOutput(cli.stdout, "==> [%d/%d] Backing up profile %s\n", index+1, len(profiles), backupProfile.Name); err != nil {
+					return err
+				}
+				err := cli.runBackup(command.Context(), configDir, backupProfile, dryRun)
+				if err == nil {
+					if err := writeOutput(cli.stdout, "<== Profile %s succeeded\n", backupProfile.Name); err != nil {
+						return err
+					}
+					continue
+				}
+				failure := fmt.Errorf("profile %s: %w", backupProfile.Name, err)
+				failures = append(failures, failure)
+				if outputErr := writeOutput(cli.stdout, "<== Profile %s failed: %v\n", backupProfile.Name, err); outputErr != nil {
+					return errors.Join(failure, outputErr)
+				}
+				if command.Context().Err() != nil || !configured.ContinueOnError {
+					if outputErr := writeOutput(cli.stdout, "<== Group %s failed\n", configured.Name); outputErr != nil {
+						return errors.Join(failure, outputErr)
+					}
+					return failure
+				}
+			}
+			if len(failures) != 0 {
+				if err := writeOutput(cli.stdout, "<== Group %s failed (%d profiles failed)\n", configured.Name, len(failures)); err != nil {
+					return errors.Join(errors.Join(failures...), err)
+				}
+				return errors.Join(failures...)
+			}
+			return writeOutput(cli.stdout, "<== Group %s succeeded\n", configured.Name)
+		}),
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview each backup without writing snapshots")
+	return command
+}
+
+func (cli *commandLine) loadGroup(name string) (string, group.Group, []profile.Profile, error) {
+	configDir, err := cli.resolveConfigDir()
+	if err != nil {
+		return "", group.Group{}, nil, err
+	}
+	configured, err := group.Load(configDir, name)
+	if err != nil {
+		return "", group.Group{}, nil, err
+	}
+	profiles := make([]profile.Profile, 0, len(configured.Profiles))
+	for _, member := range configured.Profiles {
+		backupProfile, err := profile.Load(profile.Dir(configDir), member)
+		if err != nil {
+			return "", group.Group{}, nil, fmt.Errorf("invalid profile %s in group %s: %w", member, configured.Name, err)
+		}
+		if err := app.ValidateDatabaseTools(backupProfile); err != nil {
+			return "", group.Group{}, nil, fmt.Errorf("invalid profile %s in group %s: %w", member, configured.Name, err)
+		}
+		profiles = append(profiles, backupProfile)
+	}
+	return configDir, configured, profiles, nil
+}
 
 func (cli *commandLine) createCommand() *cobra.Command {
 	return &cobra.Command{
@@ -49,7 +179,7 @@ func (cli *commandLine) listCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profiles, err := profile.List(configDir)
+			profiles, err := profile.List(profile.Dir(configDir))
 			if err != nil {
 				return err
 			}
@@ -89,7 +219,7 @@ func (cli *commandLine) showCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, name)
+			backupProfile, err := profile.Load(profile.Dir(configDir), name)
 			if err != nil {
 				return err
 			}
@@ -97,7 +227,7 @@ func (cli *commandLine) showCommand() *cobra.Command {
 			if !explain {
 				return writeJSON(cli.stdout, resolved)
 			}
-			explanation, err := profile.ExplainInheritance(configDir, name)
+			explanation, err := profile.ExplainInheritance(profile.Dir(configDir), name)
 			if err != nil {
 				return err
 			}
@@ -131,7 +261,7 @@ func (cli *commandLine) backupCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}
@@ -151,7 +281,7 @@ func (cli *commandLine) validateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}
@@ -265,7 +395,7 @@ func (cli *commandLine) checkCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}
@@ -294,7 +424,7 @@ func (cli *commandLine) runCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}
@@ -400,7 +530,7 @@ func (cli *commandLine) forgetCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}

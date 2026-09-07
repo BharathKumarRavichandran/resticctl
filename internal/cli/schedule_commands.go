@@ -45,7 +45,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}
@@ -154,7 +154,7 @@ func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
 			}
 			names := arguments
 			if all {
-				names, err = profile.List(configDir)
+				names, err = profile.List(profile.Dir(configDir))
 				if err != nil {
 					return err
 				}
@@ -165,7 +165,7 @@ func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
 			}
 			manager := cli.newScheduleManager()
 			for _, name := range names {
-				backupProfile, err := profile.Load(configDir, name)
+				backupProfile, err := profile.Load(profile.Dir(configDir), name)
 				if err != nil {
 					return err
 				}
@@ -293,7 +293,7 @@ func (cli *commandLine) scheduleRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			backupProfile, err := profile.Load(configDir, arguments[0])
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
 			if err != nil {
 				return err
 			}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"resticctl/internal/profile"
 	"resticctl/internal/securefile"
 )
 
@@ -36,12 +37,12 @@ func TestCreateAndListCommands(t *testing.T) {
 
 func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T) {
 	directory := t.TempDir()
-	writePrivateCLIFile(t, filepath.Join(directory, "base.json"), `{
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "base.json"), `{
           "repository":"rest:https://backup:repository-secret@example.test/repository",
           "backup_paths":["parent"],
           "tags":["inherited"]
         }`)
-	writePrivateCLIFile(t, filepath.Join(directory, "example.json"), `{
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "example.json"), `{
           "parent":"base",
           "credentials_file":"example.credentials.json",
           "backup_paths":["child"],
@@ -51,7 +52,7 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
             "body":"body-secret"
           }]}
         }`)
-	writePrivateCLIFile(t, filepath.Join(directory, "example.credentials.json"), `{
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "example.credentials.json"), `{
           "environment":{"TOKEN":"credential-secret"},
           "password":{"command":["password-command","command-secret"]}
         }`)
@@ -72,7 +73,7 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
 	if decoded.Name != "example" || decoded.Parent != "base" {
 		t.Fatalf("show identity = %q, %q", decoded.Name, decoded.Parent)
 	}
-	wantPaths := []string{filepath.Join(directory, "child")}
+	wantPaths := []string{filepath.Join(profile.Dir(directory), "child")}
 	if !slices.Equal(decoded.BackupPaths, wantPaths) {
 		t.Fatalf("backup paths = %q, want %q", decoded.BackupPaths, wantPaths)
 	}
@@ -105,13 +106,13 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
 
 func TestShowCommandExplainsInheritance(t *testing.T) {
 	directory := t.TempDir()
-	writePrivateCLIFile(t, filepath.Join(directory, "base.json"), `{
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "base.json"), `{
           "repository":"local:base",
           "backup_paths":["base"],
           "tags":["base"],
           "runtime":{"lock":{"path":"backup.lock","mode":"fail"}}
         }`)
-	writePrivateCLIFile(t, filepath.Join(directory, "child.json"), `{
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "child.json"), `{
           "parent":"base",
           "repository":"local:child",
           "credentials":{"password":{"value":"secret"}},
@@ -240,7 +241,10 @@ func TestCompletionCommand(t *testing.T) {
 
 func TestListReturnsOutputError(t *testing.T) {
 	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "example.json"), nil, 0o600); err != nil {
+	if err := os.MkdirAll(profile.Dir(directory), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile.Dir(directory), "example.json"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("write failed")
@@ -257,6 +261,9 @@ func TestListReturnsOutputError(t *testing.T) {
 
 func writePrivateCLIFile(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -267,8 +274,11 @@ func writePrivateCLIFile(t *testing.T, path, content string) {
 
 func TestProfileCompletionUsesConfigDirectory(t *testing.T) {
 	directory := t.TempDir()
+	if err := os.MkdirAll(profile.Dir(directory), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"example.json", "extra.json", "other.json", "example.credentials.json"} {
-		if err := os.WriteFile(filepath.Join(directory, name), nil, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(profile.Dir(directory), name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

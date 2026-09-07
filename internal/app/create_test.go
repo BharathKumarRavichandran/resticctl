@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +16,9 @@ func TestCreateProfileIsPrivateAndRefusesOverwrite(t *testing.T) {
 	profilePath, privatePath, err := CreateProfile(directory, "example")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if filepath.Dir(profilePath) != filepath.Join(directory, "profiles") || filepath.Dir(privatePath) != filepath.Join(directory, "profiles") {
+		t.Fatalf("created paths = %q, %q", profilePath, privatePath)
 	}
 	if runtime.GOOS != "windows" {
 		for _, path := range []string{profilePath, privatePath} {
@@ -55,7 +59,7 @@ func TestCreateProfileIsPrivateAndRefusesOverwrite(t *testing.T) {
 	if strings.Contains(string(content), "<profile>") || strings.Contains(string(privateContent), "<profile>") {
 		t.Fatal("generated files contain an unresolved profile placeholder")
 	}
-	profiles, err := profile.List(directory)
+	profiles, err := profile.List(profile.Dir(directory))
 	if err != nil {
 		t.Fatal(err)
 	}

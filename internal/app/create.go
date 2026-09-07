@@ -19,8 +19,9 @@ func CreateProfile(configDir, name string) (profilePath, privatePath string, err
 	if err := profile.ValidateName(name); err != nil {
 		return "", "", err
 	}
-	profilePath = filepath.Join(configDir, name+".json")
-	privatePath = filepath.Join(configDir, name+".private.json")
+	profilesDir := profile.Dir(configDir)
+	profilePath = filepath.Join(profilesDir, name+".json")
+	privatePath = filepath.Join(profilesDir, name+".private.json")
 	for _, path := range []string{profilePath, privatePath} {
 		if _, statErr := os.Lstat(path); statErr == nil {
 			return "", "", fmt.Errorf("refusing to overwrite existing file: %s", path)
@@ -28,10 +29,10 @@ func CreateProfile(configDir, name string) (profilePath, privatePath string, err
 			return "", "", fmt.Errorf("cannot inspect profile path %s: %w", path, statErr)
 		}
 	}
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
 		return "", "", fmt.Errorf("cannot create profile directory: %w", err)
 	}
-	if err := securefile.Protect(configDir); err != nil {
+	if err := securefile.Protect(profilesDir); err != nil {
 		return "", "", fmt.Errorf("cannot protect profile directory: %w", err)
 	}
 
