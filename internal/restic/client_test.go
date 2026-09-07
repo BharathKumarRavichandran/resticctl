@@ -16,6 +16,7 @@ type helperResult struct {
 	InputBytes      int      `json:"input_bytes"`
 	Password        string   `json:"password"`
 	PasswordExisted bool     `json:"password_existed"`
+	StdoutIsPipe    bool     `json:"stdout_is_pipe"`
 }
 
 func TestResticHelper(t *testing.T) {
@@ -29,7 +30,8 @@ func TestResticHelper(t *testing.T) {
 	if len(arguments) > 0 {
 		arguments = arguments[1:]
 	}
-	result := helperResult{Arguments: arguments}
+	stdoutInfo, _ := os.Stdout.Stat()
+	result := helperResult{Arguments: arguments, StdoutIsPipe: stdoutInfo != nil && stdoutInfo.Mode()&os.ModeNamedPipe != 0}
 	input, _ := io.ReadAll(os.Stdin)
 	result.InputBytes = len(input)
 	for index, argument := range arguments {
@@ -227,6 +229,38 @@ func TestResticUsesAndRemovesTemporaryPasswordFile(t *testing.T) {
 	}
 	if _, err := os.Stat(result.Arguments[passwordIndex]); !os.IsNotExist(err) {
 		t.Fatalf("temporary password file still exists: %v", err)
+	}
+}
+
+func TestRunPipesStdoutToKeepCommandOutputStable(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "restic.json")
+	output, err := os.CreateTemp(t.TempDir(), "output-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	client := &Client{
+		executable:      os.Args[0],
+		prefixArguments: []string{"-test.run=TestResticHelper", "--"},
+		stdout:          output,
+		stderr:          io.Discard,
+	}
+	config := Config{Repository: "local:repository", PasswordValue: "secret", Environment: map[string]string{
+		"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_LOG": logPath,
+	}}
+	if err := client.Run(context.Background(), config, []string{"snapshots"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.StdoutIsPipe {
+		t.Fatal("restic stdout was attached directly instead of through a pipe")
 	}
 }
 

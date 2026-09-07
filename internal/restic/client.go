@@ -116,6 +116,11 @@ type Client struct {
 	stderr          io.Writer
 }
 
+// writerOnly prevents os/exec from attaching an *os.File directly to the
+// child. Some restic listing commands use terminal control sequences when
+// stdout is a TTY, which can erase otherwise successful output.
+type writerOnly struct{ io.Writer }
+
 var lockIDPattern = regexp.MustCompile(`^[0-9a-f]+$`)
 var isProcessActive = processActive
 
@@ -186,7 +191,7 @@ func (client *Client) Run(
 	arguments []string,
 	cwd string,
 ) (runErr error) {
-	_, runErr = client.run(ctx, config, arguments, cwd, nil)
+	_, runErr = client.runInput(ctx, config, arguments, cwd, nil, client.stdin, writerOnly{client.stdout}, client.stderr)
 	return runErr
 }
 
