@@ -12,6 +12,7 @@ import (
 
 type helperResult struct {
 	Arguments       []string `json:"arguments"`
+	InputBytes      int      `json:"input_bytes"`
 	Password        string   `json:"password"`
 	PasswordExisted bool     `json:"password_existed"`
 }
@@ -28,6 +29,8 @@ func TestResticHelper(t *testing.T) {
 		arguments = arguments[1:]
 	}
 	result := helperResult{Arguments: arguments}
+	input, _ := io.ReadAll(os.Stdin)
+	result.InputBytes = len(input)
 	for index, argument := range arguments {
 		if argument == "--password-file" && index+1 < len(arguments) {
 			content, err := os.ReadFile(arguments[index+1])
@@ -39,10 +42,76 @@ func TestResticHelper(t *testing.T) {
 		}
 	}
 	encoded, _ := json.Marshal(result)
-	if err := os.WriteFile(os.Getenv("RESTIC_HELPER_LOG"), encoded, 0o600); err != nil {
-		os.Exit(4)
+	if logPath := os.Getenv("RESTIC_HELPER_LOG"); logPath != "" {
+		if err := os.WriteFile(logPath, encoded, 0o600); err != nil {
+			os.Exit(4)
+		}
+	}
+	switch os.Getenv("RESTIC_HELPER_FAILURE") {
+	case "missing":
+		_, _ = io.WriteString(os.Stdout, "repository-config-must-not-leak")
+		_, _ = io.WriteString(os.Stderr, "Fatal: repository does not exist")
+		os.Exit(1)
+	case "auth":
+		_, _ = io.WriteString(os.Stderr, "authentication failed")
+		os.Exit(1)
+	case "large":
+		_, _ = io.WriteString(os.Stderr, strings.Repeat("x", maximumDiagnostic*2))
+		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestRepositoryExistsIsolatesAndBoundsProbeOutput(t *testing.T) {
+	for _, test := range []struct {
+		name, failure string
+		wantExists    bool
+		wantErr       bool
+	}{
+		{"missing", "missing", false, false},
+		{"authentication", "auth", false, true},
+		{"large diagnostic", "large", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}
+			config := Config{Repository: "local:repository", PasswordValue: "secret", Environment: map[string]string{"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_FAILURE": test.failure}}
+			exists, err := client.RepositoryExists(context.Background(), config)
+			if exists != test.wantExists || (err != nil) != test.wantErr {
+				t.Fatalf("RepositoryExists = %t, %v", exists, err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("probe leaked stdout: %q", stdout.String())
+			}
+			if test.failure == "missing" && stderr.Len() != 0 {
+				t.Fatalf("expected missing diagnostic was emitted: %q", stderr.String())
+			}
+			if test.failure == "large" && (stderr.Len() > maximumDiagnostic+64 || !strings.Contains(stderr.String(), "diagnostic truncated")) {
+				t.Fatalf("large diagnostic was not bounded: %d bytes", stderr.Len())
+			}
+		})
+	}
+}
+
+func TestRunWithInputStreamsLargeInput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "restic.json")
+	client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdout: io.Discard, stderr: io.Discard}
+	config := Config{Repository: "local:repository", PasswordValue: "secret", Environment: map[string]string{"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_LOG": logPath}}
+	const size = 2 << 20
+	if _, err := client.RunWithInput(context.Background(), config, []string{"backup", "--stdin"}, "", strings.NewReader(strings.Repeat("x", size))); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.InputBytes != size {
+		t.Fatalf("input bytes = %d", result.InputBytes)
+	}
 }
 
 func TestResticUsesAndRemovesTemporaryPasswordFile(t *testing.T) {

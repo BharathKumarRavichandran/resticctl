@@ -54,6 +54,22 @@ type applicationRunner struct {
 	*process.Executor
 }
 
+func (runner *applicationRunner) RunStream(ctx context.Context, config restic.Config, arguments []string, cwd string, producer []string) (restic.Result, error) {
+	if len(producer) == 0 {
+		return runner.Client.RunWithInput(ctx, config, arguments, cwd, os.Stdin)
+	}
+	var result restic.Result
+	err := process.Pipe(
+		func(output io.Writer) error { return runner.Executor.RunProducer(ctx, producer, output) },
+		func(input io.Reader) error {
+			var err error
+			result, err = runner.Client.RunWithInput(ctx, config, arguments, cwd, input)
+			return err
+		},
+	)
+	return result, err
+}
+
 func newRunner() (app.Runner, error) {
 	client, err := restic.New(os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {

@@ -83,6 +83,7 @@ Profiles are JSON. Relative paths are resolved from the profile directory. `~`,
     "rewrite": {"args": ["--dry-run"]}
   },
   "backup_paths": ["~/Documents", "~/Pictures"],
+  "initialize_repository": false,
   "backup_args": [],
   "tags": ["personal"],
   "forget_args": [
@@ -138,6 +139,41 @@ supplies command arguments, its array replaces the inherited command arguments.
 `backup_paths` contains ordinary files and directories to include. Database
 settings live under `databases`, grouped by provider. For a database-only
 profile, set `backup_paths` to `[]`.
+
+A profile can instead back up one streamed file from standard input:
+
+```json
+{
+  "backup_paths": [],
+  "stream": {"filename": "exports/archive.tar"}
+}
+```
+
+Or it can run a producer directly, without a shell or plaintext staging file:
+
+```json
+{
+  "backup_paths": [],
+  "stream": {
+    "filename": "exports/database.dump",
+    "command": ["pg_dump", "--format=custom", "application"]
+  }
+}
+```
+
+Streaming is mutually exclusive with `backup_paths` and database staging. A
+stdin stream cannot be scheduled because a scheduled process has no dependable
+input; a configured producer command can be scheduled. Hooks, cancellation,
+dry runs, and recorded status use the normal backup workflow.
+
+Set `initialize_repository` to `true` to opt into repository creation on the
+first backup. resticctl initializes only after Restic explicitly reports that
+the repository is missing. Network, authentication, permission, and other
+ambiguous probe failures stop the backup. Dry runs never initialize, and a
+second probe handles concurrent initialization by another process. Detection is
+deliberately conservative: if an installed Restic version or repository backend
+does not emit Restic's explicit `repository does not exist` diagnostic, perform
+`resticctl init` manually.
 
 Profiles that are committed to source control can keep deployment details in a
 private override file:
@@ -449,8 +485,8 @@ availability without connecting to a database or repository.
 ### `backup`
 
 Backs up the profile's files and configured SQLite, PostgreSQL, MongoDB, MySQL,
-MariaDB, and SQL Server databases. `--dry-run` passes the option to restic without writing
-a snapshot.
+MariaDB, and SQL Server databases, or its configured input stream. `--dry-run`
+passes the option to restic without writing a snapshot.
 
 Backup orchestration is configured with `check_before`, `check_after`,
 `prune_before`, and `prune_after`. The order is check-before, prune-before,

@@ -22,6 +22,17 @@ func IsDryRunOption(argument string) bool {
 		strings.EqualFold(argument, "--dry-run=true") || strings.EqualFold(argument, "-n=true")
 }
 
+// IsStreamingOption reports whether argument selects Restic's stdin backup
+// mode, which is owned by the stream profile section.
+func IsStreamingOption(argument string) bool {
+	for _, option := range []string{"--stdin", "--stdin-filename", "--stdin-from-command"} {
+		if argument == option || strings.HasPrefix(argument, option+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // IsReservedEnvironment reports whether resticctl, rather than profile
 // credentials, must control the environment variable.
 func IsReservedEnvironment(key string) bool {

@@ -179,6 +179,13 @@ type Hook struct {
 	Timeout string   `json:"timeout,omitempty"`
 }
 
+// Stream configures a single logical file whose contents are read from stdin
+// or from the stdout of Command.
+type Stream struct {
+	Filename string   `json:"filename"`
+	Command  []string `json:"command,omitempty"`
+}
+
 // Monitoring configures non-fatal observability side effects for recorded actions.
 type Monitoring struct {
 	HistoryLimit       int              `json:"history_limit,omitempty"`
@@ -221,34 +228,36 @@ type LogDestination struct {
 }
 
 type Profile struct {
-	Name                string                   `json:"-"`
-	Parent              string                   `json:"parent,omitempty"`
-	Repository          string                   `json:"repository"`
-	CredentialsFile     string                   `json:"credentials_file,omitempty"`
-	PrivateFile         string                   `json:"private_file,omitempty"`
-	BackupPaths         []string                 `json:"backup_paths"`
-	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases,omitempty"`
-	PostgreSQLDatabases []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
-	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
-	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
-	SQLServerDatabases  []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
-	DatabaseConcurrency int                      `json:"database_concurrency,omitempty"`
-	ResticArgs          []string                 `json:"restic_args"`
-	Commands            map[string]ResticCommand `json:"commands,omitempty"`
-	BackupArgs          []string                 `json:"backup_args"`
-	Tags                []string                 `json:"tags"`
-	ForgetArgs          []string                 `json:"forget_args"`
-	CheckArgs           []string                 `json:"check_args"`
-	CheckBefore         bool                     `json:"check_before"`
-	CheckAfter          bool                     `json:"check_after"`
-	PruneBefore         bool                     `json:"prune_before"`
-	PruneAfter          bool                     `json:"prune_after"`
-	RunBefore           []Hook                   `json:"run_before"`
-	RunAfter            []Hook                   `json:"run_after"`
-	RunAfterFail        []Hook                   `json:"run_after_fail"`
-	RunFinally          []Hook                   `json:"run_finally"`
-	Schedule            *Schedule                `json:"schedule,omitempty"`
-	Forget              *ForgetSchedule          `json:"forget,omitempty"`
-	Monitoring          Monitoring               `json:"monitoring,omitempty"`
-	Credentials         Credentials              `json:"-"`
+	Name                 string                   `json:"-"`
+	Parent               string                   `json:"parent,omitempty"`
+	Repository           string                   `json:"repository"`
+	CredentialsFile      string                   `json:"credentials_file,omitempty"`
+	PrivateFile          string                   `json:"private_file,omitempty"`
+	BackupPaths          []string                 `json:"backup_paths"`
+	Stream               *Stream                  `json:"stream,omitempty"`
+	InitializeRepository bool                     `json:"initialize_repository,omitempty"`
+	SQLiteDatabases      []SQLiteDatabase         `json:"sqlite_databases,omitempty"`
+	PostgreSQLDatabases  []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
+	MongoDBDatabases     []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
+	MySQLDatabases       []MySQLDatabase          `json:"mysql_databases,omitempty"`
+	SQLServerDatabases   []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
+	DatabaseConcurrency  int                      `json:"database_concurrency,omitempty"`
+	ResticArgs           []string                 `json:"restic_args"`
+	Commands             map[string]ResticCommand `json:"commands,omitempty"`
+	BackupArgs           []string                 `json:"backup_args"`
+	Tags                 []string                 `json:"tags"`
+	ForgetArgs           []string                 `json:"forget_args"`
+	CheckArgs            []string                 `json:"check_args"`
+	CheckBefore          bool                     `json:"check_before"`
+	CheckAfter           bool                     `json:"check_after"`
+	PruneBefore          bool                     `json:"prune_before"`
+	PruneAfter           bool                     `json:"prune_after"`
+	RunBefore            []Hook                   `json:"run_before"`
+	RunAfter             []Hook                   `json:"run_after"`
+	RunAfterFail         []Hook                   `json:"run_after_fail"`
+	RunFinally           []Hook                   `json:"run_finally"`
+	Schedule             *Schedule                `json:"schedule,omitempty"`
+	Forget               *ForgetSchedule          `json:"forget,omitempty"`
+	Monitoring           Monitoring               `json:"monitoring,omitempty"`
+	Credentials          Credentials              `json:"-"`
 }

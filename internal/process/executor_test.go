@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,64 @@ func TestRunDatabaseFiltersAmbientReservedEnvironmentWithoutOverrides(t *testing
 	}
 	if result.Reserved != "" {
 		t.Fatal("database process inherited RESTIC_PASSWORD")
+	}
+}
+
+func TestRunProducerStreamsOutputAndFiltersReservedEnvironment(t *testing.T) {
+	t.Setenv("GO_WANT_PROCESS_HELPER", "1")
+	t.Setenv("RESTIC_PASSWORD", "must-not-leak")
+	var output bytes.Buffer
+	executor := NewExecutor(nil, io.Discard, io.Discard, isResticEnvironment)
+	if err := executor.RunProducer(context.Background(), []string{os.Args[0], "-test.run=TestProcessHelper"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reserved != "" {
+		t.Fatal("stream producer inherited RESTIC_PASSWORD")
+	}
+}
+
+func TestPipeStreamsLargeInputAndPreservesBothErrors(t *testing.T) {
+	producerErr := errors.New("producer failed")
+	consumerErr := errors.New("consumer failed")
+	const size = 2 << 20
+	var received int64
+	err := Pipe(
+		func(output io.Writer) error {
+			_, _ = io.Copy(output, strings.NewReader(strings.Repeat("x", size)))
+			return producerErr
+		},
+		func(input io.Reader) error {
+			received, _ = io.Copy(io.Discard, input)
+			return consumerErr
+		},
+	)
+	if received != size || !errors.Is(err, producerErr) || !errors.Is(err, consumerErr) {
+		t.Fatalf("received = %d, error = %v", received, err)
+	}
+}
+
+func TestPipeUnblocksProducerWhenConsumerStops(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		done <- Pipe(
+			func(output io.Writer) error {
+				_, err := io.Copy(output, strings.NewReader(strings.Repeat("x", 2<<20)))
+				return err
+			},
+			func(io.Reader) error { return context.Canceled },
+		)
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Pipe error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pipe producer remained blocked after consumer stopped")
 	}
 }
 

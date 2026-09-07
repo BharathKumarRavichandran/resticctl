@@ -31,6 +31,57 @@ func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
 	}
 }
 
+func TestLoadStreamConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test", "credentials_file":"credentials.json",
+          "stream":{"filename":"exports/database.dump","command":["pg_dump","app"]},
+          "initialize_repository":true
+        }`)
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Stream == nil || loaded.Stream.Filename != "exports/database.dump" || !slices.Equal(loaded.Stream.Command, []string{"pg_dump", "app"}) || !loaded.InitializeRepository {
+		t.Fatalf("loaded profile = %#v", loaded)
+	}
+}
+
+func TestLoadRejectsInvalidStreamCombinations(t *testing.T) {
+	for _, test := range []struct{ name, fields, want string }{
+		{"missing filename", `"stream":{}`, "stream.filename"},
+		{"path combination", `"backup_paths":["."],"stream":{"filename":"input"}`, "must not be combined"},
+		{"scheduled stdin", `"stream":{"filename":"input"},"schedule":{"cron":"daily"}`, "cannot be scheduled"},
+		{"empty producer argument", `"stream":{"filename":"input","command":["tool",""]}`, "empty arguments"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+test.fields+`}`)
+			_, err := Load(directory, "example")
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsWorkflowOwnedStreamingArguments(t *testing.T) {
+	for _, fields := range []string{
+		`"backup_args":["--stdin"]`,
+		`"commands":{"backup":{"args":["--stdin-filename=data"]}}`,
+		`"commands":{"backup":{"args":["--stdin-from-command"]}}`,
+	} {
+		directory := t.TempDir()
+		writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
+		writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","backup_paths":["."],`+fields+`}`)
+		if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "workflow-owned streaming option") {
+			t.Fatalf("Load error = %v", err)
+		}
+	}
+}
+
 func TestLoadExternalDatabases(t *testing.T) {
 	directory := t.TempDir()
 	if err := securefile.Protect(directory); err != nil {

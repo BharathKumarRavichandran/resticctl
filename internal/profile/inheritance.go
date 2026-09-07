@@ -1,13 +1,16 @@
 package profile
 
 func (configured profileConfig) profile(name string) Profile {
-	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths,
+	value := Profile{Name: name, Parent: configured.Parent, BackupPaths: configured.BackupPaths, Stream: configured.Stream,
 		SQLiteDatabases: configured.SQLiteDatabases, ResticArgs: configured.ResticArgs, Commands: configured.Commands,
 		PostgreSQLDatabases: configured.PostgreSQLDatabases, MongoDBDatabases: configured.MongoDBDatabases, MySQLDatabases: configured.MySQLDatabases, SQLServerDatabases: configured.SQLServerDatabases,
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
 		Schedule: configured.Schedule, Forget: configured.Forget}
+	if configured.InitializeRepository != nil {
+		value.InitializeRepository = *configured.InitializeRepository
+	}
 	if configured.Monitoring != nil {
 		value.Monitoring = *configured.Monitoring
 	}

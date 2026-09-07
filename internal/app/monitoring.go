@@ -35,20 +35,41 @@ func invokeRestic(ctx context.Context, runner ResticRunner, backupProfile profil
 			}
 			result, runErr := capable.RunWithResult(ctx, resticConfig(backupProfile), jsonArguments, cwd)
 			err = runErr
-			if result.Summary != nil {
-				if observation, ok := ctx.Value(observationKey{}).(*runObservation); ok {
-					summary := result.Summary
-					observation.mu.Lock()
-					observation.statistics = &runstatus.Statistics{FilesNew: summary.FilesNew, FilesChanged: summary.FilesChanged, FilesUnmodified: summary.FilesUnmodified, DirsNew: summary.DirsNew, DirsChanged: summary.DirsChanged, DirsUnmodified: summary.DirsUnmodified, DataBlobs: summary.DataBlobs, TreeBlobs: summary.TreeBlobs, DataAddedBytes: summary.DataAddedBytes, TotalFilesProcessed: summary.TotalFilesProcessed, TotalBytesProcessed: summary.TotalBytesProcessed}
-					observation.mu.Unlock()
-				}
-			}
+			recordBackupSummary(ctx, result)
 		} else {
 			err = runner.Run(ctx, resticConfig(backupProfile), arguments, cwd)
 		}
 	} else {
 		err = runner.Run(ctx, resticConfig(backupProfile), arguments, cwd)
 	}
+	return applyResticExitPolicy(ctx, backupProfile, err)
+}
+
+func recordBackupSummary(ctx context.Context, result restic.Result) {
+	if result.Summary == nil {
+		return
+	}
+	if observation, ok := ctx.Value(observationKey{}).(*runObservation); ok {
+		summary := result.Summary
+		observation.mu.Lock()
+		observation.statistics = &runstatus.Statistics{
+			FilesNew:            summary.FilesNew,
+			FilesChanged:        summary.FilesChanged,
+			FilesUnmodified:     summary.FilesUnmodified,
+			DirsNew:             summary.DirsNew,
+			DirsChanged:         summary.DirsChanged,
+			DirsUnmodified:      summary.DirsUnmodified,
+			DataBlobs:           summary.DataBlobs,
+			TreeBlobs:           summary.TreeBlobs,
+			DataAddedBytes:      summary.DataAddedBytes,
+			TotalFilesProcessed: summary.TotalFilesProcessed,
+			TotalBytesProcessed: summary.TotalBytesProcessed,
+		}
+		observation.mu.Unlock()
+	}
+}
+
+func applyResticExitPolicy(ctx context.Context, backupProfile profile.Profile, err error) error {
 	var exitError *restic.ExitError
 	if !errors.As(err, &exitError) || exitError.Code != 3 {
 		return err

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -72,6 +73,9 @@ func Load(configDir, name string) (Profile, error) {
 		}
 		backupProfile.BackupPaths[index] = expanded
 	}
+	if err := validateStream(backupProfile); err != nil {
+		return Profile{}, err
+	}
 	if err := normalizeConnections(&backupProfile, base); err != nil {
 		return Profile{}, err
 	}
@@ -126,6 +130,9 @@ func Load(configDir, name string) (Profile, error) {
 			if list.name == "backup_args" && IsDryRunOption(value) {
 				return Profile{}, fmt.Errorf("backup_args must not set workflow-owned dry-run option: %s", value)
 			}
+			if list.name == "backup_args" && IsStreamingOption(value) {
+				return Profile{}, fmt.Errorf("backup_args must not set workflow-owned streaming option: %s", value)
+			}
 		}
 	}
 	commandNames := make([]string, 0, len(backupProfile.Commands))
@@ -147,6 +154,9 @@ func Load(configDir, name string) (Profile, error) {
 			}
 			if name == "backup" && IsDryRunOption(value) {
 				return Profile{}, fmt.Errorf("commands.backup.args must not set workflow-owned dry-run option: %s", value)
+			}
+			if name == "backup" && IsStreamingOption(value) {
+				return Profile{}, fmt.Errorf("commands.backup.args must not set workflow-owned streaming option: %s", value)
 			}
 		}
 	}
@@ -230,36 +240,67 @@ func validScheduleBackend(value string) bool {
 
 // profileConfig keeps optional values distinct from their runtime defaults.
 type profileConfig struct {
-	Parent              string                   `json:"parent,omitempty"`
-	Repository          *string                  `json:"repository"`
-	CredentialsFile     *string                  `json:"credentials_file"`
-	PrivateFile         *string                  `json:"private_file,omitempty"`
-	Credentials         *RepositoryCredentials   `json:"credentials,omitempty"`
-	BackupPaths         []string                 `json:"backup_paths"`
-	SQLiteDatabases     []SQLiteDatabase         `json:"sqlite_databases"`
-	PostgreSQLDatabases []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
-	MongoDBDatabases    []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
-	MySQLDatabases      []MySQLDatabase          `json:"mysql_databases,omitempty"`
-	SQLServerDatabases  []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
-	DatabaseConcurrency *int                     `json:"database_concurrency,omitempty"`
-	Databases           *databaseConfig          `json:"databases,omitempty"`
-	ResticArgs          []string                 `json:"restic_args"`
-	Commands            map[string]ResticCommand `json:"commands,omitempty"`
-	BackupArgs          []string                 `json:"backup_args"`
-	Tags                []string                 `json:"tags"`
-	ForgetArgs          []string                 `json:"forget_args"`
-	CheckArgs           []string                 `json:"check_args"`
-	CheckBefore         *bool                    `json:"check_before"`
-	CheckAfter          *bool                    `json:"check_after"`
-	PruneBefore         *bool                    `json:"prune_before"`
-	PruneAfter          *bool                    `json:"prune_after"`
-	RunBefore           []Hook                   `json:"run_before"`
-	RunAfter            []Hook                   `json:"run_after"`
-	RunAfterFail        []Hook                   `json:"run_after_fail"`
-	RunFinally          []Hook                   `json:"run_finally"`
-	Schedule            *Schedule                `json:"schedule,omitempty"`
-	Forget              *ForgetSchedule          `json:"forget,omitempty"`
-	Monitoring          *Monitoring              `json:"monitoring,omitempty"`
+	Parent               string                   `json:"parent,omitempty"`
+	Repository           *string                  `json:"repository"`
+	CredentialsFile      *string                  `json:"credentials_file"`
+	PrivateFile          *string                  `json:"private_file,omitempty"`
+	Credentials          *RepositoryCredentials   `json:"credentials,omitempty"`
+	BackupPaths          []string                 `json:"backup_paths"`
+	Stream               *Stream                  `json:"stream,omitempty"`
+	InitializeRepository *bool                    `json:"initialize_repository,omitempty"`
+	SQLiteDatabases      []SQLiteDatabase         `json:"sqlite_databases"`
+	PostgreSQLDatabases  []PostgreSQLDatabase     `json:"postgresql_databases,omitempty"`
+	MongoDBDatabases     []MongoDBDatabase        `json:"mongodb_databases,omitempty"`
+	MySQLDatabases       []MySQLDatabase          `json:"mysql_databases,omitempty"`
+	SQLServerDatabases   []SQLServerDatabase      `json:"sqlserver_databases,omitempty"`
+	DatabaseConcurrency  *int                     `json:"database_concurrency,omitempty"`
+	Databases            *databaseConfig          `json:"databases,omitempty"`
+	ResticArgs           []string                 `json:"restic_args"`
+	Commands             map[string]ResticCommand `json:"commands,omitempty"`
+	BackupArgs           []string                 `json:"backup_args"`
+	Tags                 []string                 `json:"tags"`
+	ForgetArgs           []string                 `json:"forget_args"`
+	CheckArgs            []string                 `json:"check_args"`
+	CheckBefore          *bool                    `json:"check_before"`
+	CheckAfter           *bool                    `json:"check_after"`
+	PruneBefore          *bool                    `json:"prune_before"`
+	PruneAfter           *bool                    `json:"prune_after"`
+	RunBefore            []Hook                   `json:"run_before"`
+	RunAfter             []Hook                   `json:"run_after"`
+	RunAfterFail         []Hook                   `json:"run_after_fail"`
+	RunFinally           []Hook                   `json:"run_finally"`
+	Schedule             *Schedule                `json:"schedule,omitempty"`
+	Forget               *ForgetSchedule          `json:"forget,omitempty"`
+	Monitoring           *Monitoring              `json:"monitoring,omitempty"`
+}
+
+func validateStream(value Profile) error {
+	if value.Stream == nil {
+		return nil
+	}
+	if value.Stream.Filename == "" || strings.ContainsRune(value.Stream.Filename, 0) {
+		return errors.New("stream.filename must be a non-empty string without NUL bytes")
+	}
+	filename := value.Stream.Filename
+	if strings.Contains(filename, `\`) || path.IsAbs(filename) || path.Clean(filename) != filename || filename == "." {
+		return errors.New("stream.filename must be a clean relative logical filename using forward slashes")
+	}
+	for _, argument := range value.Stream.Command {
+		if argument == "" || strings.ContainsRune(argument, 0) {
+			return errors.New("stream.command must not contain empty arguments or NUL bytes")
+		}
+	}
+	if len(value.BackupPaths) != 0 || profileDatabaseCount(value) != 0 {
+		return errors.New("stream must not be combined with backup_paths or databases")
+	}
+	if len(value.Stream.Command) == 0 && value.Schedule != nil {
+		return errors.New("stdin stream backups cannot be scheduled; configure stream.command")
+	}
+	return nil
+}
+
+func profileDatabaseCount(value Profile) int {
+	return len(value.SQLiteDatabases) + len(value.PostgreSQLDatabases) + len(value.MongoDBDatabases) + len(value.MySQLDatabases) + len(value.SQLServerDatabases)
 }
 
 type databaseConfig struct {

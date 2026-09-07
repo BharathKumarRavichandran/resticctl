@@ -25,6 +25,14 @@ type resultRunner interface {
 	RunWithResult(context.Context, restic.Config, []string, string) (restic.Result, error)
 }
 
+type streamRunner interface {
+	RunStream(context.Context, restic.Config, []string, string, []string) (restic.Result, error)
+}
+
+type repositoryProbe interface {
+	RepositoryExists(context.Context, restic.Config) (bool, error)
+}
+
 // HookRunner executes a lifecycle hook without invoking a shell.
 type HookRunner interface {
 	RunHook(context.Context, []string) error
@@ -78,6 +86,9 @@ func ValidateDatabaseTools(backupProfile profile.Profile) error {
 }
 
 func runBackupWorkflow(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool, output io.Writer) error {
+	if err := initializeRepository(ctx, runner, backupProfile, dryRun); err != nil {
+		return err
+	}
 	if backupProfile.CheckBefore {
 		if err := Check(ctx, runner, backupProfile); err != nil {
 			return fmt.Errorf("check before backup: %w", err)
@@ -136,6 +147,19 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "backup")
 	if dryRun && !hasDryRunOption(arguments) {
 		arguments = append(arguments, "--dry-run")
+	}
+	if backupProfile.Stream != nil {
+		capable, ok := runner.(streamRunner)
+		if !ok {
+			return errors.New("runner does not support streaming backups")
+		}
+		if backupProfile.Monitoring.BackupStatistics && !hasOption(arguments, "--json") {
+			arguments = insertOption(arguments, "--json")
+		}
+		arguments = append(arguments, "--stdin", "--stdin-filename", backupProfile.Stream.Filename)
+		result, err := capable.RunStream(ctx, resticConfig(backupProfile), arguments, "", backupProfile.Stream.Command)
+		recordBackupSummary(ctx, result)
+		return applyResticExitPolicy(ctx, backupProfile, err)
 	}
 	if databaseCount(backupProfile) == 0 {
 		arguments = append(arguments, "--")
@@ -266,7 +290,7 @@ enqueue:
 }
 
 func validateBackupSources(backupProfile profile.Profile) error {
-	if len(backupProfile.BackupPaths) == 0 && databaseCount(backupProfile) == 0 {
+	if len(backupProfile.BackupPaths) == 0 && databaseCount(backupProfile) == 0 && backupProfile.Stream == nil {
 		return errors.New("profile has no backup paths or databases")
 	}
 	for _, path := range backupProfile.BackupPaths {
@@ -277,6 +301,35 @@ func validateBackupSources(backupProfile profile.Profile) error {
 		}
 	}
 	return nil
+}
+
+func initializeRepository(ctx context.Context, runner Runner, backupProfile profile.Profile, dryRun bool) error {
+	if !backupProfile.InitializeRepository {
+		return nil
+	}
+	probe, ok := runner.(repositoryProbe)
+	if !ok {
+		return errors.New("runner does not support repository probing")
+	}
+	exists, err := probe.RepositoryExists(ctx, resticConfig(backupProfile))
+	if err != nil {
+		return fmt.Errorf("probe repository before automatic initialization: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if dryRun {
+		return errors.New("repository is missing; dry run will not initialize it")
+	}
+	initErr := invokeRestic(ctx, runner, backupProfile, configuredResticArguments(backupProfile, "init", nil), "")
+	if initErr == nil {
+		return nil
+	}
+	raceExists, probeErr := probe.RepositoryExists(ctx, resticConfig(backupProfile))
+	if probeErr == nil && raceExists {
+		return nil
+	}
+	return fmt.Errorf("automatically initialize repository: %w", errors.Join(initErr, probeErr))
 }
 
 func databaseCount(backupProfile profile.Profile) int {

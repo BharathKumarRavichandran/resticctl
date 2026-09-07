@@ -54,6 +54,125 @@ func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
 	}
 }
 
+type streamingTestRunner struct {
+	recordingRunner
+	producer  []string
+	exists    bool
+	probeErr  error
+	initErr   error
+	streamErr error
+}
+
+func (runner *streamingTestRunner) Run(_ context.Context, config restic.Config, arguments []string, cwd string) error {
+	runner.runs = append(runner.runs, recordedRun{config: config, arguments: append([]string(nil), arguments...), cwd: cwd})
+	if len(arguments) > 0 && arguments[0] == "init" && runner.initErr != nil {
+		runner.exists = true
+		return runner.initErr
+	}
+	return nil
+}
+
+func (runner *streamingTestRunner) RunStream(_ context.Context, config restic.Config, arguments []string, cwd string, producer []string) (restic.Result, error) {
+	runner.runs = append(runner.runs, recordedRun{config: config, arguments: append([]string(nil), arguments...), cwd: cwd})
+	runner.producer = append([]string(nil), producer...)
+	result := restic.Result{}
+	if hasOption(arguments, "--json") {
+		result.Summary = &restic.BackupSummary{FilesNew: 7, TotalBytesProcessed: 42}
+	}
+	return result, runner.streamErr
+}
+
+func (runner *streamingTestRunner) RepositoryExists(context.Context, restic.Config) (bool, error) {
+	return runner.exists, runner.probeErr
+}
+
+func TestBackupStreamsProducerWithoutStaging(t *testing.T) {
+	runner := &streamingTestRunner{}
+	backupProfile := profile.Profile{Name: "example", Stream: &profile.Stream{Filename: "exports/data.dump", Command: []string{"pg_dump", "app"}}}
+	if err := Backup(context.Background(), runner, backupProfile, true, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"backup", "--group-by", "host,tags", "--tag", "profile:example", "--dry-run", "--stdin", "--stdin-filename", "exports/data.dump"}
+	if len(runner.runs) != 1 || !slices.Equal(runner.runs[0].arguments, want) {
+		t.Fatalf("runs = %#v, want arguments %v", runner.runs, want)
+	}
+	if !slices.Equal(runner.producer, []string{"pg_dump", "app"}) || runner.runs[0].cwd != "" {
+		t.Fatalf("producer = %v, cwd = %q", runner.producer, runner.runs[0].cwd)
+	}
+}
+
+func TestBackupReportsProducerFailureAndCancellation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"producer failure", errors.New("stream producer exited with status 2")},
+		{"cancellation", context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &streamingTestRunner{streamErr: test.err}
+			backupProfile := profile.Profile{Name: "example", Stream: &profile.Stream{Filename: "data", Command: []string{"producer"}}}
+			err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+			if !errors.Is(err, test.err) {
+				t.Fatalf("Backup error = %v, want %v", err, test.err)
+			}
+		})
+	}
+}
+
+func TestStreamingBackupRecordsStatistics(t *testing.T) {
+	runner := &streamingTestRunner{}
+	ctx, observation := observe(context.Background())
+	backupProfile := profile.Profile{Name: "example", Stream: &profile.Stream{Filename: "data"}, Monitoring: profile.Monitoring{BackupStatistics: true}}
+	if err := Backup(ctx, runner, backupProfile, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !hasOption(runner.runs[0].arguments, "--json") || observation.statistics == nil || observation.statistics.FilesNew != 7 || observation.statistics.TotalBytesProcessed != 42 {
+		t.Fatalf("arguments = %v, statistics = %#v", runner.runs[0].arguments, observation.statistics)
+	}
+}
+
+func TestBackupAutomaticallyInitializesOnlyConfirmedMissingRepository(t *testing.T) {
+	runner := &streamingTestRunner{}
+	source := t.TempDir()
+	backupProfile := profile.Profile{Name: "example", BackupPaths: []string{source}, InitializeRepository: true}
+	if err := Backup(context.Background(), runner, backupProfile, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.runs) != 2 || runner.runs[0].arguments[0] != "init" || runner.runs[1].arguments[0] != "backup" {
+		t.Fatalf("runs = %#v", runner.runs)
+	}
+}
+
+func TestBackupDoesNotInitializeAfterAmbiguousProbeFailure(t *testing.T) {
+	runner := &streamingTestRunner{probeErr: errors.New("authentication failed")}
+	backupProfile := profile.Profile{Name: "example", BackupPaths: []string{t.TempDir()}, InitializeRepository: true}
+	err := Backup(context.Background(), runner, backupProfile, false, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "authentication failed") || len(runner.runs) != 0 {
+		t.Fatalf("Backup error = %v, runs = %#v", err, runner.runs)
+	}
+}
+
+func TestBackupAcceptsConcurrentInitializationWinner(t *testing.T) {
+	runner := &streamingTestRunner{initErr: errors.New("repository already initialized")}
+	backupProfile := profile.Profile{Name: "example", BackupPaths: []string{t.TempDir()}, InitializeRepository: true}
+	if err := Backup(context.Background(), runner, backupProfile, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.runs) != 2 || runner.runs[0].arguments[0] != "init" || runner.runs[1].arguments[0] != "backup" {
+		t.Fatalf("runs = %#v", runner.runs)
+	}
+}
+
+func TestBackupDryRunDoesNotInitializeMissingRepository(t *testing.T) {
+	runner := &streamingTestRunner{}
+	backupProfile := profile.Profile{Name: "example", BackupPaths: []string{t.TempDir()}, InitializeRepository: true}
+	err := Backup(context.Background(), runner, backupProfile, true, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "dry run") || len(runner.runs) != 0 {
+		t.Fatalf("Backup error = %v, runs = %#v", err, runner.runs)
+	}
+}
+
 func TestBackupStagesExternalDatabasesWithBoundedConcurrencyAndIsolatedEnvironments(t *testing.T) {
 	runner := &concurrentDatabaseRunner{started: make(chan struct{}, 2), release: make(chan struct{})}
 	backupProfile := profile.Profile{

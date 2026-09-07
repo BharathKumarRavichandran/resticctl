@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"resticctl/internal/process"
 )
@@ -46,6 +47,25 @@ type BackupSummary struct {
 type Result struct{ Summary *BackupSummary }
 
 const maximumJSONLine = 1 << 20
+const maximumDiagnostic = 64 << 10
+
+type boundedBuffer struct {
+	data      []byte
+	truncated bool
+}
+
+func (buffer *boundedBuffer) Write(data []byte) (int, error) {
+	remaining := maximumDiagnostic - len(buffer.data)
+	if remaining > 0 {
+		buffer.data = append(buffer.data, data[:min(remaining, len(data))]...)
+	}
+	if len(data) > remaining {
+		buffer.truncated = true
+	}
+	return len(data), nil
+}
+
+func (buffer *boundedBuffer) String() string { return string(buffer.data) }
 
 type summaryCapture struct {
 	line    []byte
@@ -123,7 +143,36 @@ func (client *Client) RunWithResult(ctx context.Context, config Config, argument
 	return client.run(ctx, config, arguments, cwd, &capture)
 }
 
+// RunWithInput executes Restic with input as stdin and captures any JSON backup summary.
+func (client *Client) RunWithInput(ctx context.Context, config Config, arguments []string, cwd string, input io.Reader) (Result, error) {
+	var capture summaryCapture
+	return client.runInput(ctx, config, arguments, cwd, &capture, input, client.stdout, client.stderr)
+}
+
+// RepositoryExists returns false only for Restic's explicit missing-repository
+// diagnostic. Authentication, permission, and transport failures remain errors.
+func (client *Client) RepositoryExists(ctx context.Context, config Config) (bool, error) {
+	var diagnostic boundedBuffer
+	_, err := client.runInput(ctx, config, []string{"cat", "config"}, "", nil, client.stdin, io.Discard, &diagnostic)
+	if err == nil {
+		return true, nil
+	}
+	message := strings.ToLower(diagnostic.String())
+	if strings.Contains(message, "repository does not exist") {
+		return false, nil
+	}
+	_, _ = io.WriteString(client.stderr, diagnostic.String())
+	if diagnostic.truncated {
+		_, _ = io.WriteString(client.stderr, "\n[restic diagnostic truncated]\n")
+	}
+	return false, err
+}
+
 func (client *Client) run(ctx context.Context, config Config, arguments []string, cwd string, capture *summaryCapture) (result Result, runErr error) {
+	return client.runInput(ctx, config, arguments, cwd, capture, client.stdin, client.stdout, client.stderr)
+}
+
+func (client *Client) runInput(ctx context.Context, config Config, arguments []string, cwd string, capture *summaryCapture, input io.Reader, stdout, stderr io.Writer) (result Result, runErr error) {
 	passwordFile, temporary, err := preparePasswordFile(ctx, config)
 	if err != nil {
 		return Result{}, err
@@ -143,12 +192,12 @@ func (client *Client) run(ctx context.Context, config Config, arguments []string
 	command := exec.Command(client.executable, commandArgs...)
 	command.Dir = cwd
 	command.Env = mergeEnvironment(os.Environ(), config.Environment)
-	command.Stdin = client.stdin
-	command.Stdout = client.stdout
+	command.Stdin = input
+	command.Stdout = stdout
 	if capture != nil {
-		command.Stdout = io.MultiWriter(client.stdout, capture)
+		command.Stdout = io.MultiWriter(stdout, capture)
 	}
-	command.Stderr = client.stderr
+	command.Stderr = stderr
 	commandErr := process.Run(ctx, command)
 	if capture != nil {
 		capture.consume()

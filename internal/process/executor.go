@@ -45,6 +45,44 @@ func (executor *Executor) RunDatabase(ctx context.Context, arguments []string, e
 	return executor.run(ctx, "database client", arguments, environment, cwd, executor.blockedEnvironment)
 }
 
+// RunProducer writes a command's stdout to output without invoking a shell.
+func (executor *Executor) RunProducer(ctx context.Context, arguments []string, output io.Writer) error {
+	if len(arguments) == 0 {
+		return errors.New("cannot execute stream producer: command is empty")
+	}
+	command := exec.Command(arguments[0], arguments[1:]...)
+	command.Env = mergeEnvironment(os.Environ(), nil, executor.blockedEnvironment)
+	command.Stdin = executor.stdin
+	command.Stdout = output
+	command.Stderr = executor.stderr
+	if err := Run(ctx, command); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return &ExitError{Label: "stream producer", Code: exitError.ExitCode()}
+		}
+		return fmt.Errorf("cannot execute stream producer: %w", err)
+	}
+	return nil
+}
+
+// Pipe streams producer output into consumer and preserves errors from both
+// sides. Closing the reader unblocks a producer when the consumer exits early.
+func Pipe(producer func(io.Writer) error, consumer func(io.Reader) error) error {
+	reader, writer := io.Pipe()
+	producerResult := make(chan error, 1)
+	go func() {
+		err := producer(writer)
+		_ = writer.CloseWithError(err)
+		producerResult <- err
+	}()
+	consumerErr := consumer(reader)
+	_ = reader.Close()
+	return errors.Join(consumerErr, <-producerResult)
+}
+
 func (executor *Executor) run(ctx context.Context, label string, arguments []string, environment map[string]string, cwd string, blockedEnvironment func(string) bool) error {
 	if len(arguments) == 0 {
 		return fmt.Errorf("cannot execute %s: command is empty", label)
