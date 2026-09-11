@@ -72,6 +72,40 @@ func RunCheck(ctx context.Context, newRunner RunnerFactory, configDir string, ba
 	})
 }
 
+func RunCopy(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, target string, dryRun bool, output io.Writer, now func() time.Time) error {
+	configured, ok := backupProfile.Copies[target]
+	if !ok {
+		return fmt.Errorf("profile %s has no copy target %q", backupProfile.Name, target)
+	}
+	remote := repositoryIsRemote(backupProfile.Repository) || repositoryIsRemote(configured.Repository)
+	return newPolicyRunner().Run(ctx, backupProfile.Runtime, false, remote, func(runCtx context.Context) error {
+		runner, err := newRunner()
+		if err != nil {
+			return err
+		}
+		if err := recoverRepositoryLocks(runCtx, runner, backupProfile); err != nil {
+			return err
+		}
+		if dryRun {
+			if err := Copy(runCtx, runner, backupProfile, target, true); err != nil {
+				return err
+			}
+			if output != nil {
+				_, err := fmt.Fprintf(output, "Would copy profile %s to target %s\n", backupProfile.Name, target)
+				return err
+			}
+			return nil
+		}
+		recorder, err := runstatus.BeginCopyTarget(configDir, backupProfile.Name, target, now())
+		if err != nil {
+			return err
+		}
+		return finishRecordedRun(runCtx, recorder, backupProfile, now, output, func(recordCtx context.Context) error {
+			return Copy(recordCtx, runner, backupProfile, target, false)
+		})
+	})
+}
+
 // RunRecordedRestic executes a raw monitored action while preserving the same
 // status, warning, and notification semantics as first-class commands.
 func RunRecordedRestic(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, command string, arguments []string, now func() time.Time, output io.Writer) error {
@@ -183,7 +217,22 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 		case schedule.ActionPrune:
 			return RunRestic(runCtx, runner, backupProfile, "prune", nil)
 		case schedule.ActionCopy:
-			return RunRestic(runCtx, runner, backupProfile, "copy", nil)
+			targets := backupProfile.CopyTargetNames()
+			if len(targets) == 0 {
+				return errors.New("profile has no copy targets")
+			}
+			for _, target := range targets {
+				targetRecorder, err := runstatus.BeginCopyTargetUnderProfileLock(configDir, backupProfile.Name, target, now())
+				if err != nil {
+					return fmt.Errorf("lock copy target %s: %w", target, err)
+				}
+				err = Copy(runCtx, runner, backupProfile, target, false)
+				err = errors.Join(err, targetRecorder.Finish(err, now()))
+				if err != nil {
+					return fmt.Errorf("copy target %s: %w", target, err)
+				}
+			}
+			return nil
 		default:
 			return scheduleActionError(action)
 		}

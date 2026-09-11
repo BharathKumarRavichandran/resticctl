@@ -102,6 +102,7 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 		cli.groupCommand(),
 		cli.initCommand(),
 		cli.backupCommand(),
+		cli.copyCommand(),
 		cli.validateCommand(),
 		cli.snapshotsCommand(),
 		cli.statsCommand(),

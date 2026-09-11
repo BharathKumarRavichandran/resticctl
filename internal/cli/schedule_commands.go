@@ -695,6 +695,7 @@ func (cli *commandLine) scheduleStatusCommand() *cobra.Command {
 func (cli *commandLine) statusCommand() *cobra.Command {
 	var jsonOutput bool
 	var action string
+	var target string
 	var history int
 	command := &cobra.Command{
 		Use:               "status <profile>",
@@ -709,8 +710,16 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 			if err := profile.ValidateName(arguments[0]); err != nil {
 				return err
 			}
+			if target != "" && action != schedule.ActionCopy {
+				return errors.New("--target requires --action copy")
+			}
 			if history > 0 {
-				statuses, err := runstatus.LoadHistory(configDir, arguments[0], action)
+				var statuses []runstatus.Status
+				if target != "" {
+					statuses, err = runstatus.LoadCopyTargetHistory(configDir, arguments[0], target)
+				} else {
+					statuses, err = runstatus.LoadHistory(configDir, arguments[0], action)
+				}
 				if err != nil {
 					return err
 				}
@@ -732,7 +741,12 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 				}
 				return nil
 			}
-			status, err := runstatus.LoadAction(configDir, arguments[0], action)
+			var status runstatus.Status
+			if target != "" {
+				status, err = runstatus.LoadCopyTarget(configDir, arguments[0], target)
+			} else {
+				status, err = runstatus.LoadAction(configDir, arguments[0], action)
+			}
 			if err != nil {
 				return err
 			}
@@ -744,6 +758,7 @@ func (cli *commandLine) statusCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
 	command.Flags().StringVar(&action, "action", schedule.ActionBackup, "status action: backup, check, forget, prune, or copy")
+	command.Flags().StringVar(&target, "target", "", "named copy target")
 	command.Flags().IntVar(&history, "history", 0, "show the newest N completed runs")
 	return command
 }

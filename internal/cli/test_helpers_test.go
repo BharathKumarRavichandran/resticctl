@@ -48,6 +48,14 @@ func (runner *recordingRunner) Run(
 }
 
 func (runner *recordingRunner) RunHook(_ context.Context, _ []string) error { return nil }
+func (runner *recordingRunner) Copy(_ context.Context, _ restic.CopyConfig, arguments []string) error {
+	runner.runs = append(runner.runs, recordedRun{arguments: append([]string{"copy"}, arguments...)})
+	return nil
+}
+func (runner *recordingRunner) InitCopyDestination(_ context.Context, _ restic.CopyConfig, _ bool) error {
+	runner.runs = append(runner.runs, recordedRun{arguments: []string{"init"}})
+	return nil
+}
 func (runner *recordingRunner) RunDatabase(_ context.Context, _ []string, _ map[string]string, _ string) error {
 	return nil
 }

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"resticctl/internal/cronexpr"
 )
@@ -58,6 +57,9 @@ func Load(configDir, name string) (Profile, error) {
 	}
 	if backupProfile.Repository == "" {
 		return Profile{}, errors.New("repository must be a non-empty string")
+	}
+	if err := loadCopyTargets(&backupProfile, base); err != nil {
+		return Profile{}, err
 	}
 	if strings.ContainsRune(backupProfile.Repository, 0) {
 		return Profile{}, errors.New("repository must not contain NUL bytes")
@@ -160,6 +162,11 @@ func Load(configDir, name string) (Profile, error) {
 			}
 		}
 	}
+	if len(backupProfile.Copies) != 0 {
+		if _, configured := backupProfile.Commands["copy"]; configured {
+			return Profile{}, errors.New("commands.copy cannot be combined with copies; use copies.<target>.args")
+		}
+	}
 	if (backupProfile.PruneBefore || backupProfile.PruneAfter) && len(backupProfile.ForgetArgs) == 0 {
 		return Profile{}, errors.New("backup pruning requires non-empty forget_args")
 	}
@@ -172,21 +179,8 @@ func Load(configDir, name string) (Profile, error) {
 		{"run_after_fail", backupProfile.RunAfterFail},
 		{"run_finally", backupProfile.RunFinally},
 	} {
-		for index, hook := range hooks.values {
-			if len(hook.Command) == 0 {
-				return Profile{}, fmt.Errorf("%s[%d].command must contain at least one argument", hooks.name, index)
-			}
-			for _, part := range hook.Command {
-				if part == "" || strings.ContainsRune(part, 0) {
-					return Profile{}, fmt.Errorf("%s[%d].command must not contain empty arguments or NUL bytes", hooks.name, index)
-				}
-			}
-			if hook.Timeout != "" {
-				timeout, err := time.ParseDuration(hook.Timeout)
-				if err != nil || timeout <= 0 {
-					return Profile{}, fmt.Errorf("%s[%d].timeout must be a positive duration", hooks.name, index)
-				}
-			}
+		if err := validateHooks(hooks.name, hooks.values); err != nil {
+			return Profile{}, err
 		}
 	}
 	if backupProfile.Schedule != nil {
@@ -274,6 +268,7 @@ type profileConfig struct {
 	RunFinally           []Hook                   `json:"run_finally"`
 	Schedule             *Schedule                `json:"schedule,omitempty"`
 	Forget               *ForgetSchedule          `json:"forget,omitempty"`
+	Copies               map[string]CopyTarget    `json:"copies,omitempty"`
 	Monitoring           *Monitoring              `json:"monitoring,omitempty"`
 	Runtime              *Runtime                 `json:"runtime,omitempty"`
 }
@@ -396,11 +391,36 @@ func resolveDocument(configDir, name string, chain []string) (map[string]json.Ra
 	deleteJSONField(parent, "credentials")
 	deleteJSONField(parent, "credentials_file")
 	deleteJSONField(parent, "private_file")
+	deleteInheritedCopyCredentials(parent)
 	merged, err := mergeJSONObjects(parent, childDocument)
 	if err != nil {
 		return nil, fmt.Errorf("merge profile %s: %w", name, err)
 	}
 	return merged, nil
+}
+
+func deleteInheritedCopyCredentials(document map[string]json.RawMessage) {
+	key := matchingJSONKey(document, "copies")
+	var copies map[string]json.RawMessage
+	if json.Unmarshal(document[key], &copies) != nil {
+		return
+	}
+	for name, rawTarget := range copies {
+		var target map[string]json.RawMessage
+		if json.Unmarshal(rawTarget, &target) != nil {
+			continue
+		}
+		deleteJSONField(target, "credentials_file")
+		encoded, err := json.Marshal(target)
+		if err != nil {
+			return
+		}
+		copies[name] = encoded
+	}
+	encoded, err := json.Marshal(copies)
+	if err == nil {
+		document[key] = encoded
+	}
 }
 
 func mergeJSONObjects(parent, child map[string]json.RawMessage) (map[string]json.RawMessage, error) {
@@ -466,6 +486,11 @@ func (configured profileConfig) containsInlineSecrets() bool {
 	}
 	if configured.Monitoring != nil && monitoringContainsSecrets(*configured.Monitoring) {
 		return true
+	}
+	for _, target := range configured.Copies {
+		if redactRepository(target.Repository) != target.Repository {
+			return true
+		}
 	}
 	for _, database := range configured.PostgreSQLDatabases {
 		if connectionHasPassword(database.Connection) {

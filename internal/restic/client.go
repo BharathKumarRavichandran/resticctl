@@ -25,6 +25,11 @@ type Config struct {
 	PasswordValue   string
 }
 
+type CopyConfig struct {
+	Source      Config
+	Destination Config
+}
+
 // ExitError preserves Restic's process status for policy and monitoring code.
 type ExitError struct{ Code int }
 
@@ -193,6 +198,83 @@ func (client *Client) Run(
 ) (runErr error) {
 	_, runErr = client.runInput(ctx, config, arguments, cwd, nil, client.stdin, writerOnly{client.stdout}, client.stderr)
 	return runErr
+}
+
+func (client *Client) Copy(ctx context.Context, config CopyConfig, arguments []string) error {
+	if err := validateCopyEnvironment(config); err != nil {
+		return err
+	}
+	return client.runWithSource(ctx, config.Destination, config.Source, "copy", arguments)
+}
+
+// InitCopyDestination initializes the destination, optionally reusing the
+// source repository's chunker parameters.
+func (client *Client) InitCopyDestination(ctx context.Context, config CopyConfig, copyChunkerParams bool) error {
+	if err := validateCopyEnvironment(config); err != nil {
+		return err
+	}
+	if copyChunkerParams {
+		return client.runWithSource(ctx, config.Destination, config.Source, "init", []string{"--copy-chunker-params"})
+	}
+	return client.Run(ctx, config.Destination, []string{"init"}, "")
+}
+
+func validateCopyEnvironment(config CopyConfig) error {
+	source := make(map[string]string, len(config.Source.Environment))
+	for key, value := range config.Source.Environment {
+		source[normalizeEnvKey(key)] = value
+	}
+	for key, value := range config.Destination.Environment {
+		if sourceValue, ok := source[normalizeEnvKey(key)]; ok && sourceValue != value {
+			return fmt.Errorf("source and destination credentials conflict on environment key %s", key)
+		}
+	}
+	return nil
+}
+
+func (client *Client) runWithSource(ctx context.Context, destination, source Config, commandName string, arguments []string) (runErr error) {
+	destinationPassword, destinationTemporary, err := preparePasswordFile(ctx, destination)
+	if err != nil {
+		return err
+	}
+	if destinationTemporary {
+		defer func() { runErr = errors.Join(runErr, removePasswordFile(destinationPassword)) }()
+	}
+	sourcePassword, sourceTemporary, err := preparePasswordFile(ctx, source)
+	if err != nil {
+		return err
+	}
+	if sourceTemporary {
+		defer func() { runErr = errors.Join(runErr, removePasswordFile(sourcePassword)) }()
+	}
+
+	commandArgs := append([]string{}, client.prefixArguments...)
+	commandArgs = append(commandArgs, destination.Arguments...)
+	commandArgs = append(commandArgs, "--repo", destination.Repository, "--password-file", destinationPassword)
+	commandArgs = append(commandArgs, commandName, "--from-repo", source.Repository, "--from-password-file", sourcePassword)
+	commandArgs = append(commandArgs, arguments...)
+	command := exec.Command(client.executable, commandArgs...)
+	environment := mergeEnvironment(os.Environ(), source.Environment)
+	command.Env = mergeEnvironment(environment, destination.Environment)
+	command.Stdin, command.Stdout, command.Stderr = client.stdin, writerOnly{client.stdout}, client.stderr
+	if err := process.Run(ctx, command); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return &ExitError{Code: exitError.ExitCode()}
+		}
+		return fmt.Errorf("cannot execute restic: %w", err)
+	}
+	return nil
+}
+
+func removePasswordFile(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cannot remove temporary password file %s: %w", path, err)
+	}
+	return nil
 }
 
 // RunWithResult captures Restic's newline-delimited JSON summary while still

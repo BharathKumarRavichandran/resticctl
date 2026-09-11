@@ -64,6 +64,21 @@ func loadCredentials(path string) (Credentials, error) {
 	return credentials, nil
 }
 
+func loadCopyCredentials(path string) (RepositoryCredentials, error) {
+	var credentials RepositoryCredentials
+	if err := decodePrivateStrict(path, "copy credentials", &credentials); err != nil {
+		return RepositoryCredentials{}, err
+	}
+	base := filepath.Dir(path)
+	value := Credentials{Environment: credentials.Environment, Password: credentials.Password}
+	if err := validateRepositoryCredentials(&value, base, "copy credentials"); err != nil {
+		return RepositoryCredentials{}, err
+	}
+	credentials.Environment = value.Environment
+	credentials.Password = value.Password
+	return credentials, nil
+}
+
 func validateRepositoryCredentials(credentials *Credentials, base, label string) error {
 	return validateRepositoryCredentialFields(credentials, base, label, true)
 }

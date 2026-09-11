@@ -7,7 +7,7 @@ func (configured profileConfig) profile(name string) Profile {
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
-		Schedule: configured.Schedule, Forget: configured.Forget}
+		Schedule: configured.Schedule, Forget: configured.Forget, Copies: configured.Copies}
 	if configured.InitializeRepository != nil {
 		value.InitializeRepository = *configured.InitializeRepository
 	}

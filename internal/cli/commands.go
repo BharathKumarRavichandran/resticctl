@@ -269,7 +269,18 @@ func (cli *commandLine) runGroupMember(ctx context.Context, configDir string, ba
 		return app.RunCheck(ctx, cli.newRunner, configDir, backupProfile, cli.now)
 	case schedule.ActionForget:
 		return cli.runForget(ctx, configDir, backupProfile, dryRun, prune)
-	case schedule.ActionPrune, schedule.ActionCopy:
+	case schedule.ActionCopy:
+		targets := backupProfile.CopyTargetNames()
+		if len(targets) == 0 {
+			return fmt.Errorf("profile %s has no copy targets", backupProfile.Name)
+		}
+		for _, target := range targets {
+			if err := app.RunCopy(ctx, cli.newRunner, configDir, backupProfile, target, dryRun, cli.stdout, cli.now); err != nil {
+				return fmt.Errorf("copy target %s: %w", target, err)
+			}
+		}
+		return nil
+	case schedule.ActionPrune:
 		var arguments []string
 		if dryRun {
 			arguments = []string{"--dry-run"}
@@ -430,6 +441,52 @@ func (cli *commandLine) backupCommand() *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview the backup without writing a snapshot")
+	return command
+}
+
+func (cli *commandLine) copyCommand() *cobra.Command {
+	var dryRun, all bool
+	command := &cobra.Command{
+		Use: "copy <profile> [target]", Short: "Copy snapshots to secondary repositories", Args: cobra.RangeArgs(1, 2),
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			backupProfile, err := profile.Load(profile.Dir(configDir), arguments[0])
+			if err != nil {
+				return err
+			}
+			if len(backupProfile.Copies) == 0 {
+				return fmt.Errorf("profile %s has no copy targets", backupProfile.Name)
+			}
+			if all && len(arguments) == 2 {
+				return errors.New("a copy target must not be combined with --all")
+			}
+			var targets []string
+			switch {
+			case all:
+				targets = backupProfile.CopyTargetNames()
+			case len(arguments) == 2:
+				targets = []string{arguments[1]}
+			case len(backupProfile.Copies) == 1:
+				for target := range backupProfile.Copies {
+					targets = []string{target}
+				}
+			default:
+				return errors.New("copy target is required when a profile has multiple targets; specify a target or --all")
+			}
+			for _, target := range targets {
+				if err := app.RunCopy(command.Context(), cli.newRunner, configDir, backupProfile, target, dryRun, cli.stdout, cli.now); err != nil {
+					return fmt.Errorf("copy target %s: %w", target, err)
+				}
+			}
+			return nil
+		}),
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview copies without changing a repository")
+	command.Flags().BoolVar(&all, "all", false, "copy to every configured target")
 	return command
 }
 

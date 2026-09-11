@@ -23,6 +23,14 @@ func (runner *recordingRunner) Run(_ context.Context, config restic.Config, argu
 }
 
 func (runner *recordingRunner) RunHook(_ context.Context, arguments []string) error { return nil }
+func (runner *recordingRunner) Copy(_ context.Context, config restic.CopyConfig, arguments []string) error {
+	runner.runs = append(runner.runs, recordedRun{config: config.Destination, arguments: append([]string{"copy"}, arguments...)})
+	return nil
+}
+func (runner *recordingRunner) InitCopyDestination(_ context.Context, config restic.CopyConfig, _ bool) error {
+	runner.runs = append(runner.runs, recordedRun{config: config.Destination, arguments: []string{"init"}})
+	return nil
+}
 func (runner *recordingRunner) RunDatabase(_ context.Context, arguments []string, _ map[string]string, cwd string) error {
 	runner.runs = append(runner.runs, recordedRun{arguments: append([]string(nil), arguments...), cwd: cwd})
 	return createDatabaseArtifact(arguments, cwd)

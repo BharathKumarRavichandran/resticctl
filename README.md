@@ -232,6 +232,39 @@ Restic version or backend does not emit the expected diagnostic, run
 `resticctl init` manually. A second probe avoids racing another process that
 initializes the repository concurrently.
 
+Named `copies` replicate this profile's snapshots to independently
+authenticated secondary repositories:
+
+```json
+{
+  "copies": {
+    "offsite": {
+      "repository": "b2:company-offsite:/restic",
+      "credentials_file": "home.offsite.credentials.json",
+      "initialize_repository": true,
+      "copy_chunker_params": true,
+      "snapshot_ids": [],
+      "hosts": [],
+      "tags": [],
+      "paths": [],
+      "args": []
+    }
+  }
+}
+```
+
+The target credentials file uses the same private repository credential shape
+as the primary credentials file. Copy credential-file selections are not
+inherited; child profiles must bind credentials for every inherited target.
+Run one target with
+`resticctl copy home offsite`, omit the target when exactly one exists, or use
+`resticctl copy home --all`. Every copy automatically selects the profile tag;
+configured snapshot IDs and filters narrow that selection further. Source and
+destination password sources are materialized separately and never placed
+directly in command arguments. An existing aggregate copy schedule runs every
+target. Direct runs use the profile-wide action lock and maintain status per
+target, readable with `resticctl status home --action copy --target offsite`.
+
 The optional `runtime` object applies host-safety policy to backup, forget,
 check, and recorded Restic jobs:
 

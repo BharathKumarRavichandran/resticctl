@@ -35,6 +35,16 @@ func RedactedResolvedProfile(value Profile) ResolvedProfile {
 	value.CredentialsFile = redactConfigured(value.CredentialsFile)
 	value.PrivateFile = redactConfigured(value.PrivateFile)
 	value.Monitoring = redactedMonitoring(value.Monitoring)
+	if value.Copies != nil {
+		copies := make(map[string]CopyTarget, len(value.Copies))
+		for name, target := range value.Copies {
+			target.Repository = redactRepository(target.Repository)
+			target.CredentialsFile = redactConfigured(target.CredentialsFile)
+			target.Credentials = RepositoryCredentials{}
+			copies[name] = target
+		}
+		value.Copies = copies
+	}
 	value.SQLiteDatabases = append([]SQLiteDatabase(nil), value.SQLiteDatabases...)
 	value.PostgreSQLDatabases = append([]PostgreSQLDatabase(nil), value.PostgreSQLDatabases...)
 	value.MongoDBDatabases = append([]MongoDBDatabase(nil), value.MongoDBDatabases...)

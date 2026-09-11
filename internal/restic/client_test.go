@@ -15,6 +15,7 @@ type helperResult struct {
 	Arguments       []string `json:"arguments"`
 	InputBytes      int      `json:"input_bytes"`
 	Password        string   `json:"password"`
+	FromPassword    string   `json:"from_password"`
 	PasswordExisted bool     `json:"password_existed"`
 	StdoutIsPipe    bool     `json:"stdout_is_pipe"`
 }
@@ -42,6 +43,13 @@ func TestResticHelper(t *testing.T) {
 			}
 			result.Password = string(content)
 			result.PasswordExisted = true
+		}
+		if argument == "--from-password-file" && index+1 < len(arguments) {
+			content, err := os.ReadFile(arguments[index+1])
+			if err != nil {
+				os.Exit(3)
+			}
+			result.FromPassword = string(content)
 		}
 	}
 	encoded, _ := json.Marshal(result)
@@ -72,6 +80,44 @@ func TestResticHelper(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestCopyUsesIndependentPasswordFiles(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "restic.json")
+	client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdout: io.Discard, stderr: io.Discard}
+	config := CopyConfig{
+		Source:      Config{Repository: "local:source", PasswordValue: "source-secret", Environment: map[string]string{"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_LOG": logPath}},
+		Destination: Config{Repository: "local:destination", PasswordValue: "destination-secret"},
+	}
+	if err := client.Copy(context.Background(), config, []string{"--tag", "profile:home"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result helperResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Password != "destination-secret" || result.FromPassword != "source-secret" {
+		t.Fatalf("passwords = %q, %q", result.Password, result.FromPassword)
+	}
+	joined := strings.Join(result.Arguments, " ")
+	if !strings.Contains(joined, "--repo local:destination") || !strings.Contains(joined, "copy --from-repo local:source") || !strings.Contains(joined, "--tag profile:home") {
+		t.Fatalf("arguments = %q", joined)
+	}
+}
+
+func TestCopyRejectsConflictingCredentialEnvironment(t *testing.T) {
+	client := &Client{}
+	err := client.Copy(context.Background(), CopyConfig{
+		Source:      Config{Environment: map[string]string{"AWS_PROFILE": "primary"}},
+		Destination: Config{Environment: map[string]string{"AWS_PROFILE": "secondary"}},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "AWS_PROFILE") && !strings.Contains(err.Error(), "aws_profile") {
+		t.Fatalf("Copy error = %v", err)
+	}
 }
 
 func TestRecoverRepositoryLocksChecksAgeActivityAndDryRun(t *testing.T) {

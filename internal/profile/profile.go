@@ -172,6 +172,23 @@ type ForgetSchedule struct {
 	Prune    bool   `json:"prune"`
 }
 
+type CopyTarget struct {
+	Repository           string                `json:"repository"`
+	CredentialsFile      string                `json:"credentials_file,omitempty"`
+	InitializeRepository bool                  `json:"initialize_repository,omitempty"`
+	CopyChunkerParams    bool                  `json:"copy_chunker_params,omitempty"`
+	SnapshotIDs          []string              `json:"snapshot_ids,omitempty"`
+	Hosts                []string              `json:"hosts,omitempty"`
+	Tags                 []string              `json:"tags,omitempty"`
+	Paths                []string              `json:"paths,omitempty"`
+	Args                 []string              `json:"args,omitempty"`
+	RunBefore            []Hook                `json:"run_before,omitempty"`
+	RunAfter             []Hook                `json:"run_after,omitempty"`
+	RunAfterFail         []Hook                `json:"run_after_fail,omitempty"`
+	RunFinally           []Hook                `json:"run_finally,omitempty"`
+	Credentials          RepositoryCredentials `json:"-"`
+}
+
 const DefaultHookTimeout = 5 * time.Minute
 
 type Hook struct {
@@ -290,6 +307,7 @@ type Profile struct {
 	RunFinally           []Hook                   `json:"run_finally"`
 	Schedule             *Schedule                `json:"schedule,omitempty"`
 	Forget               *ForgetSchedule          `json:"forget,omitempty"`
+	Copies               map[string]CopyTarget    `json:"copies,omitempty"`
 	Monitoring           Monitoring               `json:"monitoring,omitempty"`
 	Runtime              Runtime                  `json:"runtime,omitempty"`
 	Credentials          Credentials              `json:"-"`

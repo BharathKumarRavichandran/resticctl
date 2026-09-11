@@ -63,6 +63,35 @@ func TestRecorderRejectsOverlappingBackup(t *testing.T) {
 	}
 }
 
+func TestCopyTargetsUseProfileLockAndIndependentStatus(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Now()
+	offsite, err := BeginCopyTarget(directory, "home", "offsite", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BeginCopyTarget(directory, "home", "archive", now); !errors.Is(err, ErrLocked) {
+		t.Fatalf("overlapping target error = %v", err)
+	}
+	if err := offsite.Finish(nil, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := BeginCopyTarget(directory, "home", "archive", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Finish(nil, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := LoadCopyTarget(directory, "home", "offsite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Profile != "home" || status.TargetType != "copy" || status.TargetName != "offsite" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestRecorderRejectsOverlappingActions(t *testing.T) {
 	directory := t.TempDir()
 	backup, err := BeginAction(directory, "example", "backup", time.Now())

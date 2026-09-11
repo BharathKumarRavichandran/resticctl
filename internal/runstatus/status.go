@@ -21,6 +21,12 @@ func validateTargetName(name string) error {
 	if strings.HasPrefix(name, "group+") {
 		return profile.ValidateName(strings.TrimPrefix(name, "group+"))
 	}
+	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
+		if err := profile.ValidateName(parts[0]); err != nil {
+			return err
+		}
+		return profile.ValidateName(parts[1])
+	}
 	return profile.ValidateName(name)
 }
 
@@ -102,6 +108,55 @@ func BeginGroupAction(configDir, name, action string, now time.Time) (*Recorder,
 		}
 	}
 	return recorder, err
+}
+
+func BeginCopyTarget(configDir, profileName, target string, now time.Time) (*Recorder, error) {
+	return beginCopyTarget(configDir, profileName, target, now, false)
+}
+
+// BeginCopyTargetUnderProfileLock records a copy target when the caller
+// already holds the profile-wide action lock, as ScheduledRun does.
+func BeginCopyTargetUnderProfileLock(configDir, profileName, target string, now time.Time) (*Recorder, error) {
+	return beginCopyTarget(configDir, profileName, target, now, true)
+}
+
+func beginCopyTarget(configDir, profileName, target string, now time.Time, profileLocked bool) (*Recorder, error) {
+	key := profileName + "+copy+" + target
+	var release func() error
+	var path string
+	if profileLocked {
+		if err := validateTargetName(key); err != nil {
+			return nil, err
+		}
+		directory := filepath.Join(configDir, "status")
+		path = filepath.Join(directory, statusKey(key, "copy")+".json")
+		release = func() error { return nil }
+	} else {
+		var err error
+		release, path, err = acquireAction(context.Background(), configDir, profileName, "copy", 0)
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(filepath.Dir(path), statusKey(key, "copy")+".json")
+	}
+	lastSuccess, err := loadLastSuccess(configDir, key, "copy")
+	if err != nil {
+		_ = release()
+		return nil, err
+	}
+	recorder := &Recorder{
+		path: path, started: now, release: release,
+		status: Status{Profile: profileName, TargetType: "copy", TargetName: target, Action: "copy", Command: "copy", State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
+	}
+	if err := write(recorder.path, recorder.status); err != nil {
+		_ = recorder.release()
+		return nil, err
+	}
+	return recorder, nil
+}
+
+func LoadCopyTarget(configDir, profileName, target string) (Status, error) {
+	return LoadAction(configDir, profileName+"+copy+"+target, "copy")
 }
 
 func BeginGroupActionIf(ctx context.Context, configDir, name, action string, wait time.Duration, now func() time.Time, shouldRun func(*time.Time) (bool, error)) (*Recorder, bool, error) {
@@ -265,8 +320,15 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	if err := json.Unmarshal(data, &status); err != nil {
 		return Status{}, fmt.Errorf("cannot decode run status %s: %w", path, err)
 	}
-	if status.Profile != name {
-		return Status{}, fmt.Errorf("run status %s has profile %q, expected %q", path, status.Profile, name)
+	expectedProfile := name
+	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
+		expectedProfile = parts[0]
+		if status.TargetType != "copy" || status.TargetName != parts[1] {
+			return Status{}, fmt.Errorf("run status %s has inconsistent copy target identity", path)
+		}
+	}
+	if status.Profile != expectedProfile {
+		return Status{}, fmt.Errorf("run status %s has profile %q, expected %q", path, status.Profile, expectedProfile)
 	}
 	if status.Action == "" {
 		status.Action = "backup"
@@ -299,7 +361,7 @@ func LoadGroupAction(configDir, name, action string) (Status, error) {
 
 // LoadHistory returns completed records newest first.
 func LoadHistory(configDir, name, action string) ([]Status, error) {
-	if err := profile.ValidateName(name); err != nil {
+	if err := validateTargetName(name); err != nil {
 		return nil, err
 	}
 	if err := validateAction(action); err != nil {
@@ -316,6 +378,19 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	var statuses []Status
 	if err := json.Unmarshal(data, &statuses); err != nil {
 		return nil, fmt.Errorf("cannot decode status history %s: %w", path, err)
+	}
+	return statuses, nil
+}
+
+func LoadCopyTargetHistory(configDir, profileName, target string) ([]Status, error) {
+	statuses, err := LoadHistory(configDir, profileName+"+copy+"+target, "copy")
+	if err != nil {
+		return nil, err
+	}
+	for i := range statuses {
+		if statuses[i].Profile != profileName || statuses[i].TargetType != "copy" || statuses[i].TargetName != target || statuses[i].Action != "copy" {
+			return nil, errors.New("copy run history has inconsistent target identity")
+		}
 	}
 	return statuses, nil
 }
