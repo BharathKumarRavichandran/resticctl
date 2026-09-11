@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"resticctl/internal/app"
+	"resticctl/internal/group"
 	"resticctl/internal/profile"
 	"resticctl/internal/runstatus"
 	"resticctl/internal/schedule"
@@ -113,6 +114,147 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 	})
 	if statusCode != 1 || !errors.Is(err, schedule.ErrDrift) {
 		t.Fatalf("drift status=%d error=%v", statusCode, err)
+	}
+}
+
+func TestScheduleInstallWarnsWhenScheduleIsNotDeclared(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	executor := &recordingScheduleExecutor{}
+	var stderr bytes.Buffer
+	cli := newTestCommandLine(io.Discard, &stderr)
+	cli.newScheduleManager = func() schedule.Manager { return newCronManager(executor, time.Now) }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	status, err := cli.run(context.Background(), []string{"schedule", "install", "example", "--cron", "@daily", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("status=%d error=%v", status, err)
+	}
+	if !strings.Contains(stderr.String(), "changed or removed") || !strings.Contains(stderr.String(), "--write-profile") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestScheduleInstallWriteProfilePersistsProfileAndGroupSchedules(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	writeGroupCLIProfile(t, directory, "home")
+	writeCLIGroup(t, directory, `{"profiles":["home"]}`)
+	executor := &recordingScheduleExecutor{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return newCronManager(executor, time.Now) }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	status, err := cli.run(context.Background(), []string{"schedule", "install", "example", "--cron", "@daily", "--catch-up", "--write-profile", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("profile status=%d error=%v", status, err)
+	}
+	configured, err := profile.Load(profile.Dir(directory), "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Schedule == nil || configured.Schedule.Cron != "0 0 * * *" || !configured.Schedule.CatchUp {
+		t.Fatalf("profile schedule = %#v", configured.Schedule)
+	}
+
+	status, err = cli.run(context.Background(), []string{"schedule", "install", "daily", "forget", "--group", "--cron", "0 1 * * *", "--prune", "--write-profile", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("group status=%d error=%v", status, err)
+	}
+	groupConfig, err := group.Load(directory, "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := groupConfig.Schedules["forget"]; got.Cron != "0 1 * * *" || !got.Prune {
+		t.Fatalf("group schedule = %#v", got)
+	}
+}
+
+func TestScheduleInstallWriteProfileRejectsTransientAndUnrepresentableOptions(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return newCronManager(&recordingScheduleExecutor{}, time.Now) }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	for _, arguments := range [][]string{
+		{"schedule", "install", "example", "--cron", "@daily", "--write-profile", "--dry-run", "--config-dir", directory},
+		{"schedule", "install", "example", "check", "--cron", "@daily", "--write-profile", "--config-dir", directory},
+		{"schedule", "install", "example", "--calendar", "@daily", "--calendar", "@weekly", "--write-profile", "--config-dir", directory},
+	} {
+		if status, err := cli.run(context.Background(), arguments); status == 0 || err == nil {
+			t.Fatalf("arguments=%v status=%d error=%v", arguments, status, err)
+		}
+	}
+}
+
+func TestScheduleInstallWriteProfilePreflightsBeforeChangingConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	path := filepath.Join(profile.Dir(directory), "example.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return newCronManager(&recordingScheduleExecutor{}, time.Now) }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	status, err := cli.run(context.Background(), []string{
+		"schedule", "install", "example", "--cron", "@daily", "--backend", "launchd",
+		"--require-network", "--write-profile", "--config-dir", directory,
+	})
+	if status == 0 || err == nil || !strings.Contains(err.Error(), "cannot write schedule that cannot be installed") {
+		t.Fatalf("status=%d error=%v", status, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("profile changed after failed preflight:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestScheduleInstallExplicitCalendarOverridesProfileAndUsesGroupDeclaration(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	setCLIProfileSchedule(t, directory, &profile.Schedule{Cron: "@daily", Backend: "cron", CatchUp: true})
+	writeGroupCLIProfile(t, directory, "home")
+	writeCLIGroup(t, directory, `{"profiles":["home"],"schedules":{"check":{"cron":"@weekly","backend":"cron","catch_up":true}}}`)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	var stderr bytes.Buffer
+	cli := newTestCommandLine(io.Discard, &stderr)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	cli.executable = func() (string, error) { return "/usr/local/bin/resticctl", nil }
+
+	status, err := cli.run(context.Background(), []string{"schedule", "install", "example", "--calendar", "@weekly", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("profile status=%d error=%v", status, err)
+	}
+	installed, err := schedule.Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installed.Expressions) != 1 || installed.Expression != "0 0 * * 0" {
+		t.Fatalf("profile expressions = %#v", installed.Expressions)
+	}
+	if !strings.Contains(stderr.String(), "changed or removed") {
+		t.Fatalf("override warning = %q", stderr.String())
+	}
+
+	stderr.Reset()
+	status, err = cli.run(context.Background(), []string{"schedule", "install", "daily", "check", "--group", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("group status=%d error=%v", status, err)
+	}
+	installed, err = schedule.LoadTargetAction(directory, schedule.TargetGroup, "daily", "check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.Expression != "0 0 * * 0" || !installed.CatchUp || stderr.Len() != 0 {
+		t.Fatalf("group schedule = %#v, stderr = %q", installed, stderr.String())
 	}
 }
 

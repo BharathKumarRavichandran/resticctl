@@ -29,7 +29,7 @@ func (cli *commandLine) scheduleCommand() *cobra.Command {
 func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	var expression, backend string
 	var calendars []string
-	var catchUp, prune, dryRun, noStart, noEnable, network, acPower, groupTarget bool
+	var catchUp, prune, dryRun, noStart, noEnable, network, acPower, groupTarget, writeProfile bool
 	var permission, cronFile, user, priority, logPath, lockMode, lockWait string
 	command := &cobra.Command{
 		Use:   "install <profile> [backup|check|forget|prune|copy]",
@@ -49,8 +49,9 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				return err
 			}
 			var backupProfile profile.Profile
+			var configuredGroup group.Group
 			if groupTarget {
-				if _, _, _, err = cli.loadGroup(arguments[0]); err != nil {
+				if _, configuredGroup, _, err = cli.loadGroup(arguments[0]); err != nil {
 					return err
 				}
 			} else if backupProfile, err = profile.Load(profile.Dir(configDir), arguments[0]); err != nil {
@@ -62,7 +63,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				}
 			}
 			if !groupTarget && action == schedule.ActionBackup && backupProfile.Schedule != nil {
-				if !command.Flags().Changed("cron") {
+				if !command.Flags().Changed("cron") && !command.Flags().Changed("calendar") {
 					expression = backupProfile.Schedule.Cron
 				}
 				if !command.Flags().Changed("backend") {
@@ -73,7 +74,7 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				}
 			}
 			if !groupTarget && action == schedule.ActionForget && backupProfile.Forget != nil {
-				if !command.Flags().Changed("cron") {
+				if !command.Flags().Changed("cron") && !command.Flags().Changed("calendar") {
 					expression = backupProfile.Forget.Cron
 				}
 				if !command.Flags().Changed("backend") {
@@ -84,6 +85,22 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 				}
 				if !command.Flags().Changed("prune") {
 					prune = backupProfile.Forget.Prune
+				}
+			}
+			if groupTarget {
+				if declared, ok := configuredGroup.Schedules[action]; ok {
+					if !command.Flags().Changed("cron") && !command.Flags().Changed("calendar") {
+						expression = declared.Cron
+					}
+					if !command.Flags().Changed("backend") {
+						backend = declared.Backend
+					}
+					if !command.Flags().Changed("catch-up") {
+						catchUp = declared.CatchUp
+					}
+					if !command.Flags().Changed("prune") {
+						prune = declared.Prune
+					}
 				}
 			}
 			if expression == "" {
@@ -101,19 +118,59 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("cannot find resticctl executable: %w", err)
 			}
-			state, err := cli.newScheduleManager().InstallSpec(command.Context(), schedule.Spec{
+			spec := schedule.Spec{
 				Name: arguments[0], TargetType: targetType(groupTarget), Action: action, Expressions: calendars, Backend: backend, Executable: executable, ConfigDir: configDir,
 				CatchUp: catchUp, Prune: prune, DryRun: dryRun, Permission: permission, CronFile: cronFile, User: user,
 				Priority: priority, Log: logPath, LockMode: lockMode, LockWait: lockWait, Enabled: !noEnable, Start: !noStart,
 				Network: network, ACPower: acPower,
-			})
+			}
+			manager := cli.newScheduleManager()
+			if writeProfile {
+				if dryRun {
+					return errors.New("--write-profile cannot be combined with --dry-run")
+				}
+				if !groupTarget && action == schedule.ActionForget && len(backupProfile.ForgetArgs) == 0 {
+					return errors.New("cannot write a forget schedule without non-empty forget_args")
+				}
+				if len(calendars) != 1 {
+					return errors.New("--write-profile requires exactly one calendar expression")
+				}
+				preflight := spec
+				preflight.DryRun = true
+				if _, err := manager.InstallSpec(command.Context(), preflight); err != nil {
+					return fmt.Errorf("cannot write schedule that cannot be installed: %w", err)
+				}
+				normalized, normalizeErr := cronexpr.Normalize(calendars[0])
+				if normalizeErr != nil {
+					return normalizeErr
+				}
+				if groupTarget {
+					_, err = group.WriteSchedule(configDir, arguments[0], action, group.Schedule{Cron: normalized, Backend: backend, CatchUp: catchUp, Prune: prune})
+				} else if action == schedule.ActionBackup {
+					_, err = profile.WriteBackupSchedule(profile.Dir(configDir), arguments[0], profile.Schedule{Cron: normalized, Backend: backend, CatchUp: catchUp})
+				} else if action == schedule.ActionForget {
+					_, err = profile.WriteForgetSchedule(profile.Dir(configDir), arguments[0], profile.ForgetSchedule{Cron: normalized, Backend: backend, CatchUp: catchUp, Prune: prune})
+				} else {
+					return fmt.Errorf("profile JSON cannot declare a %s schedule; use a group schedule or install it without --write-profile", action)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			state, err := manager.InstallSpec(command.Context(), spec)
 			if err != nil {
 				return err
 			}
 			if dryRun {
 				return writeOutput(cli.stdout, "%s", state.Rendered)
 			}
-			return writeOutput(cli.stdout, "Installed %s %s schedule for %s %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.TargetType, state.TargetName, strings.Join(state.Expressions, ", "), state.CatchUp)
+			if err := writeOutput(cli.stdout, "Installed %s %s schedule for %s %s: %s (catch-up: %t)\n", state.Backend, state.Action, state.TargetType, state.TargetName, strings.Join(state.Expressions, ", "), state.CatchUp); err != nil {
+				return err
+			}
+			if !writeProfile && !scheduleMatchesDeclaration(backupProfile, configuredGroup, state, groupTarget) {
+				return writeOutput(cli.stderr, "Warning: this schedule is not declared with these settings in the %s configuration and may be changed or removed by `schedule reconcile`; use --write-profile to persist it.\n", state.TargetType)
+			}
+			return nil
 		}),
 	}
 	command.Flags().StringVar(&expression, "cron", "", "five-field cron expression")
@@ -134,7 +191,37 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 	command.Flags().BoolVar(&acPower, "require-ac-power", false, "run only on AC power where supported")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "render scheduler changes without installing")
 	command.Flags().BoolVar(&groupTarget, "group", false, "schedule a named group instead of a profile")
+	command.Flags().BoolVar(&writeProfile, "write-profile", false, "persist representable schedule settings in the profile or group JSON")
 	return command
+}
+
+func scheduleMatchesDeclaration(backupProfile profile.Profile, configuredGroup group.Group, installed schedule.State, groupTarget bool) bool {
+	if len(installed.Expressions) != 1 {
+		return false
+	}
+	if groupTarget {
+		configured, ok := configuredGroup.Schedules[installed.Action]
+		if !ok {
+			return false
+		}
+		expression, err := cronexpr.Normalize(configured.Cron)
+		backend := configured.Backend
+		if backend == "" {
+			backend = schedule.BackendAuto
+		}
+		return err == nil && expression == installed.Expression && scheduleBackendMatches(backend, installed.Backend) && configured.CatchUp == installed.CatchUp && configured.Prune == installed.Prune
+	}
+	if installed.Action == schedule.ActionBackup && backupProfile.Schedule != nil {
+		return backupProfile.Schedule.Cron == installed.Expression && scheduleBackendMatches(backupProfile.Schedule.Backend, installed.Backend) && backupProfile.Schedule.CatchUp == installed.CatchUp
+	}
+	if installed.Action == schedule.ActionForget && backupProfile.Forget != nil {
+		return backupProfile.Forget.Cron == installed.Expression && scheduleBackendMatches(backupProfile.Forget.Backend, installed.Backend) && backupProfile.Forget.CatchUp == installed.CatchUp && backupProfile.Forget.Prune == installed.Prune
+	}
+	return false
+}
+
+func scheduleBackendMatches(configured, installed string) bool {
+	return configured == schedule.BackendAuto || configured == installed
 }
 
 func targetType(groupTarget bool) string {

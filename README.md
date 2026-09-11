@@ -531,7 +531,7 @@ resticctl check <profile>
 resticctl forget <profile> [--dry-run] [--prune]
 resticctl restore <profile> <snapshot> <target> [--dry-run]
 resticctl status <profile> [--action backup|check|forget|prune|copy] [--history N] [--json]
-resticctl schedule install <profile> [backup|check|forget|prune|copy] [--calendar "<expression>" ...] [--backend auto|cron|launchd|systemd|windows] [--catch-up] [--dry-run]
+resticctl schedule install <profile> [backup|check|forget|prune|copy] [--calendar "<expression>" ...] [--backend auto|cron|launchd|systemd|windows] [--catch-up] [--write-profile] [--dry-run]
 resticctl schedule reconcile <profile> [--dry-run]
 resticctl schedule reconcile --all [--dry-run]
 resticctl schedule list [profile] [--json]
@@ -721,6 +721,22 @@ Install and inspect that job separately:
 resticctl schedule install <profile> forget
 resticctl schedule status <profile> forget
 ```
+
+`schedule install` changes only the native scheduler by default and warns when
+`schedule reconcile` could change or remove the job. Use `--write-profile` to
+also persist `cron`, `backend`, `catch_up`, and forget `prune` settings:
+
+```sh
+resticctl schedule install <profile> backup --cron "0 2 * * *" --catch-up --write-profile
+resticctl schedule install <group> forget --group --cron "0 3 * * *" --prune --write-profile
+```
+
+Profiles support backup and forget schedules; groups support all scheduled
+actions. Since the JSON schema stores one cron expression per action,
+`--write-profile` rejects multiple calendars and cannot be combined with
+`--dry-run`. Scheduler policy flags remain installation-only and are preserved
+by reconciliation. Credentials and other execution or display flags are never
+written. Inherited profiles receive only the requested child override.
 
 Set `prune` only when scheduled pruning is intentional; pruning is more
 resource-intensive and requires repository delete access.

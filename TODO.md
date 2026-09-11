@@ -87,6 +87,25 @@ shell-execution behavior exactly.
 - [x] Record status independently for backup, check, forget, prune, and copy.
 - [x] Reconcile all schedules declared by a profile in one operation.
 - [x] Reconcile schedules for all profiles with an explicit `--all` operation.
+- [x] Warn when `schedule install` creates a schedule that is not declared in
+  the profile and may therefore be removed by `schedule reconcile`.
+- [x] Add an explicit `schedule install --write-profile` option for the
+  currently exposed CLI flags that map to profile-backed backup and forget
+  schedule settings.
+- [x] Extend explicit configuration writing to group schedules. Group creation
+  already persists membership and failure policy in group JSON.
+- [x] Keep one-shot execution and presentation options such as `--dry-run`,
+  snapshot selectors, output paths, `--json`, and status history out of profile
+  configuration; never persist credentials or other secret flag values.
+- [x] Implement profile and group updates through an atomic configuration
+  writer with validation, private-file boundaries, unknown-field handling, and
+  actionable errors for generated or read-only files.
+- [x] Define safe write semantics for inherited profiles so only intentional
+  child overrides are stored and resolved parent configuration is never
+  flattened into the child.
+- [x] Document which CLI options are transient or persistable, warn when a
+  configuration-backed override is transient where that may be surprising,
+  and add round-trip, inheritance, failure, and permission tests.
 
 ## Phase 6: More direct Restic flag support
 
