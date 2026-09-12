@@ -171,6 +171,10 @@ shell-execution behavior exactly.
 - [x] Add restore guidance and matching restore commands for every backend.
 - [x] Add fake-runner tests for local and remote configurations without
   contacting real database servers.
+- [x] Add SQL Server support using `sqlcmd` and native `BACKUP DATABASE`
+  snapshots staged through a shared filesystem path.
+- [x] Keep SQL Server credentials out of command-line arguments and add
+  validation, cleanup, restore guidance, and fake-runner tests.
 
 ## Phase 8: Configuration formats and composition
 
@@ -292,19 +296,19 @@ shell-execution behavior exactly.
 
 ## Phase 14: Secondary repositories and copy workflows
 
-- [ ] Add a declarative `copy` target with an independently configured
+- [x] Add a declarative `copy` target with an independently configured
   destination repository and credential source.
-- [ ] Keep source and destination credentials isolated and out of command-line
+- [x] Keep source and destination credentials isolated and out of command-line
   arguments, generated schedules, logs, and status files.
-- [ ] Allow copy filters and snapshot selectors to be stored in the profile.
-- [ ] Optionally initialize a missing destination repository.
-- [ ] Support initialization with `copy-chunker-params` from the source
+- [x] Allow copy filters and snapshot selectors to be stored in the profile.
+- [x] Optionally initialize a missing destination repository.
+- [x] Support initialization with `copy-chunker-params` from the source
   repository.
-- [ ] Add copy-specific hooks, HTTP notifications, locking, status, and
+- [x] Add copy-specific hooks, HTTP notifications, locking, status, and
   schedules.
-- [ ] Validate source/destination combinations and refuse accidental copying to
+- [x] Validate source/destination combinations and refuse accidental copying to
   the same repository where it can be detected.
-- [ ] Add fake two-repository tests without contacting a real repository.
+- [x] Add fake two-repository tests without contacting a real repository.
 
 ## Phase 15: User and developer tooling
 
@@ -316,27 +320,25 @@ shell-execution behavior exactly.
 - [ ] Generate a complete configuration reference from the profile model.
 - [x] Add `show` output for resolved profiles with credentials and sensitive
   values redacted. Extend it to groups when groups are implemented.
-- [ ] Add integrated help for both resticctl commands and the installed Restic
-  command/flags.
+- [x] Add integrated resticctl help and pass through command/flag help from the
+  installed Restic version.
 - [ ] Keep Bash, Zsh, Fish, and PowerShell completion generation tested.
 - [ ] Add configuration upgrade tooling for deprecated fields and future schema
   versions.
-- [ ] Add documentation that maps resticprofile concepts to their resticctl
-  equivalents and identifies deliberate security differences.
 
 ## Compatibility and quality
 
-- [ ] Preserve the current one-profile-per-JSON-file format as the default.
-- [ ] Keep native SQLite online backup and integrity checking enabled for
+- [x] Preserve the current one-profile-per-JSON-file format as the default.
+- [x] Keep native SQLite online backup and integrity checking enabled for
   configured SQLite databases.
-- [ ] Keep credentials in private files or direct password commands.
-- [ ] Keep hooks and producer commands as explicit argument vectors; do not add
+- [x] Keep credentials in private files or direct password commands.
+- [x] Keep hooks and producer commands as explicit argument vectors; do not add
   implicit shell evaluation for parity.
-- [ ] Clean temporary SQLite snapshots and password files on normal,
+- [x] Clean temporary SQLite snapshots and password files on normal,
   signaled, and failure exits where possible.
-- [ ] Clean PostgreSQL and MongoDB staging on normal, signaled, and failure exits.
-- [ ] Treat configuration rendering, status, monitoring, logging, and scheduler
+- [x] Clean PostgreSQL and MongoDB staging on normal, signaled, and failure exits.
+- [x] Treat configuration rendering, status, monitoring, logging, and scheduler
   generation as secret-bearing surfaces and test their redaction.
-- [ ] Update README examples and embedded configuration templates as features
+- [x] Update README examples and embedded configuration templates as features
   are implemented.
-- [ ] Run `go test ./...` for each completed phase.
+- [x] Run `go test ./...` for each completed phase.
