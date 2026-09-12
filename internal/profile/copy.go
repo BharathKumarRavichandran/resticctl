@@ -77,7 +77,7 @@ func validateCopyTarget(name string, target *CopyTarget) error {
 			if field == "args" && IsReservedOption(item) {
 				return fmt.Errorf("copies.%s.args must not override repository or password options: %s", name, item)
 			}
-			if field == "args" && isCopyDryRunOption(item) {
+			if field == "args" && IsDryRunOption(item) {
 				return fmt.Errorf("copies.%s.args must not set workflow-owned dry-run option: %s", name, item)
 			}
 		}
@@ -117,11 +117,6 @@ func validateHooks(field string, hooks []Hook) error {
 		}
 	}
 	return nil
-}
-
-func isCopyDryRunOption(argument string) bool {
-	return argument == "--dry-run" || argument == "-n" ||
-		strings.HasPrefix(argument, "--dry-run=") || strings.HasPrefix(argument, "-n=")
 }
 
 func validateCopyEnvironment(source, destination map[string]string, name string) error {

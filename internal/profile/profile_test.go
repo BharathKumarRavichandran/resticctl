@@ -617,6 +617,25 @@ func TestLoadResolvesNestedInheritance(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsTagsThatLookLikeShortOptions(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+          "repository":"local:test",
+          "credentials_file":"credentials.json",
+          "backup_paths":["."],
+          "tags":["-production","-release"]
+        }`)
+
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(loaded.Tags, ","); got != "-production,-release" {
+		t.Fatalf("tags = %q", got)
+	}
+}
+
 func TestLoadMergesAndValidatesPersistentResticCommands(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)

@@ -35,7 +35,6 @@ func TestLoadRejectsUnsafeCopyTargets(t *testing.T) {
 		{"missing credentials", `"repository":"local:secondary"`, "credentials_file is required"},
 		{"reserved argument", `"repository":"local:secondary","credentials_file":"target.json","args":["--from-repo=evil"]`, "must not override"},
 		{"dry-run argument", `"repository":"local:secondary","credentials_file":"target.json","args":["--dry-run"]`, "workflow-owned dry-run"},
-		{"disabled dry-run argument", `"repository":"local:secondary","credentials_file":"target.json","args":["--dry-run=false"]`, "workflow-owned dry-run"},
 		{"chunker without init", `"repository":"local:secondary","credentials_file":"target.json","copy_chunker_params":true`, "requires initialize"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -48,6 +47,29 @@ func TestLoadRejectsUnsafeCopyTargets(t *testing.T) {
 				t.Fatalf("Load error = %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadAllowsDisabledCopyDryRunArgument(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "source.json"), `{"password":{"value":"source"}}`)
+	writePrivate(t, filepath.Join(directory, "target.json"), `{"password":{"value":"target"}}`)
+	writePrivate(t, filepath.Join(directory, "home.json"), `{
+          "repository":"local:primary",
+          "credentials_file":"source.json",
+          "copies":{"offsite":{
+            "repository":"local:secondary",
+            "credentials_file":"target.json",
+            "args":["--dry-run=false"]
+          }}
+        }`)
+
+	loaded, err := Load(directory, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Copies["offsite"].Args; len(got) != 1 || got[0] != "--dry-run=false" {
+		t.Fatalf("copy arguments = %q", got)
 	}
 }
 

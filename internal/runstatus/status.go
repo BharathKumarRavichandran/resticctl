@@ -320,15 +320,22 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	if err := json.Unmarshal(data, &status); err != nil {
 		return Status{}, fmt.Errorf("cannot decode run status %s: %w", path, err)
 	}
+	if err := validateStatus(path, name, action, &status); err != nil {
+		return Status{}, err
+	}
+	return status, nil
+}
+
+func validateStatus(path, name, action string, status *Status) error {
 	expectedProfile := name
 	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
 		expectedProfile = parts[0]
 		if status.TargetType != "copy" || status.TargetName != parts[1] {
-			return Status{}, fmt.Errorf("run status %s has inconsistent copy target identity", path)
+			return fmt.Errorf("run status %s has inconsistent copy target identity", path)
 		}
 	}
 	if status.Profile != expectedProfile {
-		return Status{}, fmt.Errorf("run status %s has profile %q, expected %q", path, status.Profile, expectedProfile)
+		return fmt.Errorf("run status %s has profile %q, expected %q", path, status.Profile, expectedProfile)
 	}
 	if status.Action == "" {
 		status.Action = "backup"
@@ -337,15 +344,24 @@ func LoadAction(configDir, name, action string) (Status, error) {
 		status.Command = status.Action
 	}
 	if status.Action != action {
-		return Status{}, fmt.Errorf("run status %s has action %q, expected %q", path, status.Action, action)
+		return fmt.Errorf("run status %s has action %q, expected %q", path, status.Action, action)
 	}
 	if status.State != "running" && status.State != "succeeded" && status.State != "warning" && status.State != "failed" && status.State != "cancelled" {
-		return Status{}, fmt.Errorf("run status %s has invalid state %q", path, status.State)
+		return fmt.Errorf("run status %s has invalid state %q", path, status.State)
 	}
 	if status.StartedAt.IsZero() {
-		return Status{}, fmt.Errorf("run status %s has no start time", path)
+		return fmt.Errorf("run status %s has no start time", path)
 	}
-	return status, nil
+	if status.State == "running" {
+		if status.FinishedAt != nil {
+			return fmt.Errorf("run status %s is running but has a finish time", path)
+		}
+	} else if status.FinishedAt == nil {
+		return fmt.Errorf("run status %s is completed but has no finish time", path)
+	} else if status.FinishedAt.Before(status.StartedAt) {
+		return fmt.Errorf("run status %s finishes before it starts", path)
+	}
+	return nil
 }
 
 func LoadGroupAction(configDir, name, action string) (Status, error) {
@@ -378,6 +394,14 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	var statuses []Status
 	if err := json.Unmarshal(data, &statuses); err != nil {
 		return nil, fmt.Errorf("cannot decode status history %s: %w", path, err)
+	}
+	for index := range statuses {
+		if err := validateStatus(path, name, action, &statuses[index]); err != nil {
+			return nil, fmt.Errorf("history record %d: %w", index+1, err)
+		}
+		if statuses[index].State == "running" {
+			return nil, fmt.Errorf("history record %d in %s is not completed", index+1, path)
+		}
 	}
 	return statuses, nil
 }

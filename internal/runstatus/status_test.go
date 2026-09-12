@@ -1,6 +1,7 @@
 package runstatus
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -187,5 +188,46 @@ func TestRecorderPersistsBoundedHistoryAndStructuredOutcome(t *testing.T) {
 	}
 	if len(history) != 2 || history[0].ExitCode == nil || *history[0].ExitCode != 7 || history[0].ErrorCategory != "command_exit" || history[0].Command != "check" {
 		t.Fatalf("history = %#v", history)
+	}
+}
+
+func TestLoadHistoryRejectsInvalidRecords(t *testing.T) {
+	finished := time.Now().UTC()
+	valid := Status{
+		Profile: "example", Action: "check", Command: "check", State: "succeeded",
+		StartedAt: finished.Add(-time.Second), FinishedAt: &finished,
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Status)
+	}{
+		{name: "wrong profile", mutate: func(status *Status) { status.Profile = "other" }},
+		{name: "wrong action", mutate: func(status *Status) { status.Action = "backup" }},
+		{name: "running", mutate: func(status *Status) { status.State, status.FinishedAt = "running", nil }},
+		{name: "missing finish", mutate: func(status *Status) { status.FinishedAt = nil }},
+		{name: "finish before start", mutate: func(status *Status) {
+			finished := status.StartedAt.Add(-time.Second)
+			status.FinishedAt = &finished
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			status := valid
+			test.mutate(&status)
+			data, err := json.Marshal([]Status{status})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "status", "history", "example.check.json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadHistory(directory, "example", "check"); err == nil {
+				t.Fatal("LoadHistory succeeded")
+			}
+		})
 	}
 }

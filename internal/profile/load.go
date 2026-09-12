@@ -147,7 +147,6 @@ func validateProfileArguments(backupProfile Profile) error {
 	}{
 		{"restic_args", backupProfile.ResticArgs},
 		{"backup_args", backupProfile.BackupArgs},
-		{"tags", backupProfile.Tags},
 		{"forget_args", backupProfile.ForgetArgs},
 		{"check_args", backupProfile.CheckArgs},
 	}
@@ -165,6 +164,11 @@ func validateProfileArguments(backupProfile Profile) error {
 			if list.name == "backup_args" && IsStreamingOption(value) {
 				return fmt.Errorf("backup_args must not set workflow-owned streaming option: %s", value)
 			}
+		}
+	}
+	for _, tag := range backupProfile.Tags {
+		if tag == "" || strings.ContainsRune(tag, 0) {
+			return errors.New("tags must not contain empty strings or NUL bytes")
 		}
 	}
 	commandNames := make([]string, 0, len(backupProfile.Commands))
