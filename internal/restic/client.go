@@ -148,6 +148,7 @@ func (client *Client) RecoverRepositoryLocks(ctx context.Context, config Config,
 	if err != nil {
 		return err
 	}
+	foundStale := false
 	for _, id := range ids {
 		if !lockIDPattern.MatchString(id) {
 			return errors.New("restic returned an invalid lock ID")
@@ -161,17 +162,18 @@ func (client *Client) RecoverRepositoryLocks(ctx context.Context, config Config,
 			return fmt.Errorf("decode repository lock %s: %w", id, err)
 		}
 		if lock.Time.IsZero() || lock.PID <= 0 || lock.Hostname != host || now.Sub(lock.Time) < minimumAge {
-			return nil
+			continue
 		}
 		active, err := isProcessActive(lock.PID)
 		if err != nil {
 			return err
 		}
 		if active {
-			return nil
+			continue
 		}
+		foundStale = true
 	}
-	if dryRun {
+	if !foundStale || dryRun {
 		return nil
 	}
 	_, err = client.runInput(ctx, config, []string{"unlock"}, "", nil, client.stdin, client.stdout, client.stderr)

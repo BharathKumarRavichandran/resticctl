@@ -54,6 +54,29 @@ func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
 	}
 }
 
+func TestBackupAllowsNilProgressOutput(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source.sqlite3")
+	database, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("CREATE TABLE data (value TEXT)"); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backupProfile := profile.Profile{
+		Name:            "example",
+		SQLiteDatabases: []profile.SQLiteDatabase{{Name: "primary", Path: source}},
+	}
+	if err := Backup(context.Background(), &recordingRunner{}, backupProfile, true, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type streamingTestRunner struct {
 	recordingRunner
 	producer  []string

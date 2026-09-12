@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 	"strings"
 
-	"resticctl/internal/process"
 	"resticctl/internal/profile"
 	"resticctl/internal/secretvalue"
 )
@@ -24,30 +21,23 @@ func ResolvePassword(ctx context.Context, source profile.PasswordSource) (string
 		}
 		password = source.Value
 	} else if source.File != "" {
-		file, err := os.Open(source.File)
+		data, err := secretvalue.ReadFile(source.File)
 		if err != nil {
+			if errors.Is(err, secretvalue.ErrTooLarge) {
+				return "", errors.New("database password file exceeds 1 MiB")
+			}
 			return "", err
 		}
-		data, readErr := io.ReadAll(io.LimitReader(file, maximumPasswordBytes+1))
 		defer clear(data)
-		closeErr := file.Close()
-		if err := errors.Join(readErr, closeErr); err != nil {
-			return "", err
-		}
-		if len(data) > maximumPasswordBytes {
-			return "", errors.New("database password file exceeds 1 MiB")
-		}
 		password = strings.TrimRight(string(data), "\r\n")
 	} else if len(source.Command) == 0 {
 		return "", nil
 	} else {
-		command := exec.Command(source.Command[0], source.Command[1:]...)
-		var output secretvalue.Buffer
-		defer func() { clear(output.Bytes()) }()
-		command.Stdout, command.Stderr = &output, io.Discard
-		if err := process.Run(ctx, command); err != nil {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
+		output, err := secretvalue.RunCommand(ctx, source.Command)
+		defer clear(output)
+		if err != nil {
+			if errors.Is(err, secretvalue.ErrTooLarge) {
+				return "", errors.New("database password command output exceeds 1 MiB")
 			}
 			var exitError *exec.ExitError
 			if errors.As(err, &exitError) {
@@ -55,10 +45,7 @@ func ResolvePassword(ctx context.Context, source profile.PasswordSource) (string
 			}
 			return "", fmt.Errorf("cannot execute database password command: %w", err)
 		}
-		if output.Exceeded() {
-			return "", errors.New("database password command output exceeds 1 MiB")
-		}
-		password = strings.TrimRight(string(output.Bytes()), "\r\n")
+		password = strings.TrimRight(string(output), "\r\n")
 	}
 	if password == "" {
 		return "", errors.New("database password source returned an empty password")

@@ -161,7 +161,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 		recordBackupSummary(ctx, result)
 		return applyResticExitPolicy(ctx, backupProfile, err)
 	}
-	if databaseCount(backupProfile) == 0 {
+	if databasebackup.DatabaseCount(backupProfile) == 0 {
 		arguments = append(arguments, "--")
 		arguments = append(arguments, backupProfile.BackupPaths...)
 		return invokeRestic(ctx, runner, backupProfile, arguments, "")
@@ -186,22 +186,7 @@ func backup(ctx context.Context, runner Runner, backupProfile profile.Profile, d
 	if err := securefile.Protect(databaseDir); err != nil {
 		return fmt.Errorf("cannot protect database staging directory: %w", err)
 	}
-	providers := make([]databasebackup.Provider, 0, databaseCount(backupProfile))
-	for _, database := range backupProfile.SQLiteDatabases {
-		providers = append(providers, databasebackup.SQLite{Database: database})
-	}
-	for _, database := range backupProfile.PostgreSQLDatabases {
-		providers = append(providers, databasebackup.PostgreSQL{Database: database})
-	}
-	for _, database := range backupProfile.MongoDBDatabases {
-		providers = append(providers, databasebackup.MongoDB{Database: database})
-	}
-	for _, database := range backupProfile.MySQLDatabases {
-		providers = append(providers, databasebackup.MySQL{Database: database})
-	}
-	for _, database := range backupProfile.SQLServerDatabases {
-		providers = append(providers, databasebackup.SQLServer{Database: database})
-	}
+	providers := databasebackup.Providers(backupProfile)
 	if err := stageDatabaseProviders(ctx, runner, staging, backupProfile, providers, output); err != nil {
 		return err
 	}
@@ -242,7 +227,7 @@ func stageDatabaseProviders(ctx context.Context, runner databasebackup.Runner, s
 				if workerCtx.Err() != nil {
 					return
 				}
-				if progress := provider.Progress(); progress != "" {
+				if progress := provider.Progress(); progress != "" && output != nil {
 					outputMu.Lock()
 					_, outputErr := fmt.Fprintf(output, "==> %s\n", progress)
 					outputMu.Unlock()
@@ -290,7 +275,7 @@ enqueue:
 }
 
 func validateBackupSources(backupProfile profile.Profile) error {
-	if len(backupProfile.BackupPaths) == 0 && databaseCount(backupProfile) == 0 && backupProfile.Stream == nil {
+	if len(backupProfile.BackupPaths) == 0 && databasebackup.DatabaseCount(backupProfile) == 0 && backupProfile.Stream == nil {
 		return errors.New("profile has no backup paths or databases")
 	}
 	for _, path := range backupProfile.BackupPaths {
@@ -330,9 +315,4 @@ func initializeRepository(ctx context.Context, runner Runner, backupProfile prof
 		return nil
 	}
 	return fmt.Errorf("automatically initialize repository: %w", errors.Join(initErr, probeErr))
-}
-
-func databaseCount(backupProfile profile.Profile) int {
-	return len(backupProfile.SQLiteDatabases) + len(backupProfile.PostgreSQLDatabases) +
-		len(backupProfile.MongoDBDatabases) + len(backupProfile.MySQLDatabases) + len(backupProfile.SQLServerDatabases)
 }

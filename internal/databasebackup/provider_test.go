@@ -136,6 +136,32 @@ func createFakeArtifact(args []string, cwd string) error {
 	return nil
 }
 
+func TestProviders(t *testing.T) {
+	backupProfile := profile.Profile{
+		SQLiteDatabases:     []profile.SQLiteDatabase{{Name: "sqlite"}},
+		PostgreSQLDatabases: []profile.PostgreSQLDatabase{{Name: "postgres", Globals: true}},
+		MongoDBDatabases:    []profile.MongoDBDatabase{{Name: "mongo", Executable: "custom-mongodump"}},
+		MySQLDatabases:      []profile.MySQLDatabase{{Name: "mysql"}},
+		SQLServerDatabases:  []profile.SQLServerDatabase{{Name: "sqlserver"}},
+	}
+	providers := Providers(backupProfile)
+	if len(providers) != DatabaseCount(backupProfile) {
+		t.Fatalf("len(Providers()) = %d, DatabaseCount() = %d", len(providers), DatabaseCount(backupProfile))
+	}
+	wantNames := []string{"sqlite", "postgres", "mongo", "mysql", "sqlserver"}
+	for index, want := range wantNames {
+		if got := providers[index].Name(); got != want {
+			t.Fatalf("provider %d name = %q, want %q", index, got, want)
+		}
+	}
+	if got := providers[1].Executables(); len(got) != 2 || got[0].Name != "pg_dump" || got[1].Name != "pg_dumpall" {
+		t.Fatalf("PostgreSQL executables = %#v", got)
+	}
+	if got := providers[2].Executables(); len(got) != 1 || got[0].Name != "custom-mongodump" {
+		t.Fatalf("MongoDB executables = %#v", got)
+	}
+}
+
 func TestPostgreSQLStagesRemoteDatabaseAndGlobals(t *testing.T) {
 	runner := &fakeRunner{}
 	directory := t.TempDir()

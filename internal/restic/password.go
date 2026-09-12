@@ -1,16 +1,12 @@
 package restic
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"strings"
 
-	"resticctl/internal/process"
 	"resticctl/internal/secretvalue"
 	"resticctl/internal/securefile"
 )
@@ -22,28 +18,25 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 		return config.PasswordFile, false, nil
 	}
 	if config.PasswordValue != "" {
-		if len(config.PasswordValue) > maximumPasswordBytes {
-			return "", false, errors.New("password value exceeds 1 MiB")
-		}
-		if strings.IndexByte(config.PasswordValue, 0) >= 0 {
-			return "", false, errors.New("password value contains a NUL byte")
-		}
 		password := []byte(config.PasswordValue)
 		defer clear(password)
+		switch err := secretvalue.Validate(password); {
+		case errors.Is(err, secretvalue.ErrTooLarge):
+			return "", false, errors.New("password value exceeds 1 MiB")
+		case errors.Is(err, secretvalue.ErrNUL):
+			return "", false, errors.New("password value contains a NUL byte")
+		}
 		return writeTemporaryPassword(password)
 	}
 	commandParts := config.PasswordCommand
 	if len(commandParts) == 0 {
 		return "", false, errors.New("password source is not configured")
 	}
-	command := exec.Command(commandParts[0], commandParts[1:]...)
-	var stdout secretvalue.Buffer
-	defer func() { clear(stdout.Bytes()) }()
-	command.Stdout = &stdout
-	command.Stderr = io.Discard
-	if err := process.Run(ctx, command); err != nil {
-		if ctx.Err() != nil {
-			return "", false, ctx.Err()
+	password, err := secretvalue.RunCommand(ctx, commandParts)
+	defer clear(password)
+	if err != nil {
+		if errors.Is(err, secretvalue.ErrTooLarge) {
+			return "", false, errors.New("password command output exceeds 1 MiB")
 		}
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
@@ -51,14 +44,10 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 		}
 		return "", false, fmt.Errorf("cannot execute password command %s: %w", commandParts[0], err)
 	}
-	if stdout.Exceeded() {
-		return "", false, errors.New("password command output exceeds 1 MiB")
-	}
-	password := stdout.Bytes()
-	if len(bytes.TrimRight(password, "\r\n")) == 0 {
+	switch err := secretvalue.Validate(password); {
+	case errors.Is(err, secretvalue.ErrEmpty):
 		return "", false, errors.New("password command returned an empty password")
-	}
-	if bytes.IndexByte(password, 0) >= 0 {
+	case errors.Is(err, secretvalue.ErrNUL):
 		return "", false, errors.New("password command returned a NUL byte")
 	}
 	return writeTemporaryPassword(password)

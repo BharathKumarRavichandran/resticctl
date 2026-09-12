@@ -23,94 +23,124 @@ func Load(configDir, name string) (Profile, error) {
 	backupProfile := configured.profile(name)
 	profilePath := filepath.Join(configDir, name+".json")
 	base := filepath.Dir(profilePath)
+	if err := bindProfileCredentials(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
+	if err := normalizeProfileSources(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
+	if err := validateProfileArguments(backupProfile); err != nil {
+		return Profile{}, err
+	}
+	if err := normalizeProfileSchedules(&backupProfile); err != nil {
+		return Profile{}, err
+	}
+	if err := validateMonitoring(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
+	if err := validateRuntime(&backupProfile, base); err != nil {
+		return Profile{}, err
+	}
+	return backupProfile, nil
+}
+
+func bindProfileCredentials(backupProfile *Profile, base string) error {
 	if backupProfile.PrivateFile != "" {
 		if backupProfile.CredentialsFile != "" {
-			return Profile{}, errors.New("private_file must not be combined with credentials_file")
+			return errors.New("private_file must not be combined with credentials_file")
 		}
 		if err := validateRepositoryCredentialFields(&backupProfile.Credentials, base, "credentials", false); err != nil {
-			return Profile{}, err
+			return err
 		}
 		privatePath, expandErr := expandPath(backupProfile.PrivateFile, base)
 		if expandErr != nil {
-			return Profile{}, fmt.Errorf("invalid private_file: %w", expandErr)
+			return fmt.Errorf("invalid private_file: %w", expandErr)
 		}
 		backupProfile.PrivateFile = privatePath
-		if err := bindPrivateConfig(&backupProfile, privatePath); err != nil {
-			return Profile{}, err
+		if err := bindPrivateConfig(backupProfile, privatePath); err != nil {
+			return err
 		}
 	} else if backupProfile.CredentialsFile != "" {
 		if backupProfile.Credentials.Password.Configured() || backupProfile.Credentials.Environment != nil {
-			return Profile{}, errors.New("credentials must not be combined with credentials_file")
+			return errors.New("credentials must not be combined with credentials_file")
 		}
 		credentialsPath, expandErr := expandPath(backupProfile.CredentialsFile, base)
 		if expandErr != nil {
-			return Profile{}, fmt.Errorf("invalid credentials_file: %w", expandErr)
+			return fmt.Errorf("invalid credentials_file: %w", expandErr)
 		}
 		backupProfile.CredentialsFile = credentialsPath
 		credentials, loadErr := loadCredentials(credentialsPath)
 		if loadErr != nil {
-			return Profile{}, loadErr
+			return loadErr
 		}
 		backupProfile.Credentials = credentials
 	} else if err := validateRepositoryCredentials(&backupProfile.Credentials, base, "credentials"); err != nil {
-		return Profile{}, errors.New("set private_file, credentials_file, or valid inline credentials: " + err.Error())
+		return errors.New("set private_file, credentials_file, or valid inline credentials: " + err.Error())
 	}
+	return nil
+}
+
+func normalizeProfileSources(backupProfile *Profile, base string) error {
 	if backupProfile.Repository == "" {
-		return Profile{}, errors.New("repository must be a non-empty string")
+		return errors.New("repository must be a non-empty string")
 	}
-	if err := loadCopyTargets(&backupProfile, base); err != nil {
-		return Profile{}, err
+	if err := loadCopyTargets(backupProfile, base); err != nil {
+		return err
 	}
 	if strings.ContainsRune(backupProfile.Repository, 0) {
-		return Profile{}, errors.New("repository must not contain NUL bytes")
+		return errors.New("repository must not contain NUL bytes")
 	}
 
 	for index, path := range backupProfile.BackupPaths {
 		if path == "" {
-			return Profile{}, errors.New("backup_paths must not contain empty strings")
+			return errors.New("backup_paths must not contain empty strings")
 		}
 		expanded, expandErr := expandPath(path, base)
 		if expandErr != nil {
-			return Profile{}, fmt.Errorf("invalid backup_paths entry: %w", expandErr)
+			return fmt.Errorf("invalid backup_paths entry: %w", expandErr)
 		}
 		backupProfile.BackupPaths[index] = expanded
 	}
-	if err := validateStream(backupProfile); err != nil {
-		return Profile{}, err
+	if err := validateStream(*backupProfile); err != nil {
+		return err
 	}
-	if err := normalizeConnections(&backupProfile, base); err != nil {
-		return Profile{}, err
+	if err := normalizeConnections(backupProfile, base); err != nil {
+		return err
 	}
 
 	names := make(map[string]struct{})
 	for index := range backupProfile.SQLiteDatabases {
 		database := &backupProfile.SQLiteDatabases[index]
 		if !isPortableName(database.Name) {
-			return Profile{}, fmt.Errorf("invalid SQLite backup name: %s", database.Name)
+			return fmt.Errorf("invalid SQLite backup name: %s", database.Name)
 		}
 		normalized := strings.ToLower(database.Name)
 		if _, exists := names[normalized]; exists {
-			return Profile{}, fmt.Errorf("duplicate SQLite backup name: %s", database.Name)
+			return fmt.Errorf("duplicate SQLite backup name: %s", database.Name)
 		}
 		names[normalized] = struct{}{}
 		if database.Path == "" {
-			return Profile{}, fmt.Errorf("SQLite database path is missing: %s", database.Name)
+			return fmt.Errorf("SQLite database path is missing: %s", database.Name)
 		}
-		database.Path, err = expandPath(database.Path, base)
+		expanded, err := expandPath(database.Path, base)
 		if err != nil {
-			return Profile{}, fmt.Errorf("invalid SQLite database path: %w", err)
+			return fmt.Errorf("invalid SQLite database path: %w", err)
 		}
+		database.Path = expanded
 	}
-	if err := validateExternalDatabases(&backupProfile, base); err != nil {
-		return Profile{}, err
+	if err := validateExternalDatabases(backupProfile, base); err != nil {
+		return err
 	}
 	if backupProfile.DatabaseConcurrency <= 0 {
-		return Profile{}, errors.New("databases.concurrency must be a positive integer (legacy: database_concurrency)")
+		return errors.New("databases.concurrency must be a positive integer (legacy: database_concurrency)")
 	}
-	if err := validateDatabaseEnvironmentNames(&backupProfile); err != nil {
-		return Profile{}, err
+	if err := validateDatabaseEnvironmentNames(backupProfile); err != nil {
+		return err
 	}
+	return nil
+}
 
+func validateProfileArguments(backupProfile Profile) error {
 	argumentLists := []struct {
 		name   string
 		values []string
@@ -124,16 +154,16 @@ func Load(configDir, name string) (Profile, error) {
 	for _, list := range argumentLists {
 		for _, value := range list.values {
 			if value == "" || strings.ContainsRune(value, 0) {
-				return Profile{}, fmt.Errorf("%s must not contain empty strings or NUL bytes", list.name)
+				return fmt.Errorf("%s must not contain empty strings or NUL bytes", list.name)
 			}
 			if IsReservedOption(value) {
-				return Profile{}, fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
+				return fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
 			}
 			if list.name == "backup_args" && IsDryRunOption(value) {
-				return Profile{}, fmt.Errorf("backup_args must not set workflow-owned dry-run option: %s", value)
+				return fmt.Errorf("backup_args must not set workflow-owned dry-run option: %s", value)
 			}
 			if list.name == "backup_args" && IsStreamingOption(value) {
-				return Profile{}, fmt.Errorf("backup_args must not set workflow-owned streaming option: %s", value)
+				return fmt.Errorf("backup_args must not set workflow-owned streaming option: %s", value)
 			}
 		}
 	}
@@ -145,30 +175,30 @@ func Load(configDir, name string) (Profile, error) {
 	for _, name := range commandNames {
 		command := backupProfile.Commands[name]
 		if !IsSupportedResticCommand(name) {
-			return Profile{}, fmt.Errorf("commands contains unsupported Restic command %q", name)
+			return fmt.Errorf("commands contains unsupported Restic command %q", name)
 		}
 		for _, value := range command.Args {
 			if value == "" || strings.ContainsRune(value, 0) {
-				return Profile{}, fmt.Errorf("commands.%s.args must not contain empty strings or NUL bytes", name)
+				return fmt.Errorf("commands.%s.args must not contain empty strings or NUL bytes", name)
 			}
 			if IsReservedOption(value) {
-				return Profile{}, fmt.Errorf("commands.%s.args must not override repository or password options: %s", name, value)
+				return fmt.Errorf("commands.%s.args must not override repository or password options: %s", name, value)
 			}
 			if name == "backup" && IsDryRunOption(value) {
-				return Profile{}, fmt.Errorf("commands.backup.args must not set workflow-owned dry-run option: %s", value)
+				return fmt.Errorf("commands.backup.args must not set workflow-owned dry-run option: %s", value)
 			}
 			if name == "backup" && IsStreamingOption(value) {
-				return Profile{}, fmt.Errorf("commands.backup.args must not set workflow-owned streaming option: %s", value)
+				return fmt.Errorf("commands.backup.args must not set workflow-owned streaming option: %s", value)
 			}
 		}
 	}
 	if len(backupProfile.Copies) != 0 {
 		if _, configured := backupProfile.Commands["copy"]; configured {
-			return Profile{}, errors.New("commands.copy cannot be combined with copies; use copies.<target>.args")
+			return errors.New("commands.copy cannot be combined with copies; use copies.<target>.args")
 		}
 	}
 	if (backupProfile.PruneBefore || backupProfile.PruneAfter) && len(backupProfile.ForgetArgs) == 0 {
-		return Profile{}, errors.New("backup pruning requires non-empty forget_args")
+		return errors.New("backup pruning requires non-empty forget_args")
 	}
 	for _, hooks := range []struct {
 		name   string
@@ -180,36 +210,40 @@ func Load(configDir, name string) (Profile, error) {
 		{"run_finally", backupProfile.RunFinally},
 	} {
 		if err := validateHooks(hooks.name, hooks.values); err != nil {
-			return Profile{}, err
+			return err
 		}
 	}
+	return nil
+}
+
+func normalizeProfileSchedules(backupProfile *Profile) error {
 	if backupProfile.Schedule != nil {
 		schedule := backupProfile.Schedule
 		if schedule.Backend == "" {
 			schedule.Backend = "auto"
 		}
 		if !validScheduleBackend(schedule.Backend) {
-			return Profile{}, fmt.Errorf("schedule.backend is unsupported: %s", schedule.Backend)
+			return fmt.Errorf("schedule.backend is unsupported: %s", schedule.Backend)
 		}
 		normalized, err := cronexpr.Normalize(schedule.Cron)
 		if err != nil {
-			return Profile{}, fmt.Errorf("invalid schedule.cron: %w", err)
+			return fmt.Errorf("invalid schedule.cron: %w", err)
 		}
 		schedule.Cron = normalized
 	}
 	if backupProfile.Forget != nil {
 		forget := backupProfile.Forget
 		if len(backupProfile.ForgetArgs) == 0 {
-			return Profile{}, errors.New("forget schedule requires non-empty forget_args")
+			return errors.New("forget schedule requires non-empty forget_args")
 		}
 		if forget.Backend == "" {
 			forget.Backend = "auto"
 		}
 		if !validScheduleBackend(forget.Backend) {
-			return Profile{}, fmt.Errorf("forget.backend is unsupported: %s", forget.Backend)
+			return fmt.Errorf("forget.backend is unsupported: %s", forget.Backend)
 		}
 		if forget.Cron != "" && forget.Schedule != "" {
-			return Profile{}, errors.New("forget must not set both cron and deprecated schedule")
+			return errors.New("forget must not set both cron and deprecated schedule")
 		}
 		expression := forget.Cron
 		if expression == "" {
@@ -217,18 +251,12 @@ func Load(configDir, name string) (Profile, error) {
 		}
 		normalized, err := cronexpr.Normalize(expression)
 		if err != nil {
-			return Profile{}, fmt.Errorf("invalid forget.cron: %w", err)
+			return fmt.Errorf("invalid forget.cron: %w", err)
 		}
 		forget.Cron = normalized
 		forget.Schedule = ""
 	}
-	if err := validateMonitoring(&backupProfile, base); err != nil {
-		return Profile{}, err
-	}
-	if err := validateRuntime(&backupProfile, base); err != nil {
-		return Profile{}, err
-	}
-	return backupProfile, nil
+	return nil
 }
 
 func validScheduleBackend(value string) bool {

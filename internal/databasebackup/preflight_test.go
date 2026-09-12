@@ -37,3 +37,26 @@ func TestPreflightOnlyRequiresGlobalsWhenEnabled(t *testing.T) {
 		t.Fatalf("lookups = %v", lookedUp)
 	}
 }
+
+func TestPreflightReportsEveryPurposeForSharedExecutable(t *testing.T) {
+	configured := profile.Profile{
+		PostgreSQLDatabases: []profile.PostgreSQLDatabase{{Executable: "shared-dump"}},
+		MySQLDatabases:      []profile.MySQLDatabase{{Executable: "shared-dump"}},
+	}
+	lookups := 0
+	err := preflight(configured, func(name string) (string, error) {
+		lookups++
+		return "", errors.New("missing " + name)
+	})
+	if err == nil {
+		t.Fatal("preflight succeeded")
+	}
+	if lookups != 1 {
+		t.Fatalf("lookups = %d, want 1", lookups)
+	}
+	for _, purpose := range []string{"MySQL/MariaDB dumps", "PostgreSQL dumps"} {
+		if !strings.Contains(err.Error(), purpose) {
+			t.Errorf("error %q does not mention %s", err, purpose)
+		}
+	}
+}

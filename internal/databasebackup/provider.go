@@ -29,7 +29,38 @@ type Runner interface {
 type Provider interface {
 	Name() string
 	Progress() string
+	Executables() []Executable
 	Stage(context.Context, Runner, string, map[string]string) error
+}
+
+type Executable struct {
+	Name    string
+	Purpose string
+}
+
+func Providers(backupProfile profile.Profile) []Provider {
+	providers := make([]Provider, 0, DatabaseCount(backupProfile))
+	for _, database := range backupProfile.SQLiteDatabases {
+		providers = append(providers, SQLite{Database: database})
+	}
+	for _, database := range backupProfile.PostgreSQLDatabases {
+		providers = append(providers, PostgreSQL{Database: database})
+	}
+	for _, database := range backupProfile.MongoDBDatabases {
+		providers = append(providers, MongoDB{Database: database})
+	}
+	for _, database := range backupProfile.MySQLDatabases {
+		providers = append(providers, MySQL{Database: database})
+	}
+	for _, database := range backupProfile.SQLServerDatabases {
+		providers = append(providers, SQLServer{Database: database})
+	}
+	return providers
+}
+
+func DatabaseCount(backupProfile profile.Profile) int {
+	return len(backupProfile.SQLiteDatabases) + len(backupProfile.PostgreSQLDatabases) +
+		len(backupProfile.MongoDBDatabases) + len(backupProfile.MySQLDatabases) + len(backupProfile.SQLServerDatabases)
 }
 
 type SQLite struct{ Database profile.SQLiteDatabase }
@@ -37,6 +68,8 @@ type SQLite struct{ Database profile.SQLiteDatabase }
 func (s SQLite) Name() string { return s.Database.Name }
 
 func (s SQLite) Progress() string { return "Snapshotting SQLite database: " + s.Database.Name }
+
+func (SQLite) Executables() []Executable { return nil }
 
 func (s SQLite) Stage(ctx context.Context, _ Runner, directory string, _ map[string]string) error {
 	destination := filepath.Join(directory, "databases", s.Database.Name+".sqlite3")
@@ -59,6 +92,14 @@ type PostgreSQL struct{ Database profile.PostgreSQLDatabase }
 func (p PostgreSQL) Name() string { return p.Database.Name }
 
 func (p PostgreSQL) Progress() string { return "" }
+
+func (p PostgreSQL) Executables() []Executable {
+	executables := []Executable{{Name: defaultExecutable(p.Database.Executable, "pg_dump"), Purpose: "PostgreSQL dumps"}}
+	if p.Database.Globals {
+		executables = append(executables, Executable{Name: defaultExecutable(p.Database.GlobalsExecutable, "pg_dumpall"), Purpose: "PostgreSQL globals"})
+	}
+	return executables
+}
 
 func (p PostgreSQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := p.Database
@@ -156,6 +197,10 @@ func (m MongoDB) Name() string { return m.Database.Name }
 
 func (m MongoDB) Progress() string { return "" }
 
+func (m MongoDB) Executables() []Executable {
+	return []Executable{{Name: defaultExecutable(m.Database.Executable, "mongodump"), Purpose: "MongoDB dumps"}}
+}
+
 func (m MongoDB) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) error {
 	db := m.Database
 	dump := filepath.Join("databases", db.Name)
@@ -224,6 +269,10 @@ type MySQL struct{ Database profile.MySQLDatabase }
 func (m MySQL) Name() string { return m.Database.Name }
 
 func (m MySQL) Progress() string { return "" }
+
+func (m MySQL) Executables() []Executable {
+	return []Executable{{Name: defaultExecutable(m.Database.Executable, "mysqldump"), Purpose: "MySQL/MariaDB dumps"}}
+}
 
 func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) (stageErr error) {
 	db := m.Database
@@ -316,6 +365,10 @@ type SQLServer struct{ Database profile.SQLServerDatabase }
 func (s SQLServer) Name() string { return s.Database.Name }
 
 func (s SQLServer) Progress() string { return "" }
+
+func (s SQLServer) Executables() []Executable {
+	return []Executable{{Name: defaultExecutable(s.Database.Executable, "sqlcmd"), Purpose: "SQL Server dumps"}}
+}
 
 func (s SQLServer) Stage(ctx context.Context, runner Runner, directory string, environment map[string]string) (stageErr error) {
 	db := s.Database
@@ -571,4 +624,11 @@ func copyEnvironment(environment map[string]string) map[string]string {
 		result[name] = value
 	}
 	return result
+}
+
+func defaultExecutable(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
