@@ -41,3 +41,16 @@ func TestReservedResticEnvironment(t *testing.T) {
 		t.Error("RESTIC_CACHE_DIR is reserved")
 	}
 }
+
+func TestDryRunOptions(t *testing.T) {
+	for _, argument := range []string{"--dry-run", "-n", "--dry-run=true", "--dry-run=TRUE", "--dry-run=1", "-n=t"} {
+		if !IsDryRunOption(argument) {
+			t.Errorf("IsDryRunOption(%q) = false", argument)
+		}
+	}
+	for _, argument := range []string{"--dry-run=false", "-n=0", "--dry-run=invalid", "--other=true"} {
+		if IsDryRunOption(argument) {
+			t.Errorf("IsDryRunOption(%q) = true", argument)
+		}
+	}
+}

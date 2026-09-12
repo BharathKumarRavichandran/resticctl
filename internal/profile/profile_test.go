@@ -971,7 +971,9 @@ func TestLoadRejectsConfiguredBackupDryRunOptions(t *testing.T) {
 		{"long", `"backup_args":["--dry-run"]`},
 		{"short", `"backup_args":["-n"]`},
 		{"explicit true", `"backup_args":["--dry-run=true"]`},
+		{"numeric true", `"backup_args":["--dry-run=1"]`},
 		{"command arguments", `"commands":{"backup":{"args":["-n=true"]}}`},
+		{"command short true", `"commands":{"backup":{"args":["-n=t"]}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := t.TempDir()

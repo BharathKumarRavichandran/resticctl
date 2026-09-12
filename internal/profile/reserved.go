@@ -1,6 +1,9 @@
 package profile
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // IsReservedOption reports whether an argument could override the repository
 // or password source managed by resticctl.
@@ -18,8 +21,16 @@ func IsReservedOption(argument string) bool {
 
 // IsDryRunOption reports whether argument enables Restic's dry-run mode.
 func IsDryRunOption(argument string) bool {
-	return argument == "--dry-run" || argument == "-n" ||
-		strings.EqualFold(argument, "--dry-run=true") || strings.EqualFold(argument, "-n=true")
+	if argument == "--dry-run" || argument == "-n" {
+		return true
+	}
+	for _, prefix := range []string{"--dry-run=", "-n="} {
+		if value, found := strings.CutPrefix(argument, prefix); found {
+			enabled, err := strconv.ParseBool(value)
+			return err == nil && enabled
+		}
+	}
+	return false
 }
 
 // IsStreamingOption reports whether argument selects Restic's stdin backup

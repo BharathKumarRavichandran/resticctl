@@ -52,7 +52,7 @@ func TestConfiguredBackupDryRunIsNotRecorded(t *testing.T) {
 }
 
 func TestRawDryRunSpellingsAreNotRecorded(t *testing.T) {
-	for _, argument := range []string{"--dry-run", "-n", "--dry-run=true", "-n=true"} {
+	for _, argument := range []string{"--dry-run", "-n", "--dry-run=true", "-n=true", "--dry-run=1", "-n=t"} {
 		t.Run(argument, func(t *testing.T) {
 			directory := t.TempDir()
 			runner := &recordingRunner{}
