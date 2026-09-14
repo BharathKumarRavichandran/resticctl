@@ -15,6 +15,150 @@ import (
 	"resticctl/internal/schedule"
 )
 
+func (cli *commandLine) profileManageCommand() *cobra.Command {
+	command := &cobra.Command{Use: "profile", Short: "Manage profiles", Args: cobra.NoArgs}
+	command.AddCommand(cli.profileRenameCommand())
+	return command
+}
+
+func (cli *commandLine) profileRenameCommand() *cobra.Command {
+	var dryRun bool
+	command := &cobra.Command{
+		Use: "rename <old> <new>", Short: "Rename a profile and its local references", Args: cobra.ExactArgs(2),
+		ValidArgsFunction: cli.completeProfiles,
+		RunE: execute(func(command *cobra.Command, arguments []string) error {
+			configDir, err := cli.resolveConfigDir()
+			if err != nil {
+				return err
+			}
+			changes, err := cli.renameProfile(command.Context(), configDir, arguments[0], arguments[1], dryRun)
+			if err != nil {
+				return err
+			}
+			prefix := "Updated"
+			if dryRun {
+				prefix = "Would update"
+			}
+			for _, change := range changes {
+				if err := writeOutput(cli.stdout, "%s: %s\n", prefix, change); err != nil {
+					return err
+				}
+			}
+			return nil
+		}),
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without applying them")
+	return command
+}
+
+func (cli *commandLine) renameProfile(ctx context.Context, configDir, oldName, newName string, dryRun bool) ([]string, error) {
+	var installed []schedule.State
+	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+		if _, err := schedule.LoadAction(configDir, newName, action); err == nil {
+			return nil, fmt.Errorf("refusing to overwrite existing %s schedule for profile %s", action, newName)
+		} else if !errors.Is(err, schedule.ErrNotInstalled) {
+			return nil, err
+		}
+		state, err := schedule.LoadAction(configDir, oldName, action)
+		if err == nil {
+			if state.Executable == "" {
+				state.Executable, err = cli.executable()
+				if err != nil {
+					return nil, fmt.Errorf("cannot find resticctl executable for legacy %s schedule: %w", action, err)
+				}
+			}
+			installed = append(installed, state)
+		} else if !errors.Is(err, schedule.ErrNotInstalled) {
+			return nil, err
+		}
+	}
+	changes, err := app.RenameProfile(ctx, configDir, oldName, newName, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, state := range installed {
+		changes = append(changes, "reinstall "+state.Action+" schedule for "+newName)
+	}
+	if dryRun {
+		return changes, nil
+	}
+	first, second := oldName, newName
+	if second < first {
+		first, second = second, first
+	}
+	lockErr := runstatus.WithProfileLock(ctx, configDir, first, func() error {
+		return runstatus.WithProfileLock(ctx, configDir, second, func() error {
+			return cli.applyProfileRename(ctx, configDir, oldName, newName, installed)
+		})
+	})
+	return changes, lockErr
+}
+
+func (cli *commandLine) applyProfileRename(ctx context.Context, configDir, oldName, newName string, installed []schedule.State) error {
+	if len(installed) == 0 {
+		_, err := app.RenameProfileUnderLocks(ctx, configDir, oldName, newName)
+		return err
+	}
+	manager := cli.newScheduleManager()
+	removed := make([]schedule.State, 0, len(installed))
+	for _, state := range installed {
+		if err := manager.RemoveAction(ctx, configDir, oldName, state.Action); err != nil {
+			var rollbackErr error
+			for _, previous := range removed {
+				_, restoreErr := manager.InstallSpec(context.WithoutCancel(ctx), renameScheduleSpec(configDir, oldName, previous))
+				rollbackErr = errors.Join(rollbackErr, restoreErr)
+			}
+			return errors.Join(fmt.Errorf("cannot remove old %s schedule: %w", state.Action, err), rollbackErr)
+		}
+		removed = append(removed, state)
+	}
+	if _, err := app.RenameProfileUnderLocks(ctx, configDir, oldName, newName); err != nil {
+		var rollbackErr error
+		for _, state := range installed {
+			_, restoreErr := manager.InstallSpec(context.WithoutCancel(ctx), renameScheduleSpec(configDir, oldName, state))
+			rollbackErr = errors.Join(rollbackErr, restoreErr)
+		}
+		return errors.Join(err, rollbackErr)
+	}
+	installedNew := make([]schedule.State, 0, len(installed))
+	for _, state := range installed {
+		spec := renameScheduleSpec(configDir, newName, state)
+		newState, err := manager.InstallSpec(ctx, spec)
+		if err != nil {
+			rollbackCtx := context.WithoutCancel(ctx)
+			var rollbackErr error
+			for _, applied := range installedNew {
+				rollbackErr = errors.Join(rollbackErr, manager.RemoveAction(rollbackCtx, configDir, newName, applied.Action))
+			}
+			_, rollbackRenameErr := app.RenameProfileUnderLocks(rollbackCtx, configDir, newName, oldName)
+			rollbackErr = errors.Join(rollbackErr, rollbackRenameErr)
+			for _, previous := range installed {
+				_, restoreErr := manager.InstallSpec(rollbackCtx, renameScheduleSpec(configDir, oldName, previous))
+				rollbackErr = errors.Join(rollbackErr, restoreErr)
+			}
+			return errors.Join(fmt.Errorf("cannot install new %s schedule: %w", state.Action, err), rollbackErr)
+		}
+		installedNew = append(installedNew, newState)
+	}
+	return nil
+}
+
+func renameScheduleSpec(configDir, name string, state schedule.State) schedule.Spec {
+	expressions := state.Expressions
+	if len(expressions) == 0 {
+		expressions = []string{state.Expression}
+	}
+	environmentPath := state.EnvironmentPath
+	return schedule.Spec{
+		Name: name, TargetType: schedule.TargetProfile, Action: state.Action, Expressions: expressions,
+		Backend: state.Backend, Executable: state.Executable, ConfigDir: configDir, CatchUp: state.CatchUp,
+		Prune: state.Prune, Permission: state.Permission, CronFile: state.CronFile, User: state.User,
+		Priority: state.Priority, Log: state.Log, LockMode: state.LockMode, LockWait: state.LockWait,
+		Enabled: state.Enabled, Start: state.Start, Network: state.Network, ACPower: state.ACPower,
+		EnvironmentPath: &environmentPath,
+	}
+}
+
 func (cli *commandLine) groupCommand() *cobra.Command {
 	command := &cobra.Command{Use: "group", Short: "Manage and run profile groups", Args: cobra.NoArgs}
 	command.AddCommand(cli.groupCreateCommand(), cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupStatusCommand())

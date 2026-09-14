@@ -189,6 +189,10 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 			return State{}, loadErr
 		}
 	}
+	environmentPath := manager.environmentPath
+	if spec.EnvironmentPath != nil {
+		environmentPath = *spec.EnvironmentPath
+	}
 	state := State{
 		Profile: targetName, Backend: backend, Expression: normalized,
 		TargetType: targetType, TargetName: targetName,
@@ -196,7 +200,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		Expressions: normalizedExpressions, Permission: defaultString(spec.Permission, PermissionUser), CronFile: spec.CronFile,
 		User: spec.User, Priority: spec.Priority, Log: spec.Log, LockMode: spec.LockMode, LockWait: spec.LockWait,
 		Enabled: spec.Enabled, Start: spec.Start, Network: spec.Network, ACPower: spec.ACPower,
-		Executable: executable, EnvironmentPath: manager.environmentPath,
+		Executable: executable, EnvironmentPath: environmentPath,
 	}
 	if backend == BackendLaunchd {
 		state.JobFile, err = manager.launchdJobPath(identity, action)

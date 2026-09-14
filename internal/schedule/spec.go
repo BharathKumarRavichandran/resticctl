@@ -21,27 +21,28 @@ const (
 // Spec describes a portable scheduled action. Expressions use normalized
 // five-field cron syntax; backends may reject constructs they cannot preserve.
 type Spec struct {
-	Name        string
-	TargetType  string
-	Action      string
-	Backend     string
-	Executable  string
-	ConfigDir   string
-	Expressions []string
-	CatchUp     bool
-	Prune       bool
-	Enabled     bool
-	Start       bool
-	Permission  string
-	CronFile    string
-	User        string
-	Priority    string
-	Log         string
-	LockMode    string
-	LockWait    string
-	Network     bool
-	ACPower     bool
-	DryRun      bool
+	Name            string
+	TargetType      string
+	Action          string
+	Backend         string
+	Executable      string
+	EnvironmentPath *string
+	ConfigDir       string
+	Expressions     []string
+	CatchUp         bool
+	Prune           bool
+	Enabled         bool
+	Start           bool
+	Permission      string
+	CronFile        string
+	User            string
+	Priority        string
+	Log             string
+	LockMode        string
+	LockWait        string
+	Network         bool
+	ACPower         bool
+	DryRun          bool
 }
 
 func (spec Spec) validatePolicy() error {

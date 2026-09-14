@@ -117,6 +117,53 @@ func TestScheduleInstallAndStatusCommands(t *testing.T) {
 	}
 }
 
+func TestProfileRenameReinstallsScheduleUnderNewIdentity(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	executor := &recordingScheduleExecutor{}
+	manager := schedule.NewManager(schedule.WithExecutor(executor), schedule.WithPlatform("linux", 1000), schedule.WithEnvironmentPath(""), schedule.WithClock(time.Now))
+	if _, err := manager.InstallAction(context.Background(), directory, "example", schedule.ActionBackup, "0 2 * * *", schedule.BackendCron, "/usr/local/bin/resticctl", true, false); err != nil {
+		t.Fatal(err)
+	}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager {
+		return schedule.NewManager(schedule.WithExecutor(executor), schedule.WithPlatform("linux", 1000), schedule.WithEnvironmentPath("/current/bin"), schedule.WithClock(time.Now))
+	}
+	status, err := cli.run(context.Background(), []string{"profile", "rename", "example", "renamed", "--config-dir", directory})
+	if err != nil || status != 0 {
+		t.Fatalf("rename status=%d error=%v", status, err)
+	}
+	if _, err := schedule.LoadAction(directory, "example", schedule.ActionBackup); !errors.Is(err, schedule.ErrNotInstalled) {
+		t.Fatalf("old schedule remains: %v", err)
+	}
+	state, err := schedule.LoadAction(directory, "renamed", schedule.ActionBackup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.CatchUp || state.EnvironmentPath != "" || !strings.Contains(executor.crontab, "'schedule' 'run' 'renamed'") || strings.Contains(executor.crontab, "'schedule' 'run' 'example'") {
+		t.Fatalf("renamed schedule = %#v, crontab = %q", state, executor.crontab)
+	}
+}
+
+func TestProfileRenameRejectsExistingDestinationSchedule(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	if _, err := manager.Install(context.Background(), directory, "renamed", "0 3 * * *", schedule.BackendCron, "/usr/local/bin/resticctl", false); err != nil {
+		t.Fatal(err)
+	}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	status, err := cli.run(context.Background(), []string{"profile", "rename", "example", "renamed", "--config-dir", directory})
+	if status != 1 || err == nil {
+		t.Fatalf("rename status=%d error=%v", status, err)
+	}
+	if _, err := profile.Load(profile.Dir(directory), "example"); err != nil {
+		t.Fatalf("source profile changed: %v", err)
+	}
+}
+
 func TestScheduleInstallWarnsWhenScheduleIsNotDeclared(t *testing.T) {
 	directory := t.TempDir()
 	writeCLIProfile(t, directory)

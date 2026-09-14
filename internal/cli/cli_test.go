@@ -35,6 +35,25 @@ func TestCreateAndListCommands(t *testing.T) {
 	}
 }
 
+func TestProfileRenameCommand(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	var output, stderr bytes.Buffer
+	status, err := runForTest(context.Background(), []string{"profile", "rename", "example", "renamed", "--config-dir", directory}, &output, &stderr)
+	if err != nil || status != 0 {
+		t.Fatalf("rename status=%d error=%v stderr=%s", status, err, stderr.String())
+	}
+	if _, err := profile.Load(profile.Dir(directory), "renamed"); err != nil {
+		t.Fatalf("renamed profile does not load: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(profile.Dir(directory), "example.json")); !os.IsNotExist(err) {
+		t.Fatalf("old profile remains: %v", err)
+	}
+	if !strings.Contains(output.String(), "Updated: rename profile example to renamed") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
 func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T) {
 	directory := t.TempDir()
 	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "base.json"), `{

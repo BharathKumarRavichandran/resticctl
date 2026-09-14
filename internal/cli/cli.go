@@ -96,6 +96,7 @@ func (cli *commandLine) rootCommand() *cobra.Command {
 		"configuration directory (default: platform config directory)",
 	)
 	root.AddCommand(
+		cli.profileManageCommand(),
 		cli.createCommand(),
 		cli.listCommand(),
 		cli.showCommand(),

@@ -548,6 +548,7 @@ read permissions. `resticctl create` uses mode `0600` for the files it creates.
 
 ```text
 resticctl create <profile>
+resticctl profile rename <old> <new> [--dry-run]
 resticctl list
 resticctl show <profile> [--explain]
 resticctl init <profile>
@@ -588,6 +589,18 @@ resticctl completion <shell>
 ### `create`
 
 Creates a profile and its matching private configuration file.
+
+### `profile rename`
+
+Renames a profile and updates local references to it. This includes conventional
+`<profile>.private.json` and `<profile>.credentials.json` files, child profile
+parent references, group membership, run status, status history, and installed
+schedules. Other referenced credential or private files keep their existing
+names. The command refuses to overwrite destination files or schedules; use
+`--dry-run` to preview the changes.
+
+Existing Restic snapshots keep their original `profile:<name>` tags. Renaming a
+profile does not modify repository data.
 
 ### `list`
 
