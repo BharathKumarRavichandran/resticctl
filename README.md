@@ -265,6 +265,8 @@ directly in command arguments. An existing aggregate copy schedule runs every
 target. Direct runs use the profile-wide action lock and maintain status per
 target, readable with `resticctl status home --action copy --target offsite`.
 
+See [`migrate`](#migrate) to promote a copy target to the primary repository.
+
 The optional `runtime` object applies host-safety policy to backup, forget,
 check, and recorded Restic jobs:
 
@@ -551,6 +553,11 @@ resticctl show <profile> [--explain]
 resticctl init <profile>
 resticctl validate <profile>
 resticctl backup <profile> [--dry-run]
+resticctl copy <profile> [target] [--all] [--dry-run]
+resticctl migrate plan <profile> <target>
+resticctl migrate sync <profile> <target>
+resticctl migrate verify <profile> <target> [--test-restore]
+resticctl migrate cutover <profile> <target> --yes [--test-restore]
 resticctl snapshots <profile>
 resticctl stats <profile> [--mode <mode>]
 resticctl ls <profile> <snapshot> [path...]
@@ -643,6 +650,48 @@ success and failure. A hook failure is returned to the caller and stops later
 hooks in the same phase. Failure and finally hooks are still given a bounded
 opportunity to run after cancellation. Temporary database staging and Restic
 password files are cleaned before failure/finally processing.
+
+### `copy`
+
+Copies this profile's snapshots to a target configured under `copies`. Specify
+a target name, omit it when the profile has exactly one target, or use `--all`.
+`--dry-run` validates the workflow without copying or initializing a repository.
+
+Copy always selects the profile's `profile:<name>` tag. The target's
+`snapshot_ids`, `hosts`, `tags`, `paths`, and `args` narrow that selection.
+
+### `migrate`
+
+Promotes a configured copy target to the profile's primary repository:
+
+```sh
+resticctl migrate plan home offsite
+resticctl migrate sync home offsite
+resticctl migrate verify home offsite
+resticctl migrate verify home offsite --test-restore
+resticctl migrate cutover home offsite --yes
+```
+
+- `plan` validates the profile and prints redacted source and destination
+  details.
+- `sync` incrementally copies the snapshots selected by the target.
+- `verify` confirms that every selected source snapshot exists at the
+  destination, then runs `restic check` there.
+- `cutover` verifies again, promotes the destination, and retains the former
+  source as `rollback-<target>`. It never deletes source data.
+
+`--test-restore` restores one destination snapshot with content verification in
+a private temporary directory. This can require substantial time, disk space,
+bandwidth, and cloud egress. The temporary plaintext is removed after success,
+failure, or cancellation, and profile restore arguments cannot redirect it.
+
+Cutover requires the source and destination to use dedicated
+`credentials_file` bindings. Profiles using private overlays or inline
+credentials must be cut over manually after verification.
+
+Native B2 and S3 credentials for different accounts conflict because Restic
+copies both repositories in one process. For cross-account migration, configure
+distinct `rclone:` remotes that share a private rclone configuration.
 
 ### `snapshots`
 

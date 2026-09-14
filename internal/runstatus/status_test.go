@@ -1,6 +1,7 @@
 package runstatus
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -90,6 +91,26 @@ func TestCopyTargetsUseProfileLockAndIndependentStatus(t *testing.T) {
 	}
 	if status.Profile != "home" || status.TargetType != "copy" || status.TargetName != "offsite" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestWithProfileLockExcludesRecordedActions(t *testing.T) {
+	directory := t.TempDir()
+	err := WithProfileLock(context.Background(), directory, "home", func() error {
+		if _, err := BeginAction(directory, "home", "backup", time.Now()); !errors.Is(err, ErrLocked) {
+			t.Fatalf("concurrent action error = %v, want ErrLocked", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, err := BeginAction(directory, "home", "backup", time.Now())
+	if err != nil {
+		t.Fatalf("profile lock was not released: %v", err)
+	}
+	if err := recorder.Finish(nil, time.Now()); err != nil {
+		t.Fatal(err)
 	}
 }
 

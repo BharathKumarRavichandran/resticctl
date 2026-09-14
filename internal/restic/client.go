@@ -53,12 +53,35 @@ type BackupSummary struct {
 
 type Result struct{ Summary *BackupSummary }
 
+// SnapshotIdentity identifies a snapshot and, for copied snapshots, its ID in
+// the source repository.
+type SnapshotIdentity struct {
+	ID       string `json:"id"`
+	Original string `json:"original"`
+}
+
 const maximumJSONLine = 1 << 20
 const maximumDiagnostic = 64 << 10
+const maximumSnapshotJSON = 64 << 20
 
 type boundedBuffer struct {
 	data      []byte
 	truncated bool
+}
+
+type limitedBuffer struct {
+	data     []byte
+	limit    int
+	exceeded bool
+}
+
+func (buffer *limitedBuffer) Write(data []byte) (int, error) {
+	remaining := buffer.limit - len(buffer.data)
+	if remaining > 0 {
+		buffer.data = append(buffer.data, data[:min(remaining, len(data))]...)
+	}
+	buffer.exceeded = buffer.exceeded || len(data) > remaining
+	return len(data), nil
 }
 
 func (buffer *boundedBuffer) Write(data []byte) (int, error) {
@@ -290,6 +313,38 @@ func (client *Client) RunWithResult(ctx context.Context, config Config, argument
 func (client *Client) RunWithInput(ctx context.Context, config Config, arguments []string, cwd string, input io.Reader) (Result, error) {
 	var capture summaryCapture
 	return client.runInput(ctx, config, arguments, cwd, &capture, input, client.stdout, client.stderr)
+}
+
+// SnapshotIdentities returns snapshots selected by the supplied flags.
+func (client *Client) SnapshotIdentities(ctx context.Context, config Config, arguments []string) ([]SnapshotIdentity, error) {
+	var output limitedBuffer
+	output.limit = maximumSnapshotJSON
+	separator := len(arguments)
+	for index, argument := range arguments {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	commandArguments := append([]string{"snapshots"}, arguments[:separator]...)
+	commandArguments = append(commandArguments, "--json")
+	commandArguments = append(commandArguments, arguments[separator:]...)
+	if _, err := client.runInput(ctx, config, commandArguments, "", nil, client.stdin, &output, client.stderr); err != nil {
+		return nil, err
+	}
+	if output.exceeded {
+		return nil, fmt.Errorf("snapshot listing exceeds %d bytes", maximumSnapshotJSON)
+	}
+	var snapshots []SnapshotIdentity
+	if err := json.Unmarshal(output.data, &snapshots); err != nil {
+		return nil, fmt.Errorf("cannot decode restic snapshot listing: %w", err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.ID == "" {
+			return nil, errors.New("restic snapshot listing contains an empty ID")
+		}
+	}
+	return snapshots, nil
 }
 
 // RepositoryExists returns false only for Restic's explicit missing-repository

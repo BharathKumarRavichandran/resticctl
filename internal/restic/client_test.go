@@ -77,6 +77,9 @@ func TestResticHelper(t *testing.T) {
 			_, _ = io.WriteString(os.Stdout, lockJSON)
 		}
 	}
+	if output := os.Getenv("RESTIC_HELPER_STDOUT"); output != "" {
+		_, _ = io.WriteString(os.Stdout, output)
+	}
 	switch os.Getenv("RESTIC_HELPER_FAILURE") {
 	case "missing":
 		_, _ = io.WriteString(os.Stdout, "repository-config-must-not-leak")
@@ -90,6 +93,21 @@ func TestResticHelper(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestSnapshotIdentities(t *testing.T) {
+	client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdout: io.Discard, stderr: io.Discard}
+	config := Config{
+		Repository: "local:repository", PasswordValue: "secret",
+		Environment: map[string]string{"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_STDOUT": `[{"id":"bbb","original":"source-bbb"},{"id":"aaa"}]`},
+	}
+	snapshots, err := client.SnapshotIdentities(context.Background(), config, []string{"--tag", "profile:home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 || snapshots[0].ID != "bbb" || snapshots[0].Original != "source-bbb" || snapshots[1].ID != "aaa" {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
 }
 
 func TestCopyUsesIndependentPasswordFiles(t *testing.T) {

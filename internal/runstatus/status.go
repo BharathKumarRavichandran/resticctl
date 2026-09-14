@@ -79,6 +79,17 @@ type Recorder struct {
 	release func() error
 }
 
+// WithProfileLock runs an operation while excluding all recorded actions for
+// the profile. It does not create or update action status.
+func WithProfileLock(ctx context.Context, configDir, name string, run func() error) (runErr error) {
+	release, _, err := acquireAction(ctx, configDir, name, "copy", 0)
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, release()) }()
+	return run()
+}
+
 func Begin(configDir, name string, now time.Time) (*Recorder, error) {
 	return BeginAction(configDir, name, "backup", now)
 }
