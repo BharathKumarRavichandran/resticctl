@@ -173,8 +173,8 @@ type ForgetSchedule struct {
 }
 
 type CopyTarget struct {
+	PrivateFile          string                `json:"private_file,omitempty"`
 	Repository           string                `json:"repository"`
-	CredentialsFile      string                `json:"credentials_file,omitempty"`
 	InitializeRepository bool                  `json:"initialize_repository,omitempty"`
 	CopyChunkerParams    bool                  `json:"copy_chunker_params,omitempty"`
 	SnapshotIDs          []string              `json:"snapshot_ids,omitempty"`
@@ -186,7 +186,7 @@ type CopyTarget struct {
 	RunAfter             []Hook                `json:"run_after,omitempty"`
 	RunAfterFail         []Hook                `json:"run_after_fail,omitempty"`
 	RunFinally           []Hook                `json:"run_finally,omitempty"`
-	Credentials          RepositoryCredentials `json:"-"`
+	Credentials          RepositoryCredentials `json:"credentials,omitempty"`
 }
 
 const DefaultHookTimeout = 5 * time.Minute
@@ -280,7 +280,6 @@ type Profile struct {
 	Name                 string                   `json:"-"`
 	Parent               string                   `json:"parent,omitempty"`
 	Repository           string                   `json:"repository"`
-	CredentialsFile      string                   `json:"credentials_file,omitempty"`
 	PrivateFile          string                   `json:"private_file,omitempty"`
 	BackupPaths          []string                 `json:"backup_paths"`
 	Stream               *Stream                  `json:"stream,omitempty"`

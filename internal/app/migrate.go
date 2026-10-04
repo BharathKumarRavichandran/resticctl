@@ -38,8 +38,8 @@ func CutoverMigration(ctx context.Context, newRunner RunnerFactory, configDir, p
 		if err != nil {
 			return err
 		}
-		if backupProfile.PrivateFile != "" || backupProfile.CredentialsFile == "" {
-			return errors.New("migration cutover requires the source profile to use credentials_file")
+		if backupProfile.PrivateFile != "" {
+			return errors.New("migration cutover requires inline source credentials; private overlays must be cut over manually")
 		}
 		targetProfile, err := profile.ForCopyTarget(backupProfile, targetName)
 		if err != nil {
@@ -48,7 +48,7 @@ func CutoverMigration(ctx context.Context, newRunner RunnerFactory, configDir, p
 		if err := verifyMigration(ctx, newRunner, backupProfile, targetProfile, targetName, testRestore, output); err != nil {
 			return err
 		}
-		rollback, err = profile.Cutover(profileDir, profileName, targetName)
+		rollback, err = profile.CutoverVerified(profileDir, profileName, targetName, backupProfile)
 		return err
 	})
 	return rollback, err

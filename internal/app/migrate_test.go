@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -137,5 +139,62 @@ func TestVerifyMigrationCleansFailedTestRestore(t *testing.T) {
 	}
 	if _, statErr := os.Stat(runner.target); !os.IsNotExist(statErr) {
 		t.Fatalf("failed test restore directory was not removed: %s: %v", runner.target, statErr)
+	}
+}
+
+type changingMigrationRunner struct {
+	migrationRecordingRunner
+	change func() error
+}
+
+func (runner *changingMigrationRunner) Run(ctx context.Context, config restic.Config, arguments []string, cwd string) error {
+	if len(arguments) > 0 && arguments[0] == "check" && runner.change != nil {
+		if err := runner.change(); err != nil {
+			return err
+		}
+	}
+	return runner.recordingRunner.Run(ctx, config, arguments, cwd)
+}
+
+func TestCutoverMigrationPromotesOnlyVerifiedConfiguration(t *testing.T) {
+	for _, change := range []bool{false, true} {
+		t.Run(fmt.Sprintf("change=%t", change), func(t *testing.T) {
+			configDir := t.TempDir()
+			profilesDir := profile.Dir(configDir)
+			path := filepath.Join(profilesDir, "home.json")
+			original := `{"repository":"local:source","credentials":{"password":{"value":"source"}},"copies":{"offsite":{"repository":"local:destination","credentials":{"password":{"value":"destination"}}}}}`
+			writeRenameTestFile(t, path, original)
+			runner := &changingMigrationRunner{migrationRecordingRunner: migrationRecordingRunner{snapshots: map[string][]restic.SnapshotIdentity{
+				"local:source": {{ID: "source-id"}}, "local:destination": {{ID: "destination-id", Original: "source-id"}},
+			}}}
+			updated := strings.Replace(original, "local:destination", "local:unverified", 1)
+			if change {
+				runner.change = func() error { return os.WriteFile(path, []byte(updated), 0o600) }
+			}
+			rollback, err := CutoverMigration(context.Background(), func() (Runner, error) { return runner, nil }, configDir, profilesDir, "home", "offsite", false, io.Discard)
+			if change {
+				if err == nil || !strings.Contains(err.Error(), "changed after migration verification") {
+					t.Fatalf("cutover error = %v", err)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != updated {
+					t.Fatal("cutover overwrote concurrent configuration change")
+				}
+				return
+			}
+			if err != nil || rollback != "rollback-offsite" {
+				t.Fatalf("cutover rollback=%q error=%v", rollback, err)
+			}
+			loaded, err := profile.Load(profilesDir, "home")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Repository != "local:destination" || loaded.Copies[rollback].Repository != "local:source" {
+				t.Fatalf("cutover profile = %#v", loaded)
+			}
+		})
 	}
 }

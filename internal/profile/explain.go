@@ -33,11 +33,21 @@ func ExplainInheritance(configDir, name string) ([]FieldExplanation, error) {
 
 	fields := make(map[string]FieldExplanation)
 	types := make(map[string]jsonFieldType)
+	copyNames := make(map[string]struct{})
 	for index, document := range documents {
 		if index > 0 {
 			removeExplanationTree(fields, types, "credentials")
-			removeExplanationTree(fields, types, "credentials_file")
 			removeExplanationTree(fields, types, "private_file")
+			for name := range copyNames {
+				removeExplanationTree(fields, types, "copies."+name+".credentials")
+				removeExplanationTree(fields, types, "copies."+name+".private_file")
+			}
+		}
+		var copies map[string]json.RawMessage
+		if json.Unmarshal(document.fields[matchingJSONKey(document.fields, "copies")], &copies) == nil {
+			for name := range copies {
+				copyNames[name] = struct{}{}
+			}
 		}
 		applyExplanationObject(fields, types, nil, document.fields, document.name)
 	}
@@ -104,7 +114,10 @@ func applyExplanationObject(fields map[string]FieldExplanation, types map[string
 		fieldType, child := classifyJSONField(value)
 		previousPath := matchingExplanationPath(types, path)
 		previousType, existed := types[previousPath]
-		if fieldType == jsonObject && !passwordObjectIsAtomic(prefix, key) && (!existed || previousType == jsonObject) {
+		if fieldType == jsonObject && !passwordObjectIsAtomic(prefix, key) {
+			if existed && previousType != jsonObject {
+				removeExplanationTree(fields, types, previousPath)
+			}
 			if previousPath != path {
 				delete(types, previousPath)
 			}
@@ -137,6 +150,7 @@ func passwordObjectIsAtomic(prefix []string, key string) bool {
 		return false
 	}
 	return len(prefix) == 1 && strings.EqualFold(prefix[0], "credentials") ||
+		len(prefix) == 3 && strings.EqualFold(prefix[0], "copies") && strings.EqualFold(prefix[2], "credentials") ||
 		len(prefix) == 4 && strings.EqualFold(prefix[3], "connection")
 }
 
@@ -165,8 +179,9 @@ func classifyJSONField(value json.RawMessage) (jsonFieldType, map[string]json.Ra
 }
 
 func removeExplanationTree(fields map[string]FieldExplanation, types map[string]jsonFieldType, path string) {
+	prefix := strings.ToLower(path) + "."
 	for candidate := range types {
-		if candidate == path || strings.HasPrefix(candidate, path+".") {
+		if strings.EqualFold(candidate, path) || strings.HasPrefix(strings.ToLower(candidate), prefix) {
 			delete(types, candidate)
 			delete(fields, candidate)
 		}

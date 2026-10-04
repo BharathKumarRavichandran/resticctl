@@ -2,6 +2,7 @@ package profile
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,12 +55,12 @@ func TestExplainInheritanceMatchesMergeRules(t *testing.T) {
 func TestExplainInheritanceDoesNotInheritCredentialFields(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
-        "credentials_file":"base.credentials.json",
+        "credentials":{"password":{"value":"parent-secret"}},
         "private_file":"base.private.json"
       }`)
 	writePrivate(t, filepath.Join(directory, "child.json"), `{
         "parent":"base",
-        "credentials_file":"child.credentials.json"
+        "credentials":{"password":{"value":"child-secret"}}
       }`)
 
 	explanations, err := ExplainInheritance(directory, "child")
@@ -70,7 +71,7 @@ func TestExplainInheritanceDoesNotInheritCredentialFields(t *testing.T) {
 	for _, explanation := range explanations {
 		byPath[explanation.Path] = explanation
 	}
-	assertExplanation(t, byPath, "credentials_file", "child", "defined")
+	assertExplanation(t, byPath, "credentials.password", "child", "defined")
 	if _, exists := byPath["private_file"]; exists {
 		t.Fatal("parent private_file was reported as inherited")
 	}
@@ -85,4 +86,49 @@ func assertExplanation(t *testing.T, explanations map[string]FieldExplanation, p
 	if explanation.Source != source || explanation.Action != action {
 		t.Fatalf("%s explanation = %#v, want source %q action %q", path, explanation, source, action)
 	}
+}
+
+func TestExplainCopyCredentialsAreLocalAndPasswordsAtomic(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "parent.json"), `{
+		"Credentials":{"password":{"value":"parent-secret"}},
+		"Private_File":"parent.private.json",
+		"Copies":{"offsite.credentials":{"repository":"local:secondary","Private_File":"offsite.credentials.private.json",
+			"Credentials":{"environment":{"PARENT_TOKEN":"secret"},"password":{"command":["parent-password"]}}}}
+	}`)
+	writePrivate(t, filepath.Join(directory, "child.json"), `{
+		"parent":"parent","credentials":{"password":{"value":"source-secret"}},
+		"copies":{"offsite.credentials":{"credentials":{"password":{"value":"target-secret"}}}}
+	}`)
+	explanations, err := ExplainInheritance(directory, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]FieldExplanation)
+	for _, explanation := range explanations {
+		byPath[explanation.Path] = explanation
+		if strings.Contains(strings.ToLower(explanation.Path), "private_file") ||
+			strings.Contains(strings.ToLower(explanation.Path), "parent_token") ||
+			strings.Contains(strings.ToLower(explanation.Path), "password.") {
+			t.Fatalf("unexpected credential explanation: %#v", explanation)
+		}
+	}
+	assertExplanation(t, byPath, "copies.offsite.credentials.credentials.password", "child", "defined")
+	assertExplanation(t, byPath, "Copies.offsite.credentials.repository", "parent", "inherited")
+}
+
+func TestExplainReenabledCopyTargetShowsItsFields(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "parent.json"), `{"copies":{"offsite":null}}`)
+	writePrivate(t, filepath.Join(directory, "child.json"), `{"parent":"parent","copies":{"offsite":{"repository":"local:destination","credentials":{"password":{"value":"secret"}}}}}`)
+	explanations, err := ExplainInheritance(directory, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]FieldExplanation)
+	for _, explanation := range explanations {
+		byPath[explanation.Path] = explanation
+	}
+	assertExplanation(t, byPath, "copies.offsite.repository", "child", "defined")
+	assertExplanation(t, byPath, "copies.offsite.credentials.password", "child", "defined")
 }

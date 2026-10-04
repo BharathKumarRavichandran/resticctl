@@ -32,14 +32,17 @@ type ResolvedDatabases struct {
 func RedactedResolvedProfile(value Profile) ResolvedProfile {
 	credentials := redactedRepositoryCredentials(value.Credentials)
 	value.Repository = redactRepository(value.Repository)
-	value.CredentialsFile = redactConfigured(value.CredentialsFile)
 	value.PrivateFile = redactConfigured(value.PrivateFile)
 	value.Monitoring = redactedMonitoring(value.Monitoring)
 	if value.Copies != nil {
 		copies := make(map[string]CopyTarget, len(value.Copies))
 		for name, target := range value.Copies {
-			target.Repository = redactRepository(target.Repository)
-			target.CredentialsFile = redactConfigured(target.CredentialsFile)
+			if target.PrivateFile != "" {
+				target.Repository = redactedValue
+			} else {
+				target.Repository = redactRepository(target.Repository)
+			}
+			target.PrivateFile = redactConfigured(target.PrivateFile)
 			target.Credentials = RepositoryCredentials{}
 			copies[name] = target
 		}

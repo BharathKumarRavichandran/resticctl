@@ -133,7 +133,10 @@ func validateMonitoring(p *Profile, base string) error {
 			return fmt.Errorf("monitoring.logs[%d].type is unsupported: %s", i, destination.Type)
 		}
 	}
-	sensitive := []string{filepath.Join(base, p.Name+".json"), p.CredentialsFile, p.PrivateFile, p.Credentials.Password.File}
+	sensitive := []string{filepath.Join(base, p.Name+".json"), p.PrivateFile, p.Credentials.Password.File}
+	for _, target := range p.Copies {
+		sensitive = append(sensitive, target.PrivateFile, target.Credentials.Password.File)
+	}
 	for _, credential := range p.Credentials.DatabaseCredentials {
 		sensitive = append(sensitive, credential.Password.File)
 	}

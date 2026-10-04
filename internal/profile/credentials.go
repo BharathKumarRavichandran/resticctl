@@ -7,77 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 )
-
-func loadCredentials(path string) (Credentials, error) {
-	var credentials Credentials
-	if err := decodePrivateStrict(path, "credentials", &credentials); err != nil {
-		return Credentials{}, err
-	}
-	base := filepath.Dir(path)
-	if err := validateRepositoryCredentials(&credentials, base, "credentials"); err != nil {
-		return Credentials{}, err
-	}
-	if err := validateEnvironment("database_environment", credentials.DatabaseEnvironment); err != nil {
-		return Credentials{}, err
-	}
-	if credentials.DatabaseCredentials != nil && (credentials.DatabaseEnvironment != nil || credentials.DatabaseEnvironments != nil) {
-		return Credentials{}, errors.New("credentials.databases must not be combined with deprecated database_environment or database_environments")
-	}
-	credentialNames := make(map[string]struct{}, len(credentials.DatabaseCredentials))
-	for name, credential := range credentials.DatabaseCredentials {
-		if !isPortableName(name) {
-			return Credentials{}, fmt.Errorf("invalid databases credential name: %s", name)
-		}
-		normalized := strings.ToLower(name)
-		if _, exists := credentialNames[normalized]; exists {
-			return Credentials{}, fmt.Errorf("duplicate databases credential name: %s", name)
-		}
-		credentialNames[normalized] = struct{}{}
-		password := credential.Password
-		if err := validatePasswordSource("databases."+name+".password", &password, base, false); err != nil {
-			return Credentials{}, err
-		}
-		credential.Password = password
-		credentials.DatabaseCredentials[name] = credential
-		if err := validateEnvironment("databases."+name+".environment", credential.Environment); err != nil {
-			return Credentials{}, err
-		}
-	}
-	databaseNames := make(map[string]struct{}, len(credentials.DatabaseEnvironments))
-	for name, environment := range credentials.DatabaseEnvironments {
-		if !isPortableName(name) {
-			return Credentials{}, fmt.Errorf("invalid database_environments name: %s", name)
-		}
-		normalized := strings.ToLower(name)
-		if _, exists := databaseNames[normalized]; exists {
-			return Credentials{}, fmt.Errorf("duplicate database_environments name: %s", name)
-		}
-		databaseNames[normalized] = struct{}{}
-		if err := validateEnvironment("database_environments."+name, environment); err != nil {
-			return Credentials{}, err
-		}
-	}
-
-	return credentials, nil
-}
-
-func loadCopyCredentials(path string) (RepositoryCredentials, error) {
-	var credentials RepositoryCredentials
-	if err := decodePrivateStrict(path, "copy credentials", &credentials); err != nil {
-		return RepositoryCredentials{}, err
-	}
-	base := filepath.Dir(path)
-	value := Credentials{Environment: credentials.Environment, Password: credentials.Password}
-	if err := validateRepositoryCredentials(&value, base, "copy credentials"); err != nil {
-		return RepositoryCredentials{}, err
-	}
-	credentials.Environment = value.Environment
-	credentials.Password = value.Password
-	return credentials, nil
-}
 
 func validateRepositoryCredentials(credentials *Credentials, base, label string) error {
 	return validateRepositoryCredentialFields(credentials, base, label, true)

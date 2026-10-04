@@ -240,7 +240,7 @@ authenticated secondary repositories:
   "copies": {
     "offsite": {
       "repository": "b2:company-offsite:/restic",
-      "credentials_file": "home.offsite.credentials.json",
+      "private_file": "home.offsite.private.json",
       "initialize_repository": true,
       "copy_chunker_params": true,
       "snapshot_ids": [],
@@ -253,9 +253,11 @@ authenticated secondary repositories:
 }
 ```
 
-The target credentials file uses the same private repository credential shape
-as the primary credentials file. Copy credential-file selections are not
-inherited; child profiles must bind credentials for every inherited target.
+Copy targets accept `private_file` overlays containing `repository` and
+`credentials`, or inline `credentials`, using the same shape as the primary
+profile. Copy private-file selections and inline credentials are not inherited;
+child profiles must bind credentials for every inherited target. Set a target
+to `null` to disable it in a child profile.
 Run one target with
 `resticctl copy home offsite`, omit the target when exactly one exists, or use
 `resticctl copy home --all`. Every copy automatically selects the profile tag;
@@ -359,8 +361,7 @@ database structure, but may contain only deployment overrides—not backup
 policy. Database providers merge by backup name. Private scalars override
 public values; host lists, password sources (`value`, `file`, or `command`),
 and the repository `environment` map replace their public counterparts as
-units. `private_file` and legacy `credentials_file` mode are mutually
-exclusive. Resolved profiles preserve this structure and render private values
+units. Resolved profiles preserve this structure and render private values
 as `"<redacted>"`.
 
 PostgreSQL, MongoDB, MySQL, MariaDB, and SQL Server can be staged by client programs
@@ -462,7 +463,7 @@ directory:
 {
   "parent": "shared",
   "repository": "local:/backups/laptop",
-  "credentials_file": "laptop.credentials.json",
+  "private_file": "laptop.private.json",
   "backup_paths": ["~/Documents"],
   "tags": ["laptop"]
 }
@@ -479,7 +480,7 @@ Objects merge recursively, including database entries, command sections,
 remain inherited. Password source objects replace as a unit so sources cannot
 be accidentally combined. Set an optional object to `null` to clear it.
 
-`private_file`, `credentials_file`, and inline `credentials` are never
+`private_file` and inline `credentials` are never
 inherited. A directly used profile must configure one of them; a profile used
 only as a parent may omit credentials. Parent names follow profile-name rules.
 Missing or invalid parents and inheritance cycles are rejected. Validation runs
@@ -488,16 +489,18 @@ on the merged profile before credentials are loaded or commands run.
 ## Credentials
 
 For Backblaze's S3-compatible API, put the application key in `credentials`
-inside the private file. The legacy standalone credentials-file shape is:
+inside the private file:
 
 ```json
 {
-  "environment": {
-    "AWS_ACCESS_KEY_ID": "your-key-id",
-    "AWS_SECRET_ACCESS_KEY": "your-application-key"
-  },
-  "password": {
-    "command": ["secret-tool", "lookup", "application", "restic", "profile", "<profile>"]
+  "credentials": {
+    "environment": {
+      "AWS_ACCESS_KEY_ID": "your-key-id",
+      "AWS_SECRET_ACCESS_KEY": "your-application-key"
+    },
+    "password": {
+      "command": ["secret-tool", "lookup", "application", "restic", "profile", "<profile>"]
+    }
   }
 }
 ```
@@ -506,8 +509,10 @@ inside the private file. The legacy standalone credentials-file shape is:
 
 ```json
 {
-  "password": {
-    "command": ["security", "find-generic-password", "-a", "<device>", "-s", "restic-<profile>", "-w"]
+  "credentials": {
+    "password": {
+      "command": ["security", "find-generic-password", "-a", "<device>", "-s", "restic-<profile>", "-w"]
+    }
   }
 }
 ```
@@ -531,15 +536,17 @@ A password file also works:
 
 ```json
 {
-  "password": {
-    "file": "~/.config/resticctl/<profile>.password"
+  "credentials": {
+    "password": {
+      "file": "~/.config/resticctl/<profile>.password"
+    }
   }
 }
 ```
 
 Set exactly one of `password.value`, `password.file`, or `password.command`.
 
-On Unix, credential files, password files, private override files, and profiles
+On Unix, password files, private override files, and profiles
 that contain inline secrets must be owned by the current user and inaccessible
 to group and other users. Public profiles without inline secrets may use normal
 read permissions. `resticctl create` uses mode `0600` for the files it creates.
@@ -593,10 +600,10 @@ Creates a profile and its matching private configuration file.
 ### `profile rename`
 
 Renames a profile and updates local references to it. This includes conventional
-`<profile>.private.json` and `<profile>.credentials.json` files, child profile
-parent references, group membership, run status, status history, and installed
-schedules. Other referenced credential or private files keep their existing
-names. The command refuses to overwrite destination files or schedules; use
+`<profile>.private.json` files, child profile parent references, group membership,
+run status, status history, and installed schedules. Other referenced private
+files keep their existing names. The command refuses to overwrite destination
+files or schedules; use
 `--dry-run` to preview the changes.
 
 Existing Restic snapshots keep their original `profile:<name>` tags. Renaming a
@@ -698,9 +705,13 @@ a private temporary directory. This can require substantial time, disk space,
 bandwidth, and cloud egress. The temporary plaintext is removed after success,
 failure, or cancellation, and profile restore arguments cannot redirect it.
 
-Cutover requires the source and destination to use dedicated
-`credentials_file` bindings. Profiles using private overlays or inline
-credentials must be cut over manually after verification.
+Cutover requires inline source credentials declared by the selected profile.
+The destination may use inline credentials or a private overlay; cutover writes
+its resolved repository credentials into the profile with private permissions.
+Source profiles using private overlays must be cut over manually after
+verification to preserve their database deployment overrides. Cutover rejects
+configuration changes made during verification; rerun it with the updated
+configuration.
 
 Native B2 and S3 credentials for different accounts conflict because Restic
 copies both repositories in one process. For cross-account migration, configure
@@ -1025,30 +1036,13 @@ SQL Server native backups are stored as `databases/<name>.bak`. Restore them
 with SQL Server tooling after copying the file to a path visible to the target
 server.
 
-In legacy `credentials_file` mode, database credentials are scoped by configured
-database backup name under `databases`:
-
-```json
-{
-  "databases": {
-    "accounts": {"password": {"value": "..."}},
-    "orders": {"password": {"file": "/private/mysql-password"}},
-    "warehouse": {"password": {"command": ["secret-tool", "lookup", "database", "warehouse"]}}
-  }
-}
-```
-
-Each entry is available only to the database backup with the same `name`.
-resticctl delivers `password` using the provider's secure mechanism rather than
-requiring users to know client-specific environment variables. The optional
-`environment` map is an advanced escape hatch. The deprecated
-`database_environment` and `database_environments` fields remain readable for
-compatibility, but cannot be mixed with `databases`. MongoDB passwords live in
-the private YAML file named by `options.config_file`; its credential entry may
-contain only additional environment values. Credentials are never added to
-generated schedules or client argument values. The MongoDB config file must be
-mode 0600 (or otherwise private under the platform checks used for profile
-credentials).
+Database passwords belong in each database's `connection.password`, either in
+its public configuration or its `private_file` overlay. Password sources accept
+`value`, `file`, or `command`. resticctl delivers passwords using the provider's
+secure mechanism. MongoDB passwords live in the private YAML file named by
+`options.config_file`. Credentials are never added to generated schedules or
+client argument values. The MongoDB config file must be private under the
+platform checks used for profile credentials.
 
 For MySQL/MariaDB, resticctl writes the password and configured
 `username` to a temporary mode-0600 client option file, passes that file as the

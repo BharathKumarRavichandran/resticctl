@@ -63,7 +63,7 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
         }`)
 	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "example.json"), `{
           "parent":"base",
-          "credentials_file":"example.credentials.json",
+          "private_file":"example.credentials.json",
           "backup_paths":["child"],
           "monitoring":{"http":[{
             "url":"https://hooks.example.test/webhook-secret",
@@ -71,10 +71,7 @@ func TestShowCommandDisplaysResolvedProfileWithCredentialsRedacted(t *testing.T)
             "body":"body-secret"
           }]}
         }`)
-	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "example.credentials.json"), `{
-          "environment":{"TOKEN":"credential-secret"},
-          "password":{"command":["password-command","command-secret"]}
-        }`)
+	writePrivateCLIFile(t, filepath.Join(profile.Dir(directory), "example.credentials.json"), `{"credentials":{"environment":{"TOKEN":"credential-secret"},"password":{"command":["password-command","command-secret"]}}}`)
 
 	var output, stderr bytes.Buffer
 	status, err := runForTest(context.Background(), []string{"show", "example", "--config-dir", directory}, &output, &stderr)

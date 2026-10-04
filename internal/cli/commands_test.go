@@ -222,18 +222,18 @@ func writeCLIProfile(t *testing.T, directory string) {
 		{
 			name: "example.json",
 			value: profile.Profile{
-				Repository:      "test-repository",
-				CredentialsFile: "example.credentials.json",
-				BackupPaths:     []string{"."},
-				ForgetArgs:      []string{"--keep-last", "2"},
+				Repository:  "test-repository",
+				PrivateFile: "example.credentials.json",
+				BackupPaths: []string{"."},
+				ForgetArgs:  []string{"--keep-last", "2"},
 			},
 		},
 		{
 			name: "example.credentials.json",
-			value: profile.Credentials{
+			value: map[string]any{"credentials": profile.RepositoryCredentials{
 				Environment: map[string]string{},
 				Password:    profile.PasswordSource{Command: []string{"unused"}},
-			},
+			}},
 		},
 	}
 	for _, file := range files {

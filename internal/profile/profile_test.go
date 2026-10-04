@@ -16,10 +16,10 @@ func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
 	password := filepath.Join(directory, "password")
 	writePrivate(t, password, "secret\n")
 	credentials := filepath.Join(directory, "credentials.json")
-	writePrivate(t, credentials, `{"password":{"file":"password"}}`)
+	writePrivate(t, credentials, `{"credentials":{"password":{"file":"password"}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "sqlite_databases":[
             {"name":"Data","path":"one"},
             {"name":"data","path":"two"}
@@ -33,9 +33,9 @@ func TestLoadRejectsDuplicateDatabaseNames(t *testing.T) {
 
 func TestLoadStreamConfiguration(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"value":"secret"}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "stream":{"filename":"exports/database.dump","command":["pg_dump","app"]},
           "initialize_repository":true
         }`)
@@ -57,8 +57,8 @@ func TestLoadRejectsInvalidStreamCombinations(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+test.fields+`}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"value":"secret"}}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json",`+test.fields+`}`)
 			_, err := Load(directory, "example")
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Load error = %v, want %q", err, test.want)
@@ -74,8 +74,8 @@ func TestLoadRejectsWorkflowOwnedStreamingArguments(t *testing.T) {
 		`"commands":{"backup":{"args":["--stdin-from-command"]}}`,
 	} {
 		directory := t.TempDir()
-		writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
-		writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","backup_paths":["."],`+fields+`}`)
+		writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"value":"secret"}}}`)
+		writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","backup_paths":["."],`+fields+`}`)
 		if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "workflow-owned streaming option") {
 			t.Fatalf("Load error = %v", err)
 		}
@@ -87,10 +87,10 @@ func TestLoadExternalDatabases(t *testing.T) {
 	if err := securefile.Protect(directory); err != nil {
 		t.Fatal(err)
 	}
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"database_environment":{"PGPASSWORD":"private"},"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "mongo.yml"), "password: private\n")
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "databases":{"concurrency":2,
             "postgresql":{"accounts":{"database":"app","host":"db.example","globals":true,"table_patterns":["public.accounts*"]}},
             "mongodb":{"events":{"database":"events","collection":"activity","host":"/var/run/mongodb.sock","config_file":"mongo.yml"}},
@@ -118,9 +118,6 @@ func TestLoadExternalDatabases(t *testing.T) {
 	}
 	if loaded.DatabaseConcurrency != 2 {
 		t.Fatalf("database concurrency = %d", loaded.DatabaseConcurrency)
-	}
-	if loaded.Credentials.DatabaseEnvironment["PGPASSWORD"] != "private" {
-		t.Fatal("database environment not loaded")
 	}
 }
 
@@ -189,9 +186,9 @@ func TestLoadAllowsPublicProfilePermissions(t *testing.T) {
 		t.Skip("POSIX permission test")
 	}
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"secret"}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"value":"secret"}}}`)
 	profilePath := filepath.Join(directory, "example.json")
-	if err := os.WriteFile(profilePath, []byte(`{"repository":"local:test","credentials_file":"credentials.json"}`), 0o644); err != nil {
+	if err := os.WriteFile(profilePath, []byte(`{"repository":"local:test","private_file":"credentials.json"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(profilePath, 0o644); err != nil {
@@ -271,9 +268,9 @@ func TestLoadRequiresPrivatePermissionsForSensitivePublicFields(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"value":"repository-secret"}}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"value":"repository-secret"}}}`)
 			path := filepath.Join(directory, "example.json")
-			content := `{"credentials_file":"credentials.json",` + fields + `}`
+			content := `{"private_file":"credentials.json",` + fields + `}`
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -336,7 +333,7 @@ func TestLoadRejectsEmptyConnectionPasswordSource(t *testing.T) {
 
 func TestLoadRejectsUnsafeSQLServerConfiguration(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	for name, database := range map[string]string{
 		"missing database":         `{"name":"warehouse"}`,
 		"missing backup directory": `{"name":"warehouse","database":"reporting"}`,
@@ -346,7 +343,7 @@ func TestLoadRejectsUnsafeSQLServerConfiguration(t *testing.T) {
 		"output redirection":       `{"name":"warehouse","database":"reporting","backup_directory":".","args":["-o=result.txt"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","sqlserver_databases":[`+database+`]}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","sqlserver_databases":[`+database+`]}`)
 			if _, err := Load(directory, "example"); err == nil {
 				t.Fatal("Load succeeded")
 			}
@@ -368,14 +365,14 @@ func TestLoadRejectsMixedNestedAndLegacyDatabaseConfiguration(t *testing.T) {
 
 func TestLoadRejectsUnsafeMySQLConfiguration(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	for name, database := range map[string]string{
 		"credential argument":   `{"name":"orders","database":"shop","args":["--defaults-extra-file=/tmp/exposed"]}`,
 		"conflicting endpoints": `{"name":"orders","database":"shop","host":"localhost","socket":"/run/mysql.sock"}`,
 		"unsafe table":          `{"name":"orders","database":"shop","tables":["--all-databases"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","mysql_databases":[`+database+`]}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","mysql_databases":[`+database+`]}`)
 			if _, err := Load(directory, "example"); err == nil {
 				t.Fatal("Load succeeded")
 			}
@@ -385,9 +382,9 @@ func TestLoadRejectsUnsafeMySQLConfiguration(t *testing.T) {
 
 func TestLoadRejectsDatabaseCredentialArguments(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "mongodb_databases":[{"name":"events","args":["--password=exposed"]}]
         }`)
 	_, err := Load(directory, "example")
@@ -398,7 +395,7 @@ func TestLoadRejectsDatabaseCredentialArguments(t *testing.T) {
 
 func TestLoadRejectsInvalidDatabaseSelectors(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	tests := map[string]string{
 		"empty PostgreSQL table":               `"postgresql_databases":[{"name":"app","database":"app","table_patterns":[""]}]`,
 		"PostgreSQL table argument":            `"postgresql_databases":[{"name":"app","database":"app","table_patterns":["users"],"args":["--exclude-table=audit"]}]`,
@@ -414,7 +411,7 @@ func TestLoadRejectsInvalidDatabaseSelectors(t *testing.T) {
 	}
 	for name, configured := range tests {
 		t.Run(name, func(t *testing.T) {
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+configured+`}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json",`+configured+`}`)
 			if _, err := Load(directory, "example"); err == nil {
 				t.Fatal("Load succeeded")
 			}
@@ -450,50 +447,22 @@ func TestDatabaseEnvironmentForOverlaysKeysCaseInsensitively(t *testing.T) {
 	}
 }
 
-func TestLoadPreservesLegacyEnvironmentWithConnectionPassword(t *testing.T) {
-	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
-		"database_environments":{"accounts":{"CUSTOM":"value"}},
-		"password":{"value":"repository-secret"}
-	}`)
-	writePrivate(t, filepath.Join(directory, "example.json"), `{
-		"repository":"local:test", "credentials_file":"credentials.json",
-		"databases":{"postgresql":{"accounts":{"connection":{
-			"database":"accounts", "password":{"value":"database-secret"}
-		}}}}
-	}`)
-	loaded, err := Load(directory, "example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if environment := loaded.Credentials.DatabaseEnvironmentFor("accounts"); environment["CUSTOM"] != "value" {
-		t.Fatalf("database environment = %#v", environment)
-	}
-	credential, ok := loaded.Credentials.DatabaseCredentialFor("accounts")
-	if !ok || credential.Password.Value != "database-secret" {
-		t.Fatalf("database credential = %#v, %v", credential, ok)
-	}
-}
-
 func TestLoadKeepsTypedDatabasePasswordsSeparateFromEnvironment(t *testing.T) {
 	directory := t.TempDir()
 	if err := securefile.Protect(directory); err != nil {
 		t.Fatal(err)
 	}
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
-		  "databases":{"warehouse":{"password":{"value":"private"},"environment":{"CUSTOM":"value"}}},
-          "password":{"command":["password-command"]}
-        }`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}},"databases":{"sqlserver":{"warehouse":{"connection":{"password":{"value":"private"}}}}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
-          "databases":{"sqlserver":{"warehouse":{"database":"reporting","backup_directory":"."}}}
+          "repository":"local:test", "private_file":"credentials.json",
+          "databases":{"sqlserver":{"warehouse":{"connection":{"database":"reporting"},"backup_directory":"."}}}
         }`)
 	loaded, err := Load(directory, "example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	environment := loaded.Credentials.DatabaseEnvironmentFor("warehouse")
-	if _, exists := environment["SQLSERVER_PASSWORD"]; exists || environment["CUSTOM"] != "value" {
+	if _, exists := environment["SQLSERVER_PASSWORD"]; exists {
 		t.Fatalf("database environment = %#v", environment)
 	}
 	credential, ok := loaded.Credentials.DatabaseCredentialFor("warehouse")
@@ -502,39 +471,11 @@ func TestLoadKeepsTypedDatabasePasswordsSeparateFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsMixedDatabaseCredentialFormats(t *testing.T) {
-	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
-          "database_environment":{}, "databases":{},
-          "password":{"command":["password-command"]}
-        }`)
-	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json"}`)
-	if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "must not be combined") {
-		t.Fatalf("Load error = %v", err)
-	}
-}
-
-func TestLoadRejectsUnknownNamedDatabaseEnvironment(t *testing.T) {
-	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
-          "database_environments":{"missing":{"PASSWORD":"private"}},
-          "password":{"command":["password-command"]}
-        }`)
-	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
-          "postgresql_databases":[{"name":"accounts","database":"app"}]
-        }`)
-	_, err := Load(directory, "example")
-	if err == nil || !strings.Contains(err.Error(), "unknown database") {
-		t.Fatalf("Load error = %v", err)
-	}
-}
-
 func TestLoadMonitoringDefaultsAndResolvesPaths(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "monitoring":{
             "status_file":"exports/status.json", "prometheus_textfile":"exports/status.prom",
             "http":[{"url":"https://monitor.example/events"}],
@@ -555,14 +496,14 @@ func TestLoadMonitoringDefaultsAndResolvesPaths(t *testing.T) {
 
 func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	for name, monitoring := range map[string]string{
 		"credential URL":       `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
 		"credential overwrite": `{"status_file":"credentials.json"}`,
 		"header newline":       `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","monitoring":`+monitoring+`}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","monitoring":`+monitoring+`}`)
 			if _, err := Load(directory, "example"); err == nil {
 				t.Fatal("Load succeeded")
 			}
@@ -572,7 +513,7 @@ func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
 
 func TestLoadResolvesNestedInheritance(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
           "repository":"local:base",
           "backup_paths":["base-files"],
@@ -591,7 +532,7 @@ func TestLoadResolvesNestedInheritance(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "parent":"middle",
           "repository":"local:child",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "backup_paths":["child-files"],
           "tags":["child"],
           "check_before":false,
@@ -612,17 +553,17 @@ func TestLoadResolvesNestedInheritance(t *testing.T) {
 	if len(loaded.SQLiteDatabases) != 1 || loaded.SQLiteDatabases[0].Name != "MAIN" || !strings.HasSuffix(loaded.SQLiteDatabases[0].Path, "child.sqlite") {
 		t.Fatalf("SQLite merge = %#v", loaded.SQLiteDatabases)
 	}
-	if loaded.CredentialsFile != filepath.Join(directory, "credentials.json") {
-		t.Fatalf("credentials file = %q", loaded.CredentialsFile)
+	if loaded.PrivateFile != filepath.Join(directory, "credentials.json") {
+		t.Fatalf("credentials file = %q", loaded.PrivateFile)
 	}
 }
 
 func TestLoadAllowsTagsThatLookLikeShortOptions(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "backup_paths":["."],
           "tags":["-production","-release"]
         }`)
@@ -638,14 +579,14 @@ func TestLoadAllowsTagsThatLookLikeShortOptions(t *testing.T) {
 
 func TestLoadMergesAndValidatesPersistentResticCommands(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
           "repository":"local:test",
           "commands":{"mount":{"args":["--allow-other"]}}
         }`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "parent":"base",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "commands":{"mount":{"args":["--no-default-permissions"]},"rewrite":{"args":["--dry-run"]}}
         }`)
 
@@ -658,7 +599,7 @@ func TestLoadMergesAndValidatesPersistentResticCommands(t *testing.T) {
 	}
 
 	writePrivate(t, filepath.Join(directory, "invalid.json"), `{
-          "repository":"local:test","credentials_file":"credentials.json",
+          "repository":"local:test","private_file":"credentials.json",
           "commands":{"mont":{"args":[]}}
         }`)
 	if _, err := Load(directory, "invalid"); err == nil || !strings.Contains(err.Error(), "unsupported Restic command") {
@@ -666,7 +607,7 @@ func TestLoadMergesAndValidatesPersistentResticCommands(t *testing.T) {
 	}
 
 	writePrivate(t, filepath.Join(directory, "reserved.json"), `{
-          "repository":"local:test","credentials_file":"credentials.json",
+          "repository":"local:test","private_file":"credentials.json",
           "commands":{"mount":{"args":["--password-file=secret"]}}
         }`)
 	if _, err := Load(directory, "reserved"); err == nil || !strings.Contains(err.Error(), "must not override") {
@@ -699,20 +640,20 @@ func TestLoadRejectsMissingAndInvalidParent(t *testing.T) {
 
 func TestLoadDoesNotInheritCredentialsAndValidatesResolvedProfile(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "base-credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "base-credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
           "repository":"local:test",
-          "credentials_file":"base-credentials.json",
+          "private_file":"base-credentials.json",
           "backup_args":["--repo=forbidden"]
         }`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{"parent":"base"}`)
 	_, err := Load(directory, "example")
-	if err == nil || !strings.Contains(err.Error(), "credentials_file") {
+	if err == nil || !strings.Contains(err.Error(), "private_file") {
 		t.Fatalf("Load error = %v", err)
 	}
 
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
-	writePrivate(t, filepath.Join(directory, "valid-child.json"), `{"parent":"base","credentials_file":"credentials.json"}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
+	writePrivate(t, filepath.Join(directory, "valid-child.json"), `{"parent":"base","private_file":"credentials.json"}`)
 	_, err = Load(directory, "valid-child")
 	if err == nil || !strings.Contains(err.Error(), "must not override") {
 		t.Fatalf("Load error = %v", err)
@@ -729,14 +670,14 @@ func TestLoadDoesNotInheritCaseVariedCredentialFields(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "example.json"), `{"parent":"base"}`)
 
 	_, err := Load(directory, "example")
-	if err == nil || !strings.Contains(err.Error(), "set private_file, credentials_file, or valid inline credentials") {
+	if err == nil || !strings.Contains(err.Error(), "set private_file or valid inline credentials") {
 		t.Fatalf("Load error = %v", err)
 	}
 }
 
 func TestLoadArraysReplaceInheritedValues(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
           "repository":"local:test",
           "backup_paths":["base-files"],
@@ -747,7 +688,7 @@ func TestLoadArraysReplaceInheritedValues(t *testing.T) {
         }`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "parent":"base",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
 		  "backup_paths":["child-files"],
 		  "tags":[],
 		  "run_before":[],
@@ -768,14 +709,14 @@ func TestLoadArraysReplaceInheritedValues(t *testing.T) {
 
 func TestLoadMergesInheritedDatabaseMapsByName(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
           "repository":"local:test",
           "databases":{"postgresql":{"app":{"database":"app"}}}
         }`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "parent":"base",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
 		  "databases":{"postgresql":{"audit":{"database":"audit"}}}
         }`)
 	loaded, err := Load(directory, "example")
@@ -789,7 +730,7 @@ func TestLoadMergesInheritedDatabaseMapsByName(t *testing.T) {
 
 func TestLoadRecursivelyMergesInheritedDatabaseEntry(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "base.json"), `{
 		"repository":"local:test",
 		"databases":{"postgresql":{"Accounts":{
@@ -800,7 +741,7 @@ func TestLoadRecursivelyMergesInheritedDatabaseEntry(t *testing.T) {
 	}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
 		"parent":"base",
-		"credentials_file":"credentials.json",
+		"private_file":"credentials.json",
 		"databases":{"postgresql":{"accounts":{
 			"connection":{"hosts":["pg2:5432","pg3:5432"],"password":{"value":"new-password"}},
 			"options":{"require_primary":true},
@@ -890,9 +831,9 @@ func TestLoadRejectsNonPositiveDatabaseConcurrency(t *testing.T) {
 	for _, concurrency := range []string{"0", "-1"} {
 		t.Run(concurrency, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 			writePrivate(t, filepath.Join(directory, "example.json"), `{
-              "repository":"local:test", "credentials_file":"credentials.json",
+              "repository":"local:test", "private_file":"credentials.json",
               "database_concurrency":`+concurrency+`
             }`)
 			_, err := Load(directory, "example")
@@ -907,7 +848,7 @@ func TestLoadRejectsUnknownJSONField(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "typo":true
         }`)
 	_, err := Load(directory, "example")
@@ -921,7 +862,7 @@ func TestLoadRejectsDuplicateJSONField(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:one",
           "Repository":"local:two",
-          "credentials_file":"credentials.json"
+          "private_file":"credentials.json"
         }`)
 	_, err := Load(directory, "example")
 	if err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {
@@ -931,10 +872,10 @@ func TestLoadRejectsDuplicateJSONField(t *testing.T) {
 
 func TestLoadRejectsEmptyBackupPath(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "backup_paths":[""]
         }`)
 	_, err := Load(directory, "example")
@@ -970,10 +911,10 @@ func TestExpandPathRejectsUnsetEnvironmentVariable(t *testing.T) {
 
 func TestLoadRejectsReservedResticOptions(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "backup_paths":["files"],
           "backup_args":["--repo=other"]
         }`)
@@ -996,8 +937,8 @@ func TestLoadRejectsConfiguredBackupDryRunOptions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json",`+test.field+`}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json",`+test.field+`}`)
 			_, err := Load(directory, "example")
 			if err == nil || !strings.Contains(err.Error(), "dry-run") {
 				t.Fatalf("Load error = %v", err)
@@ -1008,8 +949,8 @@ func TestLoadRejectsConfiguredBackupDryRunOptions(t *testing.T) {
 
 func TestLoadRejectsPostgreSQLDatabaseBeginningWithHyphen(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
-	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json","postgresql_databases":[{"name":"main","database":"--help"}]}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","postgresql_databases":[{"name":"main","database":"--help"}]}`)
 	if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "must not start with a hyphen") {
 		t.Fatalf("Load error = %v", err)
 	}
@@ -1017,13 +958,10 @@ func TestLoadRejectsPostgreSQLDatabaseBeginningWithHyphen(t *testing.T) {
 
 func TestLoadRejectsReservedResticEnvironment(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{
-          "environment":{"RESTIC_PASSWORD":"secret"},
-          "password":{"command":["password-command"]}
-        }`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"environment":{"RESTIC_PASSWORD":"secret"},"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json"
+          "private_file":"credentials.json"
         }`)
 	_, err := Load(directory, "example")
 	if err == nil || !strings.Contains(err.Error(), "must not set RESTIC_PASSWORD") {
@@ -1033,10 +971,10 @@ func TestLoadRejectsReservedResticEnvironment(t *testing.T) {
 
 func TestLoadRequiresForgetArgsForBackupPrune(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "backup_paths":["files"],
           "prune_after":true
         }`)
@@ -1048,10 +986,10 @@ func TestLoadRequiresForgetArgsForBackupPrune(t *testing.T) {
 
 func TestLoadHooks(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "run_before":[{"command":["prepare","--quiet"],"timeout":"30s"}],
           "run_finally":[{"command":["cleanup"]}]
         }`)
@@ -1073,10 +1011,10 @@ func TestLoadRejectsInvalidHooks(t *testing.T) {
 	} {
 		t.Run(hook, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 			writePrivate(t, filepath.Join(directory, "example.json"), `{
               "repository":"local:test",
-              "credentials_file":"credentials.json",
+              "private_file":"credentials.json",
               "run_before":[`+hook+`]
             }`)
 			if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "run_before") {
@@ -1088,10 +1026,10 @@ func TestLoadRejectsInvalidHooks(t *testing.T) {
 
 func TestLoadSchedule(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
           "repository":"local:test",
-          "credentials_file":"credentials.json",
+          "private_file":"credentials.json",
           "forget_args":["--keep-daily","7"],
           "schedule":{"cron":" 0  2 * * * ","catch_up":true},
 		  "forget":{"cron":"@daily","catch_up":true,"prune":true}
@@ -1110,9 +1048,9 @@ func TestLoadSchedule(t *testing.T) {
 
 func TestLoadAcceptsDeprecatedForgetScheduleAlias(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "forget_args":["--keep-last","1"], "forget":{"schedule":"weekly"}
         }`)
 	loaded, err := Load(directory, "example")
@@ -1126,9 +1064,9 @@ func TestLoadAcceptsDeprecatedForgetScheduleAlias(t *testing.T) {
 
 func TestLoadRejectsBothForgetScheduleFields(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "forget_args":["--keep-last","1"], "forget":{"cron":"daily","schedule":"weekly"}
         }`)
 	_, err := Load(directory, "example")
@@ -1144,10 +1082,10 @@ func TestLoadRejectsInvalidSchedule(t *testing.T) {
 	} {
 		t.Run(configuredSchedule, func(t *testing.T) {
 			directory := t.TempDir()
-			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+			writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 			writePrivate(t, filepath.Join(directory, "example.json"), `{
               "repository":"local:test",
-              "credentials_file":"credentials.json",
+              "private_file":"credentials.json",
               "schedule":`+configuredSchedule+`
             }`)
 			if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "schedule") {
@@ -1157,14 +1095,14 @@ func TestLoadRejectsInvalidSchedule(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresPrivateCredentialsFile(t *testing.T) {
+func TestLoadRequiresPrivateOverlayPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission test")
 	}
 	directory := t.TempDir()
 	credentials := filepath.Join(directory, "credentials.json")
-	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials_file":"credentials.json"}`)
-	if err := os.WriteFile(credentials, []byte(`{"password":{"command":["printf","secret"]}}`), 0o644); err != nil {
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json"}`)
+	if err := os.WriteFile(credentials, []byte(`{"credentials":{"password":{"command":["printf","secret"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(credentials, 0o644); err != nil {
@@ -1178,9 +1116,9 @@ func TestLoadRequiresPrivateCredentialsFile(t *testing.T) {
 
 func TestLoadRejectsTemporaryFileMonitoringLog(t *testing.T) {
 	directory := t.TempDir()
-	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"password":{"command":["password-command"]}}`)
+	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "example.json"), `{
-          "repository":"local:test", "credentials_file":"credentials.json",
+          "repository":"local:test", "private_file":"credentials.json",
           "monitoring":{"logs":[{"type":"temporary-file"}]}
         }`)
 	_, err := Load(directory, "example")
@@ -1196,5 +1134,38 @@ func writePrivate(t *testing.T, path, content string) {
 	}
 	if err := securefile.Protect(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadRejectsRemovedCredentialsFile(t *testing.T) {
+	for _, fields := range []string{
+		`"credentials_file":"old.json"`,
+		`"Credentials_File":"old.json","private_file":"private.json"`,
+		`"copies":{"offsite":{"repository":"local:secondary","credentials_file":"old.json"}}`,
+	} {
+		t.Run(fields, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "home.json"), `{"repository":"local:primary","credentials":{"password":{"value":"source"}},`+fields+`}`)
+			_, err := Load(directory, "home")
+			if err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRequiresPrivatePermissionsForCopyCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission test")
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "home.json")
+	writePrivate(t, path, `{"repository":"local:primary","private_file":"source.private.json","copies":{"offsite":{"repository":"local:secondary","credentials":{"password":{"value":"target-secret"}}}}}`)
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(directory, "home")
+	if err == nil || !strings.Contains(err.Error(), "group or others") {
+		t.Fatalf("Load error = %v", err)
 	}
 }

@@ -125,23 +125,21 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 		return nil, err
 	}
 	updates := make([]renameUpdate, 0, 4)
-	for _, field := range []struct{ key, suffix string }{{"private_file", ".private.json"}, {"credentials_file", ".credentials.json"}} {
-		var value string
-		if raw, ok := document[field.key]; ok && json.Unmarshal(raw, &value) == nil && value == oldName+field.suffix {
-			source := filepath.Join(profilesDir, value)
-			destination := filepath.Join(profilesDir, newName+field.suffix)
-			companion, readErr := readRenameFile(source)
-			if readErr != nil {
-				return nil, fmt.Errorf("cannot rename %s: %w", field.key, readErr)
-			}
-			if _, statErr := os.Lstat(destination); statErr == nil {
-				return nil, fmt.Errorf("refusing to overwrite existing file: %s", destination)
-			} else if !errors.Is(statErr, os.ErrNotExist) {
-				return nil, statErr
-			}
-			document[field.key], _ = json.Marshal(newName + field.suffix)
-			updates = append(updates, renameUpdate{source: source, destination: destination, content: companion, description: "rename " + filepath.Base(source) + " to " + filepath.Base(destination)})
+	var value string
+	if raw, ok := document["private_file"]; ok && json.Unmarshal(raw, &value) == nil && value == oldName+".private.json" {
+		source := filepath.Join(profilesDir, value)
+		destination := filepath.Join(profilesDir, newName+".private.json")
+		companion, readErr := readRenameFile(source)
+		if readErr != nil {
+			return nil, fmt.Errorf("cannot rename private_file: %w", readErr)
 		}
+		if _, statErr := os.Lstat(destination); statErr == nil {
+			return nil, fmt.Errorf("refusing to overwrite existing file: %s", destination)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+		document["private_file"], _ = json.Marshal(newName + ".private.json")
+		updates = append(updates, renameUpdate{source: source, destination: destination, content: companion, description: "rename " + filepath.Base(source) + " to " + filepath.Base(destination)})
 	}
 	data, err = json.MarshalIndent(document, "", "  ")
 	if err != nil {

@@ -46,9 +46,6 @@ func Load(configDir, name string) (Profile, error) {
 
 func bindProfileCredentials(backupProfile *Profile, base string) error {
 	if backupProfile.PrivateFile != "" {
-		if backupProfile.CredentialsFile != "" {
-			return errors.New("private_file must not be combined with credentials_file")
-		}
 		if err := validateRepositoryCredentialFields(&backupProfile.Credentials, base, "credentials", false); err != nil {
 			return err
 		}
@@ -60,22 +57,8 @@ func bindProfileCredentials(backupProfile *Profile, base string) error {
 		if err := bindPrivateConfig(backupProfile, privatePath); err != nil {
 			return err
 		}
-	} else if backupProfile.CredentialsFile != "" {
-		if backupProfile.Credentials.Password.Configured() || backupProfile.Credentials.Environment != nil {
-			return errors.New("credentials must not be combined with credentials_file")
-		}
-		credentialsPath, expandErr := expandPath(backupProfile.CredentialsFile, base)
-		if expandErr != nil {
-			return fmt.Errorf("invalid credentials_file: %w", expandErr)
-		}
-		backupProfile.CredentialsFile = credentialsPath
-		credentials, loadErr := loadCredentials(credentialsPath)
-		if loadErr != nil {
-			return loadErr
-		}
-		backupProfile.Credentials = credentials
 	} else if err := validateRepositoryCredentials(&backupProfile.Credentials, base, "credentials"); err != nil {
-		return errors.New("set private_file, credentials_file, or valid inline credentials: " + err.Error())
+		return errors.New("set private_file or valid inline credentials: " + err.Error())
 	}
 	return nil
 }
@@ -271,7 +254,6 @@ func validScheduleBackend(value string) bool {
 type profileConfig struct {
 	Parent               string                   `json:"parent,omitempty"`
 	Repository           *string                  `json:"repository"`
-	CredentialsFile      *string                  `json:"credentials_file"`
 	PrivateFile          *string                  `json:"private_file,omitempty"`
 	Credentials          *RepositoryCredentials   `json:"credentials,omitempty"`
 	BackupPaths          []string                 `json:"backup_paths"`
@@ -300,7 +282,7 @@ type profileConfig struct {
 	RunFinally           []Hook                   `json:"run_finally"`
 	Schedule             *Schedule                `json:"schedule,omitempty"`
 	Forget               *ForgetSchedule          `json:"forget,omitempty"`
-	Copies               map[string]CopyTarget    `json:"copies,omitempty"`
+	Copies               map[string]*CopyTarget   `json:"copies,omitempty"`
 	Monitoring           *Monitoring              `json:"monitoring,omitempty"`
 	Runtime              *Runtime                 `json:"runtime,omitempty"`
 }
@@ -421,7 +403,6 @@ func resolveDocument(configDir, name string, chain []string) (map[string]json.Ra
 	// Credentials and private-file selection always belong to the requested
 	// profile and must never flow down from a parent.
 	deleteJSONField(parent, "credentials")
-	deleteJSONField(parent, "credentials_file")
 	deleteJSONField(parent, "private_file")
 	deleteInheritedCopyCredentials(parent)
 	merged, err := mergeJSONObjects(parent, childDocument)
@@ -442,7 +423,8 @@ func deleteInheritedCopyCredentials(document map[string]json.RawMessage) {
 		if json.Unmarshal(rawTarget, &target) != nil {
 			continue
 		}
-		deleteJSONField(target, "credentials_file")
+		deleteJSONField(target, "private_file")
+		deleteJSONField(target, "credentials")
 		encoded, err := json.Marshal(target)
 		if err != nil {
 			return
@@ -520,7 +502,7 @@ func (configured profileConfig) containsInlineSecrets() bool {
 		return true
 	}
 	for _, target := range configured.Copies {
-		if redactRepository(target.Repository) != target.Repository {
+		if target != nil && (redactRepository(target.Repository) != target.Repository || target.Credentials.Environment != nil || target.Credentials.Password.Configured()) {
 			return true
 		}
 	}

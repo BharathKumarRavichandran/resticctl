@@ -7,7 +7,15 @@ func (configured profileConfig) profile(name string) Profile {
 		BackupArgs: configured.BackupArgs, Tags: configured.Tags, ForgetArgs: configured.ForgetArgs,
 		CheckArgs: configured.CheckArgs, RunBefore: configured.RunBefore, RunAfter: configured.RunAfter,
 		RunAfterFail: configured.RunAfterFail, RunFinally: configured.RunFinally,
-		Schedule: configured.Schedule, Forget: configured.Forget, Copies: configured.Copies}
+		Schedule: configured.Schedule, Forget: configured.Forget}
+	if configured.Copies != nil {
+		value.Copies = make(map[string]CopyTarget, len(configured.Copies))
+		for name, target := range configured.Copies {
+			if target != nil {
+				value.Copies[name] = *target
+			}
+		}
+	}
 	if configured.InitializeRepository != nil {
 		value.InitializeRepository = *configured.InitializeRepository
 	}
@@ -19,9 +27,6 @@ func (configured profileConfig) profile(name string) Profile {
 	}
 	if configured.Repository != nil {
 		value.Repository = *configured.Repository
-	}
-	if configured.CredentialsFile != nil {
-		value.CredentialsFile = *configured.CredentialsFile
 	}
 	if configured.PrivateFile != nil {
 		value.PrivateFile = *configured.PrivateFile

@@ -36,8 +36,8 @@ func (cli *commandLine) migratePlanCommand() *cobra.Command {
 			}
 			redacted := profile.RedactedResolvedProfile(value)
 			cutover := fmt.Sprintf("Cutover keeps the source as copy target rollback-%s; it never deletes source data.", arguments[1])
-			if value.PrivateFile != "" || value.CredentialsFile == "" {
-				cutover = "Cutover must be completed manually because the source does not use credentials_file."
+			if value.PrivateFile != "" {
+				cutover = "Cutover must be completed manually because the source uses a private overlay."
 			}
 			_, err = fmt.Fprintf(cli.stdout, "Migration plan for profile %s to target %s\nSource: %s\nDestination: %s\nSteps: sync, verify, cutover\n%s\n", value.Name, arguments[1], redacted.Repository, redacted.Copies[arguments[1]].Repository, cutover)
 			return err

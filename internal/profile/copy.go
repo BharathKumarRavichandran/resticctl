@@ -25,23 +25,18 @@ func loadCopyTargets(value *Profile, base string) error {
 		}
 		seen[key] = struct{}{}
 		target := value.Copies[name]
+		bound := Profile{Repository: target.Repository, PrivateFile: target.PrivateFile,
+			Credentials: Credentials{Environment: target.Credentials.Environment, Password: target.Credentials.Password}}
+		if err := bindProfileCredentials(&bound, base); err != nil {
+			return fmt.Errorf("copies.%s: %w", name, err)
+		}
+		target.Repository, target.PrivateFile = bound.Repository, bound.PrivateFile
+		target.Credentials = RepositoryCredentials{Environment: bound.Credentials.Environment, Password: bound.Credentials.Password}
 		if target.Repository == "" || strings.ContainsRune(target.Repository, 0) {
 			return fmt.Errorf("copies.%s.repository must be a non-empty string without NUL bytes", name)
 		}
 		if sameRepository(value.Repository, target.Repository) {
 			return fmt.Errorf("copies.%s.repository must differ from the source repository", name)
-		}
-		if target.CredentialsFile == "" {
-			return fmt.Errorf("copies.%s.credentials_file is required", name)
-		}
-		path, err := expandPath(target.CredentialsFile, base)
-		if err != nil {
-			return fmt.Errorf("invalid copies.%s.credentials_file: %w", name, err)
-		}
-		target.CredentialsFile = path
-		target.Credentials, err = loadCopyCredentials(path)
-		if err != nil {
-			return fmt.Errorf("copies.%s: %w", name, err)
 		}
 		if target.CopyChunkerParams && !target.InitializeRepository {
 			return fmt.Errorf("copies.%s.copy_chunker_params requires initialize_repository", name)

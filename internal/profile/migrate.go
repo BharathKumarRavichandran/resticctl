@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"resticctl/internal/configlock"
 )
@@ -21,31 +23,46 @@ func ForCopyTarget(value Profile, targetName string) (Profile, error) {
 		Environment: target.Credentials.Environment,
 		Password:    target.Credentials.Password,
 	}
-	value.CredentialsFile = target.CredentialsFile
 	value.PrivateFile = ""
 	return value, nil
 }
 
 // Cutover promotes a copy target and retains the former repository as a
-// rollback copy target. It only supports dedicated credential files so the
-// rollback target can refer to the old credentials without copying secrets.
+// rollback copy target. Source private overlays require manual cutover to
+// preserve database deployment overrides.
 func Cutover(configDir, name, targetName string) (string, error) {
+	return cutover(configDir, name, targetName, nil)
+}
+
+// CutoverVerified rejects configuration changes since the supplied profile was
+// verified, before promoting the destination.
+func CutoverVerified(configDir, name, targetName string, verified Profile) (string, error) {
+	return cutover(configDir, name, targetName, &verified)
+}
+
+func cutover(configDir, name, targetName string, verified *Profile) (string, error) {
 	if err := ValidateName(name); err != nil {
 		return "", err
 	}
 	rollbackName := "rollback-" + targetName
+	if !isPortableName(rollbackName) {
+		return "", errors.New("migration target name cannot form a valid rollback copy target name")
+	}
 	profilePath := filepath.Join(configDir, name+".json")
 	err := configlock.With(profilePath+".lock", func() error {
 		value, err := Load(configDir, name)
 		if err != nil {
 			return err
 		}
+		if verified != nil && !reflect.DeepEqual(value, *verified) {
+			return errors.New("profile configuration changed after migration verification; verify again before cutover")
+		}
 		target, ok := value.Copies[targetName]
 		if !ok {
 			return fmt.Errorf("profile %s has no copy target %q", name, targetName)
 		}
-		if value.PrivateFile != "" || value.CredentialsFile == "" {
-			return errors.New("migration cutover requires the source profile to use credentials_file")
+		if value.PrivateFile != "" {
+			return errors.New("migration cutover requires inline source credentials; private overlays must be cut over manually")
 		}
 		if _, exists := value.Copies[rollbackName]; exists {
 			return fmt.Errorf("rollback copy target %q already exists", rollbackName)
@@ -61,8 +78,8 @@ func Cutover(configDir, name, targetName string) (string, error) {
 			return err
 		}
 		original := cloneDocument(document)
-		if document[matchingJSONKey(document, "credentials_file")] == nil {
-			return errors.New("migration cutover requires credentials_file to be declared by the selected profile")
+		if document[matchingJSONKey(document, "credentials")] == nil {
+			return errors.New("migration cutover requires credentials to be declared by the selected profile")
 		}
 		var copies map[string]json.RawMessage
 		if raw := document[matchingJSONKey(document, "copies")]; raw != nil {
@@ -76,10 +93,18 @@ func Cutover(configDir, name, targetName string) (string, error) {
 		if _, declared := copies[targetName]; !declared {
 			return fmt.Errorf("migration cutover requires copy target %q to be declared by the selected profile", targetName)
 		}
+		for configuredName := range copies {
+			if strings.EqualFold(configuredName, rollbackName) {
+				return fmt.Errorf("rollback copy target %q is already declared", rollbackName)
+			}
+		}
 		delete(copies, targetName)
+		if value.Parent != "" {
+			copies[targetName] = json.RawMessage("null")
+		}
 		rollback := CopyTarget{
-			Repository:      value.Repository,
-			CredentialsFile: relativeConfigPath(configDir, value.CredentialsFile),
+			Repository:  value.Repository,
+			Credentials: RepositoryCredentials{Environment: value.Credentials.Environment, Password: value.Credentials.Password},
 		}
 		encodedRollback, err := json.Marshal(rollback)
 		if err != nil {
@@ -91,7 +116,11 @@ func Cutover(configDir, name, targetName string) (string, error) {
 			return err
 		}
 		document[matchingJSONKey(document, "repository")] = mustMarshal(target.Repository)
-		document[matchingJSONKey(document, "credentials_file")] = mustMarshal(relativeConfigPath(configDir, target.CredentialsFile))
+		encodedCredentials, err := json.Marshal(target.Credentials)
+		if err != nil {
+			return err
+		}
+		document[matchingJSONKey(document, "credentials")] = encodedCredentials
 		document[matchingJSONKey(document, "copies")] = encodedCopies
 		if err := writeDocument(profilePath, document); err != nil {
 			return err
@@ -114,14 +143,6 @@ func cloneDocument(document map[string]json.RawMessage) map[string]json.RawMessa
 		result[key] = append(json.RawMessage(nil), value...)
 	}
 	return result
-}
-
-func relativeConfigPath(configDir, path string) string {
-	relative, err := filepath.Rel(configDir, path)
-	if err == nil && relative != ".." && !filepath.IsAbs(relative) {
-		return relative
-	}
-	return path
 }
 
 func mustMarshal(value string) json.RawMessage {
