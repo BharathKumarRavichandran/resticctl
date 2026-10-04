@@ -29,3 +29,21 @@ func TestWriteAtomicCreatesAndReplacesPrivateFile(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteAtomicCleansTemporaryFileWhenReplacementFails(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "existing-directory")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAtomic(destination, []byte("secret")); err == nil {
+		t.Fatal("replacing a directory succeeded")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "existing-directory" || !entries[0].IsDir() {
+		t.Fatalf("failed replacement left temporary data or changed destination: %v", entries)
+	}
+}

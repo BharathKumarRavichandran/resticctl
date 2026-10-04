@@ -70,9 +70,23 @@ func recordBackupSummary(ctx context.Context, result restic.Result) {
 }
 
 func applyResticExitPolicy(ctx context.Context, backupProfile profile.Profile, err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		remaining := make([]error, len(causes))
+		for i, cause := range causes {
+			remaining[i] = applyResticExitPolicy(ctx, backupProfile, cause)
+		}
+		return errors.Join(remaining...)
+	}
 	var exitError *restic.ExitError
 	if !errors.As(err, &exitError) || exitError.Code != 3 {
 		return err
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if applyResticExitPolicy(ctx, backupProfile, wrapped.Unwrap()) != nil {
+			return err
+		}
+		return nil
 	}
 	if observation, ok := ctx.Value(observationKey{}).(*runObservation); ok {
 		observation.mu.Lock()

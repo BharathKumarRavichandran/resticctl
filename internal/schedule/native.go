@@ -16,14 +16,6 @@ func nativeID(state State) string {
 	return "resticctl-" + state.Action + "-" + targetIdentity(state)
 }
 
-func (manager Manager) render(configDir string, state State, executable string) ([]byte, error) {
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return nil, err
-	}
-	return backend.render(configDir, state, executable)
-}
-
 func (manager Manager) systemdDir(state State) string {
 	if state.Permission == PermissionSystem {
 		return manager.systemdSystemDir

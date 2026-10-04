@@ -9,9 +9,10 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	managedaction "resticctl/internal/action"
 )
 
-var monitoringActions = map[string]bool{"backup": true, "check": true, "forget": true, "prune": true, "copy": true}
 var monitoringPhases = map[string]bool{"send-before": true, "send-after": true, "send-after-fail": true, "send-finally": true, "warning": true}
 
 func validateMonitoring(p *Profile, base string) error {
@@ -94,7 +95,7 @@ func validateMonitoring(p *Profile, base string) error {
 			return fmt.Errorf("invalid monitoring.http[%d].headers: %w", i, err)
 		}
 		for _, action := range hook.Actions {
-			if !monitoringActions[action] {
+			if !managedaction.Action(action).Capabilities().Recordable {
 				return fmt.Errorf("monitoring.http[%d] has unsupported action %q", i, action)
 			}
 		}

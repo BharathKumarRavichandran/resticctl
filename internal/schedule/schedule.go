@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 )
@@ -25,11 +26,11 @@ const (
 	BackendLaunchd = "launchd"
 	BackendSystemd = "systemd"
 	BackendWindows = "windows"
-	ActionBackup   = "backup"
-	ActionForget   = "forget"
-	ActionCheck    = "check"
-	ActionPrune    = "prune"
-	ActionCopy     = "copy"
+	ActionBackup   = managedaction.Backup
+	ActionForget   = managedaction.Forget
+	ActionCheck    = managedaction.Check
+	ActionPrune    = managedaction.Prune
+	ActionCopy     = managedaction.Copy
 )
 
 var ErrDrift = errors.New("installed schedule differs from recorded state")
@@ -141,7 +142,7 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	if err := validateAction(action); err != nil {
 		return State{}, err
 	}
-	if action != ActionForget && prune {
+	if !managedaction.Action(action).Capabilities().Prune && prune {
 		return State{}, errors.New("prune is only valid for a forget schedule")
 	}
 	if len(spec.Expressions) == 0 {
@@ -254,14 +255,6 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 	return state, nil
 }
 
-func (manager Manager) apply(ctx context.Context, configDir string, state *State, executable string) error {
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return err
-	}
-	return backend.install(ctx, configDir, state, executable)
-}
-
 func (manager Manager) restore(ctx context.Context, configDir string, state State, executable string) error {
 	if state.Executable != "" {
 		executable = state.Executable
@@ -271,14 +264,6 @@ func (manager Manager) restore(ctx context.Context, configDir string, state Stat
 		return fmt.Errorf("cannot restore previous schedule: %w", err)
 	}
 	return nil
-}
-
-func (manager Manager) removeApplied(ctx context.Context, configDir string, state State) error {
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return err
-	}
-	return backend.remove(ctx, configDir, &state)
 }
 
 func (manager Manager) Remove(ctx context.Context, configDir, name string) error {
@@ -294,11 +279,7 @@ func (manager Manager) RemoveTargetAction(ctx context.Context, configDir, target
 	if err != nil {
 		return err
 	}
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return err
-	}
-	err = backend.remove(ctx, configDir, &state)
+	err = manager.removeApplied(ctx, configDir, state)
 	if err != nil {
 		return err
 	}
@@ -320,19 +301,7 @@ func (manager Manager) Verify(ctx context.Context, state State) error {
 	if state.DefinitionHash != "" && definitionHash(definition) != state.DefinitionHash {
 		return fmt.Errorf("%w: scheduler job content changed", ErrDrift)
 	}
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return err
-	}
-	return backend.verify(ctx, state)
-}
-
-func (manager Manager) installedDefinition(ctx context.Context, state State) ([]byte, error) {
-	backend, err := manager.backend(state.Backend)
-	if err != nil {
-		return nil, err
-	}
-	return backend.definition(ctx, state)
+	return manager.verifyBackend(ctx, state)
 }
 
 func definitionHash(definition []byte) string {
@@ -388,7 +357,7 @@ func scheduledArguments(executable, configDir string, state State) []string {
 }
 
 func validateAction(action string) error {
-	if action != ActionBackup && action != ActionForget && action != ActionCheck && action != ActionPrune && action != ActionCopy {
+	if !managedaction.Action(action).Capabilities().Schedulable {
 		return fmt.Errorf("unsupported schedule action %q", action)
 	}
 	return nil

@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/app"
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/group"
@@ -327,7 +328,8 @@ func (cli *commandLine) reconcileGroupSchedules(ctx context.Context, manager sch
 			return err
 		}
 	}
-	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+	for _, managed := range managedaction.All() {
+		action := string(managed)
 		if _, ok := declared[action]; ok {
 			continue
 		}
@@ -790,7 +792,7 @@ func scheduledAction(arguments []string) (string, error) {
 	if len(arguments) == 2 {
 		action = arguments[1]
 	}
-	if action != schedule.ActionBackup && action != schedule.ActionForget && action != schedule.ActionCheck && action != schedule.ActionPrune && action != schedule.ActionCopy {
+	if !managedaction.Action(action).Capabilities().Schedulable {
 		return "", fmt.Errorf("unsupported scheduled action %q", action)
 	}
 	return action, nil

@@ -43,6 +43,10 @@ func TestProcessHelper(t *testing.T) {
 		_ = child.Wait()
 		os.Exit(0)
 	}
+	if os.Getenv("GO_PROCESS_EXIT_FAILURE") == "1" {
+		_, _ = os.Stderr.WriteString("secret diagnostic")
+		os.Exit(7)
+	}
 	directory, err := os.Getwd()
 	if err != nil {
 		os.Exit(2)
@@ -216,7 +220,7 @@ func TestRunHookRejectsEmptyCommand(t *testing.T) {
 }
 
 func TestMergeEnvironmentDropsResticSelectors(t *testing.T) {
-	environment := mergeEnvironment(
+	environment := MergeEnvironment(
 		[]string{"PATH=/bin", "RESTIC_PASSWORD=ambient-secret", "RESTIC_REPOSITORY=wrong"},
 		map[string]string{"AWS_ACCESS_KEY_ID": "key"},
 		isResticEnvironment,
@@ -232,4 +236,17 @@ func TestMergeEnvironmentDropsResticSelectors(t *testing.T) {
 
 func isResticEnvironment(key string) bool {
 	return strings.HasPrefix(key, "RESTIC_")
+}
+
+func TestExecutorClassifiesExitWithoutRetainingOutput(t *testing.T) {
+	t.Setenv("GO_WANT_PROCESS_HELPER", "1")
+	t.Setenv("GO_PROCESS_EXIT_FAILURE", "1")
+	err := NewExecutor(nil, nil, nil, nil).RunHook(context.Background(), []string{os.Args[0], "-test.run=TestProcessHelper"})
+	var exitError *ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 7 {
+		t.Fatalf("exit status lost: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret diagnostic") {
+		t.Fatalf("command output leaked: %v", err)
+	}
 }

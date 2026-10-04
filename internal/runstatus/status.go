@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/profile"
 	"resticctl/internal/securefile"
 )
@@ -495,7 +496,7 @@ func statusKey(name, action string) string {
 }
 
 func validateAction(action string) error {
-	if action != "backup" && action != "forget" && action != "check" && action != "prune" && action != "copy" {
+	if !managedaction.Action(action).Capabilities().Recordable {
 		return fmt.Errorf("unsupported status action %q", action)
 	}
 	return nil

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/app"
 	"resticctl/internal/group"
 	"resticctl/internal/profile"
@@ -53,7 +54,8 @@ func (cli *commandLine) profileRenameCommand() *cobra.Command {
 
 func (cli *commandLine) renameProfile(ctx context.Context, configDir, oldName, newName string, dryRun bool) ([]string, error) {
 	var installed []schedule.State
-	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+	for _, managed := range managedaction.All() {
+		action := string(managed)
 		if _, err := schedule.LoadAction(configDir, newName, action); err == nil {
 			return nil, fmt.Errorf("refusing to overwrite existing %s schedule for profile %s", action, newName)
 		} else if !errors.Is(err, schedule.ErrNotInstalled) {
@@ -162,7 +164,8 @@ func renameScheduleSpec(configDir, name string, state schedule.State) schedule.S
 func (cli *commandLine) groupCommand() *cobra.Command {
 	command := &cobra.Command{Use: "group", Short: "Manage and run profile groups", Args: cobra.NoArgs}
 	command.AddCommand(cli.groupCreateCommand(), cli.groupListCommand(), cli.groupShowCommand(), cli.groupValidateCommand(), cli.groupStatusCommand())
-	for _, action := range []string{schedule.ActionBackup, schedule.ActionCheck, schedule.ActionForget, schedule.ActionPrune, schedule.ActionCopy} {
+	for _, managed := range managedaction.All() {
+		action := string(managed)
 		command.AddCommand(cli.groupActionCommand(action))
 	}
 	return command
@@ -380,10 +383,10 @@ func (cli *commandLine) groupActionCommand(action string) *cobra.Command {
 			return writeOutput(cli.stdout, "<== Group %s succeeded\n", configured.Name)
 		}),
 	}
-	if action != schedule.ActionCheck {
+	if managedaction.Action(action).Capabilities().DryRun {
 		command.Flags().BoolVar(&dryRun, "dry-run", false, "preview each action without changing the repository")
 	}
-	if action == schedule.ActionForget {
+	if managedaction.Action(action).Capabilities().Prune {
 		command.Flags().BoolVar(&prune, "prune", false, "remove unreferenced repository data")
 	}
 	return command
@@ -791,7 +794,7 @@ func (cli *commandLine) runCommand() *cobra.Command {
 				return err
 			}
 			action := arguments[1]
-			if action == "backup" || action == "check" || action == "forget" || action == "prune" || action == "copy" {
+			if managedaction.Action(action).Capabilities().Recordable {
 				return app.RunRecordedRestic(command.Context(), cli.newRunner, configDir, backupProfile, action, arguments[2:], cli.now, cli.stdout)
 			}
 			runner, err := cli.newRunner()

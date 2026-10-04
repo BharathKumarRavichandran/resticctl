@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 )
@@ -140,7 +141,7 @@ func validate(configured Group, name string) error {
 		seen[normalized] = struct{}{}
 	}
 	for action, scheduled := range configured.Schedules {
-		if action != "backup" && action != "check" && action != "forget" && action != "prune" && action != "copy" {
+		if !managedaction.Action(action).Capabilities().Schedulable {
 			return fmt.Errorf("unsupported group schedule action %q", action)
 		}
 		if strings.TrimSpace(scheduled.Cron) == "" {
@@ -152,7 +153,7 @@ func validate(configured Group, name string) error {
 		if scheduled.Backend != "" && scheduled.Backend != "auto" && scheduled.Backend != "cron" && scheduled.Backend != "launchd" && scheduled.Backend != "systemd" && scheduled.Backend != "windows" {
 			return fmt.Errorf("group %s schedule has unsupported backend %q", action, scheduled.Backend)
 		}
-		if scheduled.Prune && action != "forget" {
+		if scheduled.Prune && !managedaction.Action(action).Capabilities().Prune {
 			return fmt.Errorf("prune is only valid for a forget group schedule")
 		}
 	}

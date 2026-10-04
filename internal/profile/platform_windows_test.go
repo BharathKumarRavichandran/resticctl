@@ -11,13 +11,11 @@ import (
 )
 
 func TestEnsureFileSecurityRequiresOwnerOnlyProtectedDACL(t *testing.T) {
-	path := t.TempDir() + `\credentials.json`
-	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+	path, err := securefile.WriteTemporary(t.TempDir(), "credentials-*.json", []byte("secret"), 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := securefile.Protect(path); err != nil {
-		t.Fatal(err)
-	}
+	defer securefile.Remove(path)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

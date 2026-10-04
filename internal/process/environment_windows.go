@@ -4,4 +4,5 @@ package process
 
 import "strings"
 
-func normalizeEnvKey(key string) string { return strings.ToUpper(key) }
+// NormalizeEnvironmentKey follows platform environment key semantics.
+func NormalizeEnvironmentKey(key string) string { return strings.ToUpper(key) }

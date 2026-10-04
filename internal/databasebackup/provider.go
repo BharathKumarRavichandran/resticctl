@@ -279,29 +279,17 @@ func (m MySQL) Stage(ctx context.Context, runner Runner, directory string, envir
 	clientEnvironment := providerPasswordEnvironment(environment, "MYSQL_PASSWORD")
 	password, _ := takeEnvironmentValue(clientEnvironment, "MYSQL_PASSWORD")
 	clientEnvironment["MYSQL_PWD"] = ""
-	optionFile, err := os.CreateTemp(directory, ".mysql-client-*")
+	contents := mysqlOptionFile(db.Username, password)
+	defer clear(contents)
+	optionPath, err := securefile.WriteTemporary(directory, ".mysql-client-*", contents, 0)
 	if err != nil {
 		return fmt.Errorf("create MySQL client option file for %s: %w", db.Name, err)
 	}
-	optionPath := optionFile.Name()
 	defer func() {
-		if err := os.Remove(optionPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := securefile.Remove(optionPath); err != nil {
 			stageErr = errors.Join(stageErr, fmt.Errorf("remove MySQL client option file for %s: %w", db.Name, err))
 		}
 	}()
-	if err := securefile.Protect(optionPath); err != nil {
-		optionFile.Close()
-		return fmt.Errorf("protect MySQL client option file for %s: %w", db.Name, err)
-	}
-	contents := mysqlOptionFile(db.Username, password)
-	defer clear(contents)
-	if _, err := optionFile.Write(contents); err != nil {
-		optionFile.Close()
-		return fmt.Errorf("write MySQL client option file for %s: %w", db.Name, err)
-	}
-	if err := optionFile.Close(); err != nil {
-		return fmt.Errorf("close MySQL client option file for %s: %w", db.Name, err)
-	}
 
 	temporaryDump, err := temporaryArtifact(directory, db.Name+"-*.sql")
 	if err != nil {
@@ -485,24 +473,7 @@ func writeSelectionManifest(directory, name, provider, database, kind string, va
 	}
 	data = append(data, '\n')
 	path := filepath.Join(directory, "databases", name+".selection.json")
-	temporary, err := os.CreateTemp(filepath.Dir(path), "."+name+"-*.selection.json")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
+	return securefile.WriteAtomic(path, data)
 }
 
 func temporaryArtifact(directory, pattern string) (string, error) {

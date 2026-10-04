@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"resticctl/internal/process"
+	"resticctl/internal/securefile"
 )
 
 // Config contains only the repository settings needed to invoke Restic.
@@ -247,10 +248,10 @@ func (client *Client) InitCopyDestination(ctx context.Context, config CopyConfig
 func validateCopyEnvironment(config CopyConfig) error {
 	source := make(map[string]string, len(config.Source.Environment))
 	for key, value := range config.Source.Environment {
-		source[normalizeEnvKey(key)] = value
+		source[process.NormalizeEnvironmentKey(key)] = value
 	}
 	for key, value := range config.Destination.Environment {
-		if sourceValue, ok := source[normalizeEnvKey(key)]; ok && sourceValue != value {
+		if sourceValue, ok := source[process.NormalizeEnvironmentKey(key)]; ok && sourceValue != value {
 			return fmt.Errorf("source and destination credentials conflict on environment key %s", key)
 		}
 	}
@@ -263,14 +264,14 @@ func (client *Client) runWithSource(ctx context.Context, destination, source Con
 		return err
 	}
 	if destinationTemporary {
-		defer func() { runErr = errors.Join(runErr, removePasswordFile(destinationPassword)) }()
+		defer func() { runErr = errors.Join(runErr, securefile.Remove(destinationPassword)) }()
 	}
 	sourcePassword, sourceTemporary, err := preparePasswordFile(ctx, source)
 	if err != nil {
 		return err
 	}
 	if sourceTemporary {
-		defer func() { runErr = errors.Join(runErr, removePasswordFile(sourcePassword)) }()
+		defer func() { runErr = errors.Join(runErr, securefile.Remove(sourcePassword)) }()
 	}
 
 	commandArgs := append([]string{}, client.prefixArguments...)
@@ -282,24 +283,7 @@ func (client *Client) runWithSource(ctx context.Context, destination, source Con
 	environment := mergeEnvironment(os.Environ(), source.Environment)
 	command.Env = mergeEnvironment(environment, destination.Environment)
 	command.Stdin, command.Stdout, command.Stderr = client.stdin, writerOnly{client.stdout}, client.stderr
-	if err := process.Run(ctx, command); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			return &ExitError{Code: exitError.ExitCode()}
-		}
-		return fmt.Errorf("cannot execute restic: %w", err)
-	}
-	return nil
-}
-
-func removePasswordFile(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("cannot remove temporary password file %s: %w", path, err)
-	}
-	return nil
+	return commandError(ctx, process.Run(ctx, command))
 }
 
 // RunWithResult captures Restic's newline-delimited JSON summary while still
@@ -377,9 +361,7 @@ func (client *Client) runInput(ctx context.Context, config Config, arguments []s
 	}
 	if temporary {
 		defer func() {
-			if err := os.Remove(passwordFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-				runErr = errors.Join(runErr, fmt.Errorf("cannot remove temporary password file %s: %w", passwordFile, err))
-			}
+			runErr = errors.Join(runErr, securefile.Remove(passwordFile))
 		}()
 	}
 
@@ -401,15 +383,28 @@ func (client *Client) runInput(ctx context.Context, config Config, arguments []s
 		capture.consume()
 		result.Summary = capture.summary
 	}
-	if commandErr != nil {
-		if ctx.Err() != nil {
-			return result, ctx.Err()
+	return result, commandError(ctx, commandErr)
+}
+
+func commandError(ctx context.Context, err error) error {
+	return resticExitErrors(process.CommandError(ctx, "restic", err))
+}
+
+func resticExitErrors(err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		converted := make([]error, len(causes))
+		for i, cause := range causes {
+			converted[i] = resticExitErrors(cause)
 		}
-		var exitError *exec.ExitError
-		if errors.As(commandErr, &exitError) {
-			return result, &ExitError{Code: exitError.ExitCode()}
-		}
-		return result, fmt.Errorf("cannot execute restic: %w", commandErr)
+		return errors.Join(converted...)
 	}
-	return result, nil
+	var exitError *process.ExitError
+	if errors.As(err, &exitError) {
+		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+			return resticExitErrors(wrapped.Unwrap())
+		}
+		return &ExitError{Code: exitError.Code}
+	}
+	return err
 }

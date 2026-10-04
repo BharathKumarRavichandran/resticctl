@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	managedaction "resticctl/internal/action"
 )
 
 type execution struct {
@@ -732,7 +734,8 @@ func TestInstallReconcilesBackendChange(t *testing.T) {
 }
 
 func TestWindowsDryRunRendersEveryScheduledActionWithoutChanges(t *testing.T) {
-	for _, action := range []string{ActionBackup, ActionCheck, ActionForget, ActionPrune, ActionCopy} {
+	for _, managed := range managedaction.All() {
+		action := string(managed)
 		t.Run(action, func(t *testing.T) {
 			directory := t.TempDir()
 			executor := &fakeExecutor{}
@@ -825,9 +828,10 @@ func TestFakeInstallationCoversEveryBackendAndAction(t *testing.T) {
 		{BackendSystemd, "linux"},
 		{BackendWindows, "windows"},
 	}
-	actions := []string{ActionBackup, ActionCheck, ActionForget, ActionPrune, ActionCopy}
+	actions := managedaction.All()
 	for _, platform := range backends {
-		for _, action := range actions {
+		for _, managed := range actions {
+			action := string(managed)
 			t.Run(platform.backend+"/"+action, func(t *testing.T) {
 				directory := t.TempDir()
 				executor := &fakeExecutor{}

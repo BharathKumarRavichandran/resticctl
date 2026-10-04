@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -106,5 +108,23 @@ func TestStatusFinalizationFailureReportsControllerFailure(t *testing.T) {
 		if event.status.State != "failed" || event.status.ErrorCategory != "controller" {
 			t.Fatalf("monitoring event = %#v", event)
 		}
+	}
+}
+
+func TestResticWarningPolicyDoesNotSuppressCleanupOrCancellation(t *testing.T) {
+	for _, policy := range []string{"warning", "success"} {
+		t.Run(policy, func(t *testing.T) {
+			ctx, observation := observe(context.Background())
+			cleanupErr := errors.New("password file cleanup failed")
+			failure := fmt.Errorf("wrapped run failure: %w", errors.Join(&restic.ExitError{Code: 3}, cleanupErr, context.Canceled))
+			err := applyResticExitPolicy(ctx, profile.Profile{Monitoring: profile.Monitoring{WarningPolicy: policy}}, failure)
+			if !errors.Is(err, cleanupErr) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("warning policy suppressed a controller failure: %v", err)
+			}
+			outcome := observation.outcome(err, 1)
+			if !outcome.Warning || outcome.ExitCode == nil || *outcome.ExitCode != 3 || outcome.Err == nil {
+				t.Fatalf("warning or failure state lost: %#v", outcome)
+			}
+		})
 	}
 }

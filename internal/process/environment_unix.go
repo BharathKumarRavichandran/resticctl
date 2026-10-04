@@ -2,4 +2,5 @@
 
 package process
 
-func normalizeEnvKey(key string) string { return key }
+// NormalizeEnvironmentKey follows platform environment key semantics.
+func NormalizeEnvironmentKey(key string) string { return key }

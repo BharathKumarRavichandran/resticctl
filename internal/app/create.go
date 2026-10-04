@@ -54,40 +54,12 @@ func CreateProfile(configDir, name string) (profilePath, privatePath string, err
 			}
 		}
 	}()
-	if err = createPrivateFile(profilePath, strings.ReplaceAll(string(profileTemplate), "<profile>", name)); err != nil {
+	if err = securefile.WriteNew(profilePath, []byte(strings.ReplaceAll(string(profileTemplate), "<profile>", name))); err != nil {
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
 	created = append(created, profilePath)
-	if err = createPrivateFile(privatePath, strings.ReplaceAll(string(privateTemplate), "<profile>", name)); err != nil {
+	if err = securefile.WriteNew(privatePath, []byte(strings.ReplaceAll(string(privateTemplate), "<profile>", name))); err != nil {
 		return "", "", fmt.Errorf("cannot create profile: %w", err)
 	}
 	return profilePath, privatePath, nil
-}
-
-func createPrivateFile(path, content string) (err error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	ok := false
-	defer func() {
-		if !ok {
-			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				err = errors.Join(err, fmt.Errorf("cannot remove incomplete file %s: %w", path, removeErr))
-			}
-		}
-	}()
-	_, writeErr := file.WriteString(content)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return writeErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err := securefile.Protect(path); err != nil {
-		return err
-	}
-	ok = true
-	return nil
 }

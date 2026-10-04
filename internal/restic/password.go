@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 
 	"resticctl/internal/secretvalue"
@@ -53,37 +52,7 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 	return writeTemporaryPassword(password)
 }
 
-func writeTemporaryPassword(password []byte) (path string, temporary bool, err error) {
-	file, err := os.CreateTemp("", "resticctl-password-")
-	if err != nil {
-		return "", false, fmt.Errorf("cannot create temporary password file: %w", err)
-	}
-	path = file.Name()
-	ok := false
-	closed := false
-	defer func() {
-		if !ok {
-			if !closed {
-				if closeErr := file.Close(); closeErr != nil {
-					err = errors.Join(err, fmt.Errorf("cannot close temporary password file: %w", closeErr))
-				}
-			}
-			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				err = errors.Join(err, fmt.Errorf("cannot remove temporary password file %s: %w", path, removeErr))
-			}
-		}
-	}()
-	if err := securefile.Protect(path); err != nil {
-		return "", false, fmt.Errorf("cannot protect temporary password file: %w", err)
-	}
-	if _, err := file.Write(password); err != nil {
-		return "", false, fmt.Errorf("cannot write temporary password file: %w", err)
-	}
-	closeErr := file.Close()
-	closed = true
-	if closeErr != nil {
-		return "", false, fmt.Errorf("cannot close temporary password file: %w", closeErr)
-	}
-	ok = true
-	return path, true, nil
+func writeTemporaryPassword(password []byte) (string, bool, error) {
+	path, err := securefile.WriteTemporary("", "resticctl-password-*", password, maximumPasswordBytes)
+	return path, err == nil, err
 }

@@ -5,103 +5,83 @@ import (
 	"fmt"
 )
 
-// backend isolates scheduler-specific rendering and lifecycle operations from
-// the portable Manager API.
-type backend interface {
-	render(configDir string, state State, executable string) ([]byte, error)
-	install(ctx context.Context, configDir string, state *State, executable string) error
-	remove(ctx context.Context, configDir string, state *State) error
-	definition(ctx context.Context, state State) ([]byte, error)
-	verify(ctx context.Context, state State) error
-}
-
-func (manager Manager) backend(name string) (backend, error) {
-	switch name {
+func (manager Manager) render(configDir string, state State, executable string) ([]byte, error) {
+	switch state.Backend {
 	case BackendCron:
-		return cronBackend{manager}, nil
+		return manager.renderCron(state, executable, configDir)
 	case BackendLaunchd:
-		return launchdBackend{manager}, nil
+		return manager.renderLaunchd(configDir, state, executable)
 	case BackendSystemd:
-		return systemdBackend{manager}, nil
+		service, timer, err := manager.renderSystemd(configDir, state, executable)
+		return append(service, timer...), err
 	case BackendWindows:
-		return windowsBackend{manager}, nil
+		return manager.renderWindows(configDir, state, executable)
 	default:
-		return nil, fmt.Errorf("unsupported schedule backend %q", name)
+		return nil, unsupportedBackend(state.Backend)
 	}
 }
 
-type cronBackend struct{ Manager }
-
-func (b cronBackend) render(configDir string, state State, executable string) ([]byte, error) {
-	return b.renderCron(state, executable, configDir)
-}
-func (b cronBackend) install(ctx context.Context, configDir string, state *State, executable string) error {
-	return b.installCron(ctx, *state, executable, configDir)
-}
-func (b cronBackend) remove(ctx context.Context, _ string, state *State) error {
-	if state.CronFile != "" {
-		return removeCronFile(state.CronFile, targetIdentity(*state), state.Action)
+func (manager Manager) apply(ctx context.Context, configDir string, state *State, executable string) error {
+	switch state.Backend {
+	case BackendCron:
+		return manager.installCron(ctx, *state, executable, configDir)
+	case BackendLaunchd:
+		jobFile, err := manager.installLaunchd(ctx, configDir, *state, executable)
+		state.JobFile = jobFile
+		return err
+	case BackendSystemd:
+		return manager.installSystemd(ctx, configDir, state, executable)
+	case BackendWindows:
+		return manager.installWindows(ctx, configDir, state, executable)
+	default:
+		return unsupportedBackend(state.Backend)
 	}
-	return b.removeCron(ctx, targetIdentity(*state), state.Action)
-}
-func (b cronBackend) definition(ctx context.Context, state State) ([]byte, error) {
-	return b.cronDefinition(ctx, state)
-}
-func (cronBackend) verify(context.Context, State) error { return nil }
-
-type launchdBackend struct{ Manager }
-
-func (b launchdBackend) render(configDir string, state State, executable string) ([]byte, error) {
-	return b.renderLaunchd(configDir, state, executable)
-}
-func (b launchdBackend) install(ctx context.Context, configDir string, state *State, executable string) error {
-	jobFile, err := b.installLaunchd(ctx, configDir, *state, executable)
-	state.JobFile = jobFile
-	return err
-}
-func (b launchdBackend) remove(ctx context.Context, configDir string, state *State) error {
-	return b.removeLaunchd(ctx, configDir, *state)
-}
-func (b launchdBackend) definition(_ context.Context, state State) ([]byte, error) {
-	return b.launchdDefinition(state)
-}
-func (b launchdBackend) verify(ctx context.Context, state State) error {
-	return b.verifyLaunchd(ctx, state)
 }
 
-type systemdBackend struct{ Manager }
+func (manager Manager) removeApplied(ctx context.Context, configDir string, state State) error {
+	switch state.Backend {
+	case BackendCron:
+		if state.CronFile != "" {
+			return removeCronFile(state.CronFile, targetIdentity(state), state.Action)
+		}
+		return manager.removeCron(ctx, targetIdentity(state), state.Action)
+	case BackendLaunchd:
+		return manager.removeLaunchd(ctx, configDir, state)
+	case BackendSystemd:
+		return manager.removeSystemd(ctx, &state)
+	case BackendWindows:
+		return manager.removeWindows(ctx, &state)
+	default:
+		return unsupportedBackend(state.Backend)
+	}
+}
 
-func (b systemdBackend) render(configDir string, state State, executable string) ([]byte, error) {
-	service, timer, err := b.renderSystemd(configDir, state, executable)
-	return append(service, timer...), err
-}
-func (b systemdBackend) install(ctx context.Context, configDir string, state *State, executable string) error {
-	return b.installSystemd(ctx, configDir, state, executable)
-}
-func (b systemdBackend) remove(ctx context.Context, _ string, state *State) error {
-	return b.removeSystemd(ctx, state)
-}
-func (b systemdBackend) definition(_ context.Context, state State) ([]byte, error) {
-	return b.nativeDefinition(state)
-}
-func (b systemdBackend) verify(ctx context.Context, state State) error {
-	return b.verifyNative(ctx, state)
+func (manager Manager) installedDefinition(ctx context.Context, state State) ([]byte, error) {
+	switch state.Backend {
+	case BackendCron:
+		return manager.cronDefinition(ctx, state)
+	case BackendLaunchd:
+		return manager.launchdDefinition(state)
+	case BackendSystemd, BackendWindows:
+		return manager.nativeDefinition(state)
+	default:
+		return nil, unsupportedBackend(state.Backend)
+	}
 }
 
-type windowsBackend struct{ Manager }
+func (manager Manager) verifyBackend(ctx context.Context, state State) error {
+	switch state.Backend {
+	case BackendCron:
+		return nil
+	case BackendLaunchd:
+		return manager.verifyLaunchd(ctx, state)
+	case BackendSystemd, BackendWindows:
+		return manager.verifyNative(ctx, state)
+	default:
+		return unsupportedBackend(state.Backend)
+	}
+}
 
-func (b windowsBackend) render(configDir string, state State, executable string) ([]byte, error) {
-	return b.renderWindows(configDir, state, executable)
-}
-func (b windowsBackend) install(ctx context.Context, configDir string, state *State, executable string) error {
-	return b.installWindows(ctx, configDir, state, executable)
-}
-func (b windowsBackend) remove(ctx context.Context, _ string, state *State) error {
-	return b.removeWindows(ctx, state)
-}
-func (b windowsBackend) definition(_ context.Context, state State) ([]byte, error) {
-	return b.nativeDefinition(state)
-}
-func (b windowsBackend) verify(ctx context.Context, state State) error {
-	return b.verifyNative(ctx, state)
+func unsupportedBackend(name string) error {
+	return fmt.Errorf("unsupported schedule backend %q", name)
 }

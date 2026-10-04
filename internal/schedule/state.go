@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	managedaction "resticctl/internal/action"
 	"resticctl/internal/cronexpr"
 	"resticctl/internal/profile"
 	"resticctl/internal/securefile"
@@ -146,7 +147,7 @@ func readState(path string) (State, error) {
 	} else {
 		state.Expression = normalized
 	}
-	if state.Action != ActionForget && state.Prune {
+	if !managedaction.Action(state.Action).Capabilities().Prune && state.Prune {
 		return State{}, fmt.Errorf("schedule state %s enables prune for a %s action", path, state.Action)
 	}
 	policy := Spec{

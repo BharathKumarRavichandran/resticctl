@@ -3,12 +3,16 @@ package restic
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"resticctl/internal/process"
 )
 
 type helperResult struct {
@@ -392,5 +396,14 @@ func TestSummaryCaptureIsStreamingAndBounded(t *testing.T) {
 	_, _ = capture.Write([]byte(strings.Repeat("x", maximumJSONLine+1) + "\n"))
 	if len(capture.line) != 0 || capture.discard {
 		t.Fatalf("capture retained oversized line: len=%d discard=%t", len(capture.line), capture.discard)
+	}
+}
+
+func TestCommandErrorPreservesExitAndSupervisionFailures(t *testing.T) {
+	cleanupErr := errors.New("job close failed")
+	err := commandError(context.Background(), fmt.Errorf("wrapped: %w", errors.Join(&process.ExitError{Label: "restic", Code: 3}, cleanupErr)))
+	var exitError *ExitError
+	if !errors.As(err, &exitError) || exitError.Code != 3 || !errors.Is(err, cleanupErr) {
+		t.Fatalf("Restic conversion lost an error: %v", err)
 	}
 }
