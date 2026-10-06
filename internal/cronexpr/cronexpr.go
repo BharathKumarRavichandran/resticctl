@@ -76,5 +76,6 @@ func Due(expression string, lastSuccess *time.Time, now time.Time) (bool, error)
 		return false, fmt.Errorf("invalid cron expression: %w", err)
 	}
 	previous := lastSuccess.In(now.Location())
-	return !schedule.Next(previous).After(now), nil
+	next := schedule.Next(previous)
+	return !next.IsZero() && !next.After(now), nil
 }

@@ -56,3 +56,11 @@ func TestDue(t *testing.T) {
 		t.Fatalf("never run due = %v, error = %v", due, err)
 	}
 }
+
+func TestDueImpossibleSchedule(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-24 * time.Hour)
+	if due, err := Due("0 0 31 2 *", &lastSuccess, now); err != nil || due {
+		t.Fatalf("impossible schedule due = %v, error = %v", due, err)
+	}
+}

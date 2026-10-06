@@ -543,9 +543,7 @@ func mysqlOptionFile(username, password string) []byte {
 	if username != "" {
 		fmt.Fprintf(&contents, "user=\"%s\"\n", escapeMySQLOption(username))
 	}
-	if password != "" {
-		fmt.Fprintf(&contents, "password=\"%s\"\n", escapeMySQLOption(password))
-	}
+	fmt.Fprintf(&contents, "password=\"%s\"\n", escapeMySQLOption(password))
 	return contents.Bytes()
 }
 

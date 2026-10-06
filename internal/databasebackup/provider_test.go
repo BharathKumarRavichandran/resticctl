@@ -311,6 +311,20 @@ func TestMySQLStagesRemoteDatabaseWithPrivateCredentials(t *testing.T) {
 	}
 }
 
+func TestMySQLStagesWithoutPassword(t *testing.T) {
+	runner := &mysqlRunner{}
+	db := profile.MySQLDatabase{Name: "local", Database: "app", Executable: "mysqldump"}
+	if err := (MySQL{Database: db}).Stage(context.Background(), runner, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if runner.optionData != "[client]\npassword=\"\"\n" {
+		t.Fatalf("option file does not override an ambient password: %q", runner.optionData)
+	}
+	if password, ok := runner.call.env["MYSQL_PWD"]; !ok || password != "" {
+		t.Fatal("ambient password environment was not cleared")
+	}
+}
+
 func TestMySQLStagesSocketAndCleansOptionFileAfterFailure(t *testing.T) {
 	runner := &mysqlRunner{err: errors.New("dump failed")}
 	db := profile.MySQLDatabase{Name: "local", Database: "app", Socket: "/run/mysqld/mysqld.sock", Executable: "mysqldump"}
