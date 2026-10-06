@@ -191,6 +191,36 @@ type testExitError struct{ code int }
 func (err testExitError) Error() string { return "failed" }
 func (err testExitError) ExitCode() int { return err.code }
 
+func TestRecorderCancellationPreservesCategoryAndExitCode(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		err      error
+		category string
+	}{
+		{"cancelled", context.Canceled, "cancelled"},
+		{"timeout", context.DeadlineExceeded, "timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			started := time.Unix(100, 0)
+			recorder, err := Begin(directory, "example", started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := recorder.Finish(errors.Join(test.err, testExitError{code: 7}), started.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			status, err := Load(directory, "example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.State != "cancelled" || status.ErrorCategory != test.category || status.ExitCode == nil || *status.ExitCode != 7 {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
 func TestRecorderPersistsBoundedHistoryAndStructuredOutcome(t *testing.T) {
 	directory := t.TempDir()
 	for index := range 3 {

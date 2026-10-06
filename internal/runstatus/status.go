@@ -445,7 +445,10 @@ func classify(err error) (string, *int) {
 	var coded exitCoder
 	if errors.As(err, &coded) {
 		code := coded.ExitCode()
-		return "command_exit", &code
+		if category == "execution" {
+			category = "command_exit"
+		}
+		return category, &code
 	}
 	return category, nil
 }

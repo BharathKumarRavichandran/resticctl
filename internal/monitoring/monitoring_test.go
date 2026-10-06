@@ -3,6 +3,8 @@ package monitoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +25,45 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type closingTransport struct {
+	roundTripFunc
+	closed bool
+}
+
+func (transport *closingTransport) CloseIdleConnections() { transport.closed = true }
+
+func TestHTTPDeliveriesCloseIdleConnections(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		for _, kind := range []string{"hook", "pushgateway"} {
+			t.Run(fmt.Sprintf("%s/fail=%v", kind, fail), func(t *testing.T) {
+				transport := &closingTransport{roundTripFunc: func(*http.Request) (*http.Response, error) {
+					if fail {
+						return nil, errors.New("delivery failed")
+					}
+					return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+				}}
+				original := newHTTPClient
+				newHTTPClient = func(time.Duration, string) (*http.Client, error) {
+					return &http.Client{Transport: transport}, nil
+				}
+				t.Cleanup(func() { newHTTPClient = original })
+				var err error
+				if kind == "hook" {
+					err = sendHTTP(context.Background(), profile.HTTPHook{URL: "https://monitor.example", Method: http.MethodPost}, Event{})
+				} else {
+					err = push(context.Background(), profile.Pushgateway{URL: "https://push.example", Job: "backups"}, runstatus.Status{})
+				}
+				if (err != nil) != fail {
+					t.Fatalf("delivery error = %v, want failure = %v", err, fail)
+				}
+				if !transport.closed {
+					t.Fatal("idle connections were not closed")
+				}
+			})
+		}
+	}
 }
 
 func useHTTPFake(t *testing.T, function roundTripFunc) {

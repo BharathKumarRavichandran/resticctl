@@ -187,6 +187,7 @@ func sendHTTP(ctx context.Context, hook profile.HTTPHook, event Event) error {
 	if err != nil {
 		return fmt.Errorf("monitoring target %q: %w", hook.Name, err)
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("monitoring target %q delivery: %w", hook.Name, err)
@@ -290,6 +291,7 @@ func push(ctx context.Context, gateway profile.Pushgateway, status runstatus.Sta
 	if err != nil {
 		return err
 	}
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("Pushgateway delivery: %w", err)

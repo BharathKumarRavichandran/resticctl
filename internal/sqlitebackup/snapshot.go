@@ -12,6 +12,8 @@ import (
 	"time"
 
 	modernsqlite "modernc.org/sqlite"
+
+	"resticctl/internal/securefile"
 )
 
 const (
@@ -24,6 +26,9 @@ type onlineBackupper interface {
 }
 
 func Create(ctx context.Context, sourcePath, destination string) (finalErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := os.Stat(sourcePath)
 	if err != nil || !info.Mode().IsRegular() {
 		if errors.Is(err, os.ErrNotExist) || err == nil {
@@ -38,6 +43,9 @@ func Create(ctx context.Context, sourcePath, destination string) (finalErr error
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return fmt.Errorf("cannot create SQLite snapshot directory: %w", err)
+	}
+	if err := securefile.WriteNew(destination, nil); err != nil {
+		return fmt.Errorf("cannot create private SQLite snapshot %s: %w", destination, err)
 	}
 	defer func() {
 		if finalErr != nil {
@@ -77,10 +85,7 @@ func Create(ctx context.Context, sourcePath, destination string) (finalErr error
 		}
 		stepErr := stepBackup(ctx, backup)
 		finishErr := backup.Finish()
-		if stepErr != nil {
-			return stepErr
-		}
-		return finishErr
+		return errors.Join(stepErr, finishErr)
 	}); err != nil {
 		return fmt.Errorf("cannot snapshot SQLite database %s: %w", sourcePath, err)
 	}
@@ -113,7 +118,7 @@ func Create(ctx context.Context, sourcePath, destination string) (finalErr error
 	if len(results) != 1 || results[0] != "ok" {
 		return fmt.Errorf("SQLite integrity check failed for %s: %v", sourcePath, results)
 	}
-	if err := os.Chmod(destination, 0o600); err != nil {
+	if err := securefile.Protect(destination); err != nil {
 		return fmt.Errorf("cannot protect SQLite snapshot %s: %w", destination, err)
 	}
 	return nil
@@ -121,17 +126,15 @@ func Create(ctx context.Context, sourcePath, destination string) (finalErr error
 
 func stepBackup(ctx context.Context, backup *modernsqlite.Backup) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		more, err := backup.Step(256)
 		if err == nil {
 			if !more {
 				return nil
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				continue
-			}
+			continue
 		}
 		coded, ok := err.(interface{ Code() int })
 		if !ok || (coded.Code() != sqliteBusy && coded.Code() != sqliteLocked) {
