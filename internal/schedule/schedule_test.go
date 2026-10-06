@@ -22,6 +22,7 @@ type execution struct {
 }
 
 type fakeExecutor struct {
+	windowsTasks    map[string][]byte
 	executions      []execution
 	crontab         string
 	crontabError    error
@@ -50,6 +51,28 @@ func (executor *fakeExecutor) Run(_ context.Context, input []byte, name string, 
 	}
 	if name == "crontab" && slices.Equal(arguments, []string{"-"}) {
 		executor.crontab = string(input)
+	}
+	if name == "schtasks" && len(arguments) > 0 {
+		if arguments[0] == "/Create" {
+			data, err := os.ReadFile(arguments[4])
+			if err != nil {
+				return nil, err
+			}
+			if executor.windowsTasks == nil {
+				executor.windowsTasks = make(map[string][]byte)
+			}
+			executor.windowsTasks[arguments[2]] = data
+		}
+		if arguments[0] == "/Query" && len(arguments) == 4 && arguments[3] == "/XML" {
+			data, ok := executor.windowsTasks[arguments[2]]
+			if !ok {
+				return nil, errors.New("task not found")
+			}
+			return data, nil
+		}
+		if arguments[0] == "/Delete" {
+			delete(executor.windowsTasks, arguments[2])
+		}
 	}
 	if name == "launchctl" && executor.launchctlError != nil {
 		return executor.launchctlOutput, executor.launchctlError

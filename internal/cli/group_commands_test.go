@@ -301,3 +301,65 @@ func writeCLIGroup(t *testing.T, directory, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestGroupActionDryRunUsesEffectiveArguments(t *testing.T) {
+	for _, test := range []struct {
+		name, action string
+		profile      profile.Profile
+		want         bool
+	}{
+		{"global", "backup", profile.Profile{ResticArgs: []string{"--dry-run"}}, true},
+		{"disabled", "forget", profile.Profile{ForgetArgs: []string{"--dry-run", "--dry-run=false"}}, false},
+		{"command override", "forget", profile.Profile{ForgetArgs: []string{"--dry-run"}, Commands: map[string]profile.ResticCommand{"forget": {Args: []string{"-n=false"}}}}, false},
+		{"global overridden", "backup", profile.Profile{ResticArgs: []string{"--dry-run"}, Commands: map[string]profile.ResticCommand{"backup": {Args: []string{"--dry-run=false"}}}}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := groupActionDryRun(test.profile, test.action); got != test.want {
+				t.Fatalf("dry run = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestScheduledGroupRejectsGlobalDryRunWithoutRecordingSuccess(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	file := filepath.Join(profile.Dir(directory), "home.json")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configured map[string]any
+	if err := json.Unmarshal(data, &configured); err != nil {
+		t.Fatal(err)
+	}
+	configured["restic_args"] = []string{"--dry-run"}
+	data, err = json.Marshal(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIGroup(t, directory, `{"profiles":["home"]}`)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	_, err = manager.InstallSpec(context.Background(), schedule.Spec{Name: "daily", TargetType: schedule.TargetGroup, Action: schedule.ActionBackup, Expressions: []string{"@daily"}, Backend: schedule.BackendCron, Executable: "/bin/resticctl", ConfigDir: directory, Enabled: true, Start: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &groupRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	code, err := cli.run(context.Background(), []string{"schedule", "run", "daily", "--group", "--config-dir", directory})
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "configured Restic dry-run") {
+		t.Fatalf("status=%d error=%v", code, err)
+	}
+	if runner.runs != 0 {
+		t.Fatal("invalid scheduled group executed Restic")
+	}
+	if _, err := runstatus.LoadGroupAction(directory, "daily", schedule.ActionBackup); !errors.Is(err, runstatus.ErrNotRecorded) {
+		t.Fatalf("status was recorded: %v", err)
+	}
+}

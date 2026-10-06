@@ -1169,3 +1169,29 @@ func TestLoadRequiresPrivatePermissionsForCopyCredentials(t *testing.T) {
 		t.Fatalf("Load error = %v", err)
 	}
 }
+
+func TestLoadRejectsDatabaseArtifactCollisions(t *testing.T) {
+	for _, fields := range []string{
+		`"postgresql_databases":[{"name":"app","database":"app","globals":true}],"mysql_databases":[{"name":"app-globals","database":"app"}]`,
+		`"postgresql_databases":[{"name":"app","database":"app","globals":true}],"mysql_databases":[{"name":"APP-globals","database":"app"}]`,
+		`"postgresql_databases":[{"name":"app","database":"app"}],"mongodb_databases":[{"name":"app.dump"}]`,
+		`"mysql_databases":[{"name":"app","database":"app","tables":["users"]}],"mongodb_databases":[{"name":"app.selection.json"}]`,
+	} {
+		t.Run(fields, func(t *testing.T) {
+			directory := t.TempDir()
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"value":"secret"}},`+fields+`}`)
+			_, err := Load(directory, "example")
+			if err == nil || !strings.Contains(err.Error(), "conflicting artifact") {
+				t.Fatalf("Load error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadAllowsDistinctDatabaseArtifacts(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"value":"secret"}},"postgresql_databases":[{"name":"app","database":"app","globals":false}],"mysql_databases":[{"name":"app-globals","database":"app"}]}`)
+	if _, err := Load(directory, "example"); err != nil {
+		t.Fatal(err)
+	}
+}

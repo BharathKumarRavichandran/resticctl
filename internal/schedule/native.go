@@ -362,26 +362,19 @@ func (manager Manager) nativeDefinition(state State) ([]byte, error) {
 }
 
 func (manager Manager) verifyNative(ctx context.Context, state State) error {
-	if state.Backend == BackendSystemd {
-		args := systemctlArguments(state)
-		unit := filepath.Base(state.JobFile)
-		if state.Enabled {
-			output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-enabled", unit)...)
-			if err != nil {
-				return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect enabled systemd timer", output, err))
-			}
+	args := systemctlArguments(state)
+	unit := filepath.Base(state.JobFile)
+	if state.Enabled {
+		output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-enabled", unit)...)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect enabled systemd timer", output, err))
 		}
-		if state.Start {
-			output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-active", unit)...)
-			if err != nil {
-				return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect active systemd timer", output, err))
-			}
-		}
-		return nil
 	}
-	output, err := manager.executor.Run(ctx, nil, "schtasks", "/Query", "/TN", `\resticctl\`+nativeID(state))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect Windows task", output, err))
+	if state.Start {
+		output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-active", unit)...)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect active systemd timer", output, err))
+		}
 	}
 	return nil
 }

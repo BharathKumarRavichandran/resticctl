@@ -78,7 +78,7 @@ func RunCopy(ctx context.Context, newRunner RunnerFactory, configDir string, bac
 		return fmt.Errorf("profile %s has no copy target %q", backupProfile.Name, target)
 	}
 	remote := repositoryIsRemote(backupProfile.Repository) || repositoryIsRemote(configured.Repository)
-	return newPolicyRunner().Run(ctx, backupProfile.Runtime, false, remote, func(runCtx context.Context) error {
+	return newPolicyRunner().Run(ctx, backupProfile.Runtime, isScheduledExecution(ctx), remote, func(runCtx context.Context) error {
 		runner, err := newRunner()
 		if err != nil {
 			return err
@@ -122,7 +122,7 @@ func RunRecordedRestic(ctx context.Context, newRunner RunnerFactory, configDir s
 }
 
 func runWithPolicy(ctx context.Context, newRunner RunnerFactory, backupProfile profile.Profile, scheduled bool, run func(context.Context, Runner) error) error {
-	return newPolicyRunner().Run(ctx, backupProfile.Runtime, scheduled, repositoryIsRemote(backupProfile.Repository), func(runCtx context.Context) error {
+	return newPolicyRunner().Run(ctx, backupProfile.Runtime, scheduled || isScheduledExecution(ctx), repositoryIsRemote(backupProfile.Repository), func(runCtx context.Context) error {
 		runner, err := newRunner()
 		if err != nil {
 			return err
@@ -164,15 +164,7 @@ func recoverRepositoryLocks(ctx context.Context, runner Runner, backupProfile pr
 }
 
 func configuredDryRun(backupProfile profile.Profile, command string) bool {
-	arguments := append([]string(nil), backupProfile.ResticArgs...)
-	switch command {
-	case schedule.ActionBackup:
-		arguments = append(arguments, backupProfile.BackupArgs...)
-	case schedule.ActionForget:
-		arguments = append(arguments, backupProfile.ForgetArgs...)
-	}
-	arguments = append(arguments, backupProfile.Commands[command].Args...)
-	return hasDryRunOption(arguments)
+	return backupProfile.CommandDryRun(command)
 }
 
 func hasDryRunOption(arguments []string) bool {
@@ -312,4 +304,16 @@ func finishRecordedRun(ctx context.Context, recorder *runstatus.Recorder, backup
 	}
 	_ = reporter.Report(ctx, "send-finally", status)
 	return finalErr
+}
+
+type scheduledExecutionKey struct{}
+
+// WithScheduledExecution preserves scheduled host policy when invoking member workflows.
+func WithScheduledExecution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, scheduledExecutionKey{}, true)
+}
+
+func isScheduledExecution(ctx context.Context) bool {
+	scheduled, _ := ctx.Value(scheduledExecutionKey{}).(bool)
+	return scheduled
 }

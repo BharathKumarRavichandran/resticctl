@@ -277,3 +277,48 @@ func TestScheduledCopyChecksRemoteDestinations(t *testing.T) {
 		t.Fatal("remote copy destination bypassed network policy")
 	}
 }
+
+type scheduledPolicyRecorder struct{ scheduled bool }
+
+func (policy *scheduledPolicyRecorder) Run(ctx context.Context, _ profile.Runtime, scheduled, _ bool, run func(context.Context) error) error {
+	policy.scheduled = scheduled
+	if scheduled {
+		return errors.New("scheduled job requires AC power")
+	}
+	return run(ctx)
+}
+
+func TestMemberWorkflowsPreserveScheduledPolicy(t *testing.T) {
+	policy := &scheduledPolicyRecorder{}
+	original := newPolicyRunner
+	newPolicyRunner = func() policyRunner { return policy }
+	t.Cleanup(func() { newPolicyRunner = original })
+	p := profile.Profile{Name: "example", Runtime: profile.Runtime{RequireACPower: true}, BackupPaths: []string{t.TempDir()}, ForgetArgs: []string{"--keep-last", "1"}, Copies: map[string]profile.CopyTarget{"target": {Repository: "local:target"}}}
+	for _, action := range []string{"backup", "forget", "check", "prune", "copy"} {
+		t.Run(action, func(t *testing.T) {
+			directory := t.TempDir()
+			runner := &recordingRunner{}
+			factory := func() (Runner, error) { return runner, nil }
+			ctx := WithScheduledExecution(context.Background())
+			var err error
+			switch action {
+			case "backup":
+				err = RunBackup(ctx, factory, directory, p, false, io.Discard, time.Now)
+			case "forget":
+				err = RunForget(ctx, factory, directory, p, false, false, time.Now)
+			case "check":
+				err = RunCheck(ctx, factory, directory, p, time.Now)
+			case "prune":
+				err = RunRecordedRestic(ctx, factory, directory, p, action, nil, time.Now, io.Discard)
+			case "copy":
+				err = RunCopy(ctx, factory, directory, p, "target", false, io.Discard, time.Now)
+			}
+			if err == nil || !policy.scheduled {
+				t.Fatalf("scheduled policy ignored: %v", err)
+			}
+			if len(runner.runs) != 0 {
+				t.Fatal("blocked scheduled workflow invoked Restic")
+			}
+		})
+	}
+}

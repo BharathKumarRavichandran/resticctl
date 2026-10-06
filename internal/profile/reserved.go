@@ -74,3 +74,18 @@ func IsReservedEnvironment(key string) bool {
 		return false
 	}
 }
+
+// CommandDryRun reports the effective dry-run flag across global and command arguments.
+func (value Profile) CommandDryRun(command string) bool {
+	arguments := append([]string(nil), value.ResticArgs...)
+	switch command {
+	case "backup":
+		arguments = append(arguments, value.BackupArgs...)
+	case "forget":
+		arguments = append(arguments, value.ForgetArgs...)
+	case "check":
+		arguments = append(arguments, value.CheckArgs...)
+	}
+	arguments = append(arguments, value.Commands[command].Args...)
+	return DryRunEnabled(arguments)
+}

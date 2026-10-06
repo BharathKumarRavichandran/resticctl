@@ -121,6 +121,19 @@ func (manager Manager) InstallAction(ctx context.Context, configDir, name, actio
 
 // InstallSpec validates, renders, and installs one independently managed action.
 func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error) {
+	if spec.DryRun {
+		return manager.installSpec(ctx, spec)
+	}
+	var state State
+	err := manager.withMutationLock(ctx, spec.ConfigDir, func() error {
+		var err error
+		state, err = manager.installSpec(ctx, spec)
+		return err
+	})
+	return state, err
+}
+
+func (manager Manager) installSpec(ctx context.Context, spec Spec) (State, error) {
 	var err error
 	name, action, backend, executable, configDir := spec.Name, spec.Action, spec.Backend, spec.Executable, spec.ConfigDir
 	catchUp, prune := spec.CatchUp, spec.Prune
@@ -249,6 +262,13 @@ func (manager Manager) InstallSpec(ctx context.Context, spec Spec) (State, error
 		return State{}, rollback(err)
 	}
 	state.DefinitionHash = definitionHash(definition)
+	if state.Backend == BackendWindows {
+		registered, err := manager.windowsDefinition(ctx, state)
+		if err != nil {
+			return State{}, rollback(err)
+		}
+		state.RegisteredHash = definitionHash(registered)
+	}
 	if err := writeState(configDir, state); err != nil {
 		return State{}, rollback(err)
 	}
@@ -275,6 +295,12 @@ func (manager Manager) RemoveAction(ctx context.Context, configDir, name, action
 }
 
 func (manager Manager) RemoveTargetAction(ctx context.Context, configDir, targetType, name, action string) error {
+	return manager.withMutationLock(ctx, configDir, func() error {
+		return manager.removeTargetAction(ctx, configDir, targetType, name, action)
+	})
+}
+
+func (manager Manager) removeTargetAction(ctx context.Context, configDir, targetType, name, action string) error {
 	state, err := LoadTargetAction(configDir, targetType, name, action)
 	if err != nil {
 		return err

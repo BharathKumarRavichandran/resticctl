@@ -531,7 +531,7 @@ func (cli *commandLine) runScheduledGroup(ctx context.Context, configDir, name, 
 	}
 	var failures []error
 	for _, member := range profiles {
-		memberErr := cli.runGroupMember(ctx, configDir, member, action, false, state.Prune)
+		memberErr := cli.runGroupMember(app.WithScheduledExecution(ctx), configDir, member, action, false, state.Prune)
 		if memberErr != nil {
 			failures = append(failures, fmt.Errorf("profile %s: %w", member.Name, memberErr))
 			if ctx.Err() != nil || errors.Is(memberErr, context.Canceled) || errors.Is(memberErr, context.DeadlineExceeded) || !configured.ContinueOnError {

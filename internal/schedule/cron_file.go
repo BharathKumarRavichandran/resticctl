@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"resticctl/internal/configlock"
 	"resticctl/internal/securefile"
 )
 
@@ -50,6 +51,15 @@ func (manager Manager) installCronFile(state State, executable, configDir string
 	if !filepath.IsAbs(state.CronFile) {
 		return errors.New("explicit crontab path must be absolute")
 	}
+	if err := os.MkdirAll(filepath.Dir(state.CronFile), 0700); err != nil {
+		return err
+	}
+	return configlock.With(state.CronFile+".resticctl.lock", func() error {
+		return manager.installCronFileLocked(state, executable, configDir)
+	})
+}
+
+func (manager Manager) installCronFileLocked(state State, executable, configDir string) error {
 	current, err := os.ReadFile(state.CronFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("cannot read crontab file: %w", err)
@@ -65,13 +75,14 @@ func (manager Manager) installCronFile(state State, executable, configDir string
 	if updated != "" && !strings.HasSuffix(updated, "\n") {
 		updated += "\n"
 	}
-	if err := os.MkdirAll(filepath.Dir(state.CronFile), 0o700); err != nil {
-		return err
-	}
 	return securefile.WriteAtomic(state.CronFile, append([]byte(updated), definition...))
 }
 
 func removeCronFile(path, name, action string) error {
+	return configlock.With(path+".resticctl.lock", func() error { return removeCronFileLocked(path, name, action) })
+}
+
+func removeCronFileLocked(path, name, action string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err

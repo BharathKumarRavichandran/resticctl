@@ -16,6 +16,7 @@ import (
 
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
+	"resticctl/internal/securefile"
 )
 
 func TestBackupStagesDatabaseAndBuildsArguments(t *testing.T) {
@@ -756,7 +757,7 @@ func TestBackupWithRelativeConfigDirectoryStagesDatabaseAndFindsSources(t *testi
 		t.Fatal(err)
 	}
 	data := []byte(`{"repository":"fake","credentials":{"password":{"value":"test"}},"backup_paths":["documents"],"sqlite_databases":[{"name":"db","path":"source.sqlite3"}]}`)
-	if err := os.WriteFile(filepath.Join(configDir, "example.json"), data, 0o600); err != nil {
+	if err := securefile.WriteAtomic(filepath.Join(configDir, "example.json"), data); err != nil {
 		t.Fatal(err)
 	}
 	backupProfile, err := profile.Load(configDir, "example")

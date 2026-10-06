@@ -118,6 +118,9 @@ func normalizeProfileSources(backupProfile *Profile, base string) error {
 	if err := validateExternalDatabases(backupProfile, base); err != nil {
 		return err
 	}
+	if err := validateDatabaseArtifacts(*backupProfile); err != nil {
+		return err
+	}
 	if backupProfile.DatabaseConcurrency <= 0 {
 		return errors.New("databases.concurrency must be a positive integer (legacy: database_concurrency)")
 	}
@@ -845,6 +848,64 @@ func validateDatabaseArgs(backend string, args []string, forbidden ...string) er
 			if arg == option || strings.HasPrefix(arg, option+"=") || (len(option) == 2 && strings.HasPrefix(arg, option) && len(arg) > 2) {
 				return fmt.Errorf("%s args must not contain unsafe option %s", backend, option)
 			}
+		}
+	}
+	return nil
+}
+
+func validateDatabaseArtifacts(value Profile) error {
+	paths := make(map[string]string)
+	add := func(name, path string) error {
+		key := strings.ToLower(path)
+		if owner, exists := paths[key]; exists {
+			return fmt.Errorf("database backups %s and %s produce conflicting artifact %s", owner, name, path)
+		}
+		paths[key] = name
+		return nil
+	}
+	for _, db := range value.SQLiteDatabases {
+		if err := add(db.Name, db.Name+".sqlite3"); err != nil {
+			return err
+		}
+	}
+	for _, db := range value.PostgreSQLDatabases {
+		if err := add(db.Name, db.Name+".dump"); err != nil {
+			return err
+		}
+		if db.Globals {
+			if err := add(db.Name, db.Name+"-globals.sql"); err != nil {
+				return err
+			}
+		}
+		if len(db.TablePatterns) > 0 {
+			if err := add(db.Name, db.Name+".selection.json"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, db := range value.MongoDBDatabases {
+		if err := add(db.Name, db.Name); err != nil {
+			return err
+		}
+		if db.Collection != "" || len(db.ExcludeCollections) > 0 {
+			if err := add(db.Name, db.Name+".selection.json"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, db := range value.MySQLDatabases {
+		if err := add(db.Name, db.Name+".sql"); err != nil {
+			return err
+		}
+		if len(db.Tables) > 0 {
+			if err := add(db.Name, db.Name+".selection.json"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, db := range value.SQLServerDatabases {
+		if err := add(db.Name, db.Name+".bak"); err != nil {
+			return err
 		}
 	}
 	return nil

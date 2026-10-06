@@ -393,19 +393,7 @@ func (cli *commandLine) groupActionCommand(action string) *cobra.Command {
 }
 
 func groupActionDryRun(backupProfile profile.Profile, action string) bool {
-	var arguments []string
-	if action == schedule.ActionBackup {
-		arguments = backupProfile.BackupArgs
-	} else if action == schedule.ActionForget {
-		arguments = backupProfile.ForgetArgs
-	}
-	arguments = append(arguments, backupProfile.Commands[action].Args...)
-	for _, argument := range arguments {
-		if profile.IsDryRunOption(argument) {
-			return true
-		}
-	}
-	return false
+	return backupProfile.CommandDryRun(action)
 }
 
 func (cli *commandLine) runGroupMember(ctx context.Context, configDir string, backupProfile profile.Profile, action string, dryRun, prune bool) error {

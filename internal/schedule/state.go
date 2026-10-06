@@ -28,6 +28,7 @@ type State struct {
 	CatchUp         bool      `json:"catch_up"`
 	Action          string    `json:"action,omitempty"`
 	Prune           bool      `json:"prune,omitempty"`
+	RegisteredHash  string    `json:"registered_definition_hash,omitempty"`
 	DefinitionHash  string    `json:"definition_hash,omitempty"`
 	Executable      string    `json:"executable,omitempty"`
 	EnvironmentPath string    `json:"environment_path,omitempty"`

@@ -75,8 +75,10 @@ func (manager Manager) verifyBackend(ctx context.Context, state State) error {
 		return nil
 	case BackendLaunchd:
 		return manager.verifyLaunchd(ctx, state)
-	case BackendSystemd, BackendWindows:
+	case BackendSystemd:
 		return manager.verifyNative(ctx, state)
+	case BackendWindows:
+		return manager.verifyWindows(ctx, state)
 	default:
 		return unsupportedBackend(state.Backend)
 	}
