@@ -577,6 +577,25 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 	}
 }
 
+func TestSystemdCommandPreservesLiteralDollars(t *testing.T) {
+	manager := NewManager(WithEnvironmentPath("/opt/$tools/bin"))
+	service, _, err := manager.renderSystemd("/backup/${CONFIG}", State{
+		Profile: "example", Action: ActionBackup, Expressions: []string{"0 2 * * *"},
+	}, "/opt/$tools/resticctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`ExecStart="/opt/$$tools/resticctl"`,
+		`"/backup/$${CONFIG}"`,
+		`Environment="PATH=/opt/$tools/bin"`,
+	} {
+		if !strings.Contains(string(service), want) {
+			t.Fatalf("service lacks %q:\n%s", want, service)
+		}
+	}
+}
+
 func TestRollbackRestoresPreviousBackendExecutableAndPath(t *testing.T) {
 	directory := t.TempDir()
 	units := filepath.Join(directory, "units")

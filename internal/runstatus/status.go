@@ -269,8 +269,11 @@ func (recorder *Recorder) Finish(runErr error, now time.Time) error {
 
 func (recorder *Recorder) FinishOutcome(outcome Outcome, now time.Time) error {
 	finished := now.UTC()
+	if finished.Before(recorder.status.StartedAt) {
+		finished = recorder.status.StartedAt
+	}
 	recorder.status.FinishedAt = &finished
-	recorder.status.DurationMS = now.Sub(recorder.started).Milliseconds()
+	recorder.status.DurationMS = max(0, now.Sub(recorder.started).Milliseconds())
 	recorder.status.Warning = outcome.Warning
 	recorder.status.Statistics = outcome.Statistics
 	recorder.status.ErrorCategory, recorder.status.ExitCode = classify(outcome.Err)

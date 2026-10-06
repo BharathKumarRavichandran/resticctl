@@ -44,6 +44,35 @@ func TestRecorderPersistsSuccessfulRun(t *testing.T) {
 	}
 }
 
+func TestRecorderSurvivesBackwardClockAdjustment(t *testing.T) {
+	directory := t.TempDir()
+	started := time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC)
+	recorder, err := Begin(directory, "example", started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Finish(nil, started.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DurationMS != 0 || status.FinishedAt == nil || !status.FinishedAt.Equal(started) {
+		t.Fatalf("status after clock adjustment = %#v", status)
+	}
+	if _, err := LoadHistory(directory, "example", "backup"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := Begin(directory, "example", started.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("cannot start subsequent backup: %v", err)
+	}
+	if err := next.Finish(nil, started.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecorderRejectsOverlappingBackup(t *testing.T) {
 	directory := t.TempDir()
 	first, err := Begin(directory, "example", time.Now())

@@ -72,7 +72,7 @@ func (manager Manager) renderSystemd(configDir string, state State, executable s
 	args := scheduledArguments(executable, configDir, state)
 	quoted := make([]string, len(args))
 	for i, arg := range args {
-		quoted[i] = systemdEscape(arg)
+		quoted[i] = systemdEscape(strings.ReplaceAll(arg, "$", "$$"))
 	}
 	var service strings.Builder
 	service.WriteString("[Unit]\nDescription=resticctl " + state.Action + " for " + state.Profile + "\n")
