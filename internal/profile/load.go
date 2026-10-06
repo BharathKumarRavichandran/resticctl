@@ -13,6 +13,10 @@ import (
 )
 
 func Load(configDir, name string) (Profile, error) {
+	configDir, err := filepath.Abs(configDir)
+	if err != nil {
+		return Profile{}, fmt.Errorf("cannot resolve profile directory: %w", err)
+	}
 	if err := ValidateName(name); err != nil {
 		return Profile{}, err
 	}

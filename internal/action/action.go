@@ -3,6 +3,18 @@ package action
 
 type Action string
 
+// StateKey separates profile identities from actions, including dotted names.
+func (a Action) StateKey(name string) string {
+	return "v2+" + name + "+" + string(a)
+}
+
+func (a Action) LegacyStateKey(name string) string {
+	if a == Backup {
+		return name
+	}
+	return name + "." + string(a)
+}
+
 const (
 	Backup = "backup"
 	Check  = "check"

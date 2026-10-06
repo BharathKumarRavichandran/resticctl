@@ -857,8 +857,8 @@ Repeat `--calendar` for multiple expressions; `--cron` is an alias for one.
 
 The portable calendar syntax is a standard five-field cron expression in local
 time: minute, hour, day of month, month, and day of week. Cron preserves the
-expression. systemd translates all five fields to `OnCalendar`; numeric cron
-weekday values are retained, so use numeric values for portability. launchd
+expression. systemd translates all five fields to `OnCalendar`, converting
+weekdays to names and expanding lists, ranges, and steps. launchd
 supports only a number or `*` in each field. Windows currently supports daily
 or hourly expressions (day, month, and weekday must be `*`). Lists, ranges,
 steps, and names are therefore not portable and are rejected by backends that

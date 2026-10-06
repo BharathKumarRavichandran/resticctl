@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"resticctl/internal/configlock"
 	"resticctl/internal/process"
 	"resticctl/internal/profile"
 )
@@ -32,6 +33,9 @@ type Runner struct {
 func New() Runner { return Runner{Probe: systemProbe{}, Now: time.Now} }
 
 func (runner Runner) Run(ctx context.Context, policy profile.Runtime, scheduled, remote bool, operation func(context.Context) error) (runErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if runner.Probe == nil {
 		return errors.New("host policy probe is not configured")
 	}
@@ -105,6 +109,9 @@ func (runner Runner) acquire(ctx context.Context, lock *profile.RuntimeLock) (fu
 	}
 	deadline := runner.Now().Add(wait)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		release, err := runner.tryAcquire(lock)
 		if err == nil || !errors.Is(err, ErrLocked) || lock.Mode != "wait" {
 			return release, err
@@ -127,6 +134,23 @@ func (runner Runner) tryAcquire(lock *profile.RuntimeLock) (func() error, error)
 	if err := os.MkdirAll(filepath.Dir(lock.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("create runtime lock directory: %w", err)
 	}
+	var release func() error
+	err := configlock.With(lock.Path+".guard", func() error {
+		var err error
+		release, err = runner.tryAcquireLocked(lock)
+		return err
+	})
+	if errors.Is(err, configlock.ErrLocked) {
+		return nil, ErrLocked
+	}
+	if err != nil && release != nil {
+		err = errors.Join(err, release())
+		release = nil
+	}
+	return release, err
+}
+
+func (runner Runner) tryAcquireLocked(lock *profile.RuntimeLock) (func() error, error) {
 	record, err := runner.newLock(lock.Path)
 	if err == nil {
 		return record, nil

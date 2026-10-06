@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -355,6 +356,21 @@ func (client *Client) run(ctx context.Context, config Config, arguments []string
 }
 
 func (client *Client) runInput(ctx context.Context, config Config, arguments []string, cwd string, capture *summaryCapture, input io.Reader, stdout, stderr io.Writer) (result Result, runErr error) {
+	if cwd != "" && config.Repository != "" {
+		repository := config.Repository
+		prefix := ""
+		if strings.HasPrefix(repository, "local:") {
+			prefix = "local:"
+			repository = strings.TrimPrefix(repository, prefix)
+		}
+		if prefix != "" || !strings.Contains(repository, ":") || filepath.IsAbs(repository) {
+			absolute, err := filepath.Abs(repository)
+			if err != nil {
+				return Result{}, fmt.Errorf("cannot resolve local repository: %w", err)
+			}
+			config.Repository = prefix + absolute
+		}
+	}
 	passwordFile, temporary, err := preparePasswordFile(ctx, config)
 	if err != nil {
 		return Result{}, err

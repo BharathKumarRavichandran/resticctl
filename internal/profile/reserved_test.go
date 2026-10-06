@@ -54,3 +54,21 @@ func TestDryRunOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestDryRunUsesFinalBooleanValue(t *testing.T) {
+	for _, test := range []struct {
+		arguments []string
+		enabled   bool
+	}{
+		{[]string{"--dry-run", "--dry-run=false"}, false},
+		{[]string{"-n=false", "--dry-run"}, true},
+		{[]string{"--dry-run=true", "-n=0"}, false},
+		{[]string{"--dry-run=false", "-n=1"}, true},
+		{[]string{"--", "--dry-run"}, false},
+		{[]string{"--dry-run", "--", "--dry-run=false"}, true},
+	} {
+		if got := DryRunEnabled(test.arguments); got != test.enabled {
+			t.Errorf("DryRunEnabled(%q)=%t; want %t", test.arguments, got, test.enabled)
+		}
+	}
+}

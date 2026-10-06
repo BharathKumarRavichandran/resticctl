@@ -35,7 +35,7 @@ func TestRecorderPersistsSuccessfulRun(t *testing.T) {
 	if finished.State != "succeeded" || finished.DurationMS != 1500 || finished.FinishedAt == nil {
 		t.Fatalf("finished status = %#v", finished)
 	}
-	info, err := os.Stat(filepath.Join(directory, "status", "example.json"))
+	info, err := os.Stat(filepath.Join(directory, "status", "v2+example+backup.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestLoadHistoryRejectsInvalidRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(directory, "status", "history", "example.check.json")
+			path := filepath.Join(directory, "status", "history", "v2+example+check.json")
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -250,5 +250,66 @@ func TestLoadHistoryRejectsInvalidRecords(t *testing.T) {
 				t.Fatal("LoadHistory succeeded")
 			}
 		})
+	}
+}
+
+func TestDottedProfileStatusAndLegacyHistoryRemainIndependent(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Now()
+	recorder, err := Begin(directory, "photos.check", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Finish(nil, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, subdir := range []string{"status", filepath.Join("status", "history")} {
+		if err := os.Rename(filepath.Join(directory, subdir, statusKey("photos.check", "backup")+".json"), filepath.Join(directory, subdir, "photos.check.json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check, err := BeginAction(directory, "photos", "check", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check.Finish(nil, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	recorder, err = Begin(directory, "photos.check", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Status().LastSuccessAt == nil || !recorder.Status().LastSuccessAt.Equal(now.Add(time.Second)) {
+		t.Fatal("legacy last success lost")
+	}
+	if err := recorder.Finish(nil, now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct {
+		name, action string
+		history      int
+	}{{"photos.check", "backup", 2}, {"photos", "check", 1}} {
+		status, err := LoadAction(directory, target.name, target.action)
+		if err != nil || status.Profile != target.name || status.Action != target.action {
+			t.Fatalf("status=%+v, err=%v", status, err)
+		}
+		history, err := LoadHistory(directory, target.name, target.action)
+		if err != nil || len(history) != target.history {
+			t.Fatalf("history=%+v, err=%v", history, err)
+		}
+	}
+}
+
+func TestCancelledProfileLockDoesNotRunOrCreateState(t *testing.T) {
+	directory := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := WithProfileLock(ctx, directory, "example", func() error { called = true; return nil })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("called=%t, err=%v", called, err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "status")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled lock created state: %v", err)
 	}
 }

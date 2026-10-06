@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,15 +60,40 @@ func (runner *applicationRunner) RunStream(ctx context.Context, config restic.Co
 		return runner.Client.RunWithInput(ctx, config, arguments, cwd, os.Stdin)
 	}
 	var result restic.Result
+	producerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var producerErr, consumerErr error
 	err := process.Pipe(
-		func(output io.Writer) error { return runner.Executor.RunProducer(ctx, producer, output) },
+		func(output io.Writer) error {
+			producerErr = runner.Executor.RunProducer(producerCtx, producer, output)
+			return producerErr
+		},
 		func(input io.Reader) error {
-			var err error
-			result, err = runner.Client.RunWithInput(ctx, config, arguments, cwd, input)
-			return err
+			defer cancel()
+			result, consumerErr = runner.Client.RunWithInput(ctx, config, arguments, cwd, input)
+			return consumerErr
 		},
 	)
+	if consumerErr != nil && ctx.Err() == nil {
+		return result, errors.Join(consumerErr, withoutStreamCancellation(producerErr))
+	}
 	return result, err
+}
+
+// Internal producer cancellation must not turn a Restic failure into a cancelled run.
+func withoutStreamCancellation(err error) error {
+	if err == context.Canceled {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		remaining := make([]error, len(causes))
+		for index, cause := range causes {
+			remaining[index] = withoutStreamCancellation(cause)
+		}
+		return errors.Join(remaining...)
+	}
+	return err
 }
 
 func newRunner() (app.Runner, error) {

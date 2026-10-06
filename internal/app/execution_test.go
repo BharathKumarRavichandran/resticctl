@@ -209,3 +209,71 @@ func TestScheduledCatchUpRechecksDueStateAfterWaitingForLock(t *testing.T) {
 		t.Fatalf("recorded timing = %#v", status)
 	}
 }
+
+func TestRawDryRunOverridesAreRecordedAccordingToEffectiveArguments(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		configured, arguments []string
+		recorded              bool
+	}{
+		{"command override", []string{"--dry-run"}, []string{"--dry-run=false"}, true},
+		{"raw override", nil, []string{"--dry-run", "-n=false"}, true},
+		{"enable raw", []string{"--dry-run=false"}, []string{"-n"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			backupProfile := profile.Profile{Name: "example", Commands: map[string]profile.ResticCommand{"forget": {Args: test.configured}}}
+			factory := func() (Runner, error) { return &recordingRunner{}, nil }
+			if err := RunRecordedRestic(context.Background(), factory, directory, backupProfile, "forget", test.arguments, time.Now, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			_, err := runstatus.LoadAction(directory, "example", "forget")
+			if test.recorded && err != nil {
+				t.Fatal(err)
+			}
+			if !test.recorded && !errors.Is(err, runstatus.ErrNotRecorded) {
+				t.Fatalf("dry run was recorded: %v", err)
+			}
+		})
+	}
+}
+
+func TestGlobalDryRunIsNotRecorded(t *testing.T) {
+	directory := t.TempDir()
+	backupProfile := profile.Profile{Name: "example", ResticArgs: []string{"--dry-run"}, BackupPaths: []string{t.TempDir()}}
+	factory := func() (Runner, error) { return &recordingRunner{}, nil }
+	if err := RunBackup(context.Background(), factory, directory, backupProfile, false, io.Discard, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runstatus.Load(directory, "example"); !errors.Is(err, runstatus.ErrNotRecorded) {
+		t.Fatalf("dry run was recorded: %v", err)
+	}
+}
+
+type remotePolicyRecorder struct{ remote bool }
+
+func (policy *remotePolicyRecorder) Run(ctx context.Context, _ profile.Runtime, _, remote bool, run func(context.Context) error) error {
+	policy.remote = remote
+	return run(ctx)
+}
+
+func TestScheduledCopyChecksRemoteDestinations(t *testing.T) {
+	directory := t.TempDir()
+	executor := &concurrentScheduleExecutor{}
+	manager := schedule.NewManager(schedule.WithExecutor(executor), schedule.WithPlatform("linux", 1000))
+	if _, err := manager.InstallAction(context.Background(), directory, "example", "copy", "0 0 * * *", "cron", filepath.Join(directory, "resticctl"), false, false); err != nil {
+		t.Fatal(err)
+	}
+	policy := &remotePolicyRecorder{}
+	original := newPolicyRunner
+	newPolicyRunner = func() policyRunner { return policy }
+	t.Cleanup(func() { newPolicyRunner = original })
+	backupProfile := profile.Profile{Name: "example", Repository: "/local/source", Copies: map[string]profile.CopyTarget{"remote": {Repository: "s3:bucket"}}}
+	factory := func() (Runner, error) { return &recordingRunner{}, nil }
+	if _, err := ScheduledRun(context.Background(), factory, manager, directory, backupProfile, "copy", time.Now, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.remote {
+		t.Fatal("remote copy destination bypassed network policy")
+	}
+}

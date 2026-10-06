@@ -59,11 +59,15 @@ func (executor *Executor) RunProducer(ctx context.Context, arguments []string, o
 // Pipe streams producer output into consumer and preserves errors from both
 // sides. Closing the reader unblocks a producer when the consumer exits early.
 func Pipe(producer func(io.Writer) error, consumer func(io.Reader) error) error {
-	reader, writer := io.Pipe()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
 	producerResult := make(chan error, 1)
 	go func() {
 		err := producer(writer)
-		_ = writer.CloseWithError(err)
+		_ = writer.Close()
 		producerResult <- err
 	}()
 	consumerErr := consumer(reader)

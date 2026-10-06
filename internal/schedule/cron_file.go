@@ -24,7 +24,7 @@ func (manager Manager) renderCron(state State, executable, configDir string) ([]
 		command = "nice -n 10 " + command
 	}
 	if state.Log != "" {
-		command += " >> " + shellQuote(state.Log) + " 2>&1"
+		command += " >> " + strings.ReplaceAll(shellQuote(state.Log), "%", "\\%") + " 2>&1"
 	}
 	user := ""
 	if state.CronFile != "" && state.Permission == PermissionSystem {

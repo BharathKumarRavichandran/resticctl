@@ -126,7 +126,8 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 	}
 	updates := make([]renameUpdate, 0, 4)
 	var value string
-	if raw, ok := document["private_file"]; ok && json.Unmarshal(raw, &value) == nil && value == oldName+".private.json" {
+	privateKey := renameJSONKey(document, "private_file")
+	if raw, ok := document[privateKey]; ok && json.Unmarshal(raw, &value) == nil && value == oldName+".private.json" {
 		source := filepath.Join(profilesDir, value)
 		destination := filepath.Join(profilesDir, newName+".private.json")
 		companion, readErr := readRenameFile(source)
@@ -138,7 +139,7 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			return nil, statErr
 		}
-		document["private_file"], _ = json.Marshal(newName + ".private.json")
+		document[privateKey], _ = json.Marshal(newName + ".private.json")
 		updates = append(updates, renameUpdate{source: source, destination: destination, content: companion, description: "rename " + filepath.Base(source) + " to " + filepath.Base(destination)})
 	}
 	data, err = json.MarshalIndent(document, "", "  ")
@@ -187,7 +188,8 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 			return nil, fmt.Errorf("cannot decode group %s: %w", path, err)
 		}
 		var members []string
-		if err := json.Unmarshal(document["profiles"], &members); err != nil {
+		membersKey := renameJSONKey(document, "profiles")
+		if err := json.Unmarshal(document[membersKey], &members); err != nil {
 			return nil, fmt.Errorf("cannot decode group profiles in %s: %w", path, err)
 		}
 		changed := false
@@ -205,7 +207,7 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 				}
 				seen[key] = struct{}{}
 			}
-			document["profiles"], _ = json.Marshal(members)
+			document[membersKey], _ = json.Marshal(members)
 			encoded, _ := json.MarshalIndent(document, "", "  ")
 			updates = append(updates, renameUpdate{source: path, destination: path, content: append(encoded, '\n'), description: "update group " + strings.TrimSuffix(entry.Name(), ".json")})
 		}
@@ -231,10 +233,11 @@ func replaceJSONName(path, field, oldName, newName string) ([]byte, bool, error)
 		return nil, false, err
 	}
 	var value string
-	if raw, ok := document[field]; !ok || json.Unmarshal(raw, &value) != nil || value != oldName {
+	key := renameJSONKey(document, field)
+	if raw, ok := document[key]; !ok || json.Unmarshal(raw, &value) != nil || value != oldName {
 		return nil, false, nil
 	}
-	document[field], _ = json.Marshal(newName)
+	document[key], _ = json.Marshal(newName)
 	encoded, err := json.MarshalIndent(document, "", "  ")
 	return append(encoded, '\n'), true, err
 }
@@ -251,7 +254,9 @@ func statusRenameUpdates(configDir, oldName, newName string) ([]renameUpdate, er
 		}
 		for _, entry := range entries {
 			name := entry.Name()
-			profileStatus := name == oldName+".json" || strings.HasPrefix(name, oldName+".") || strings.HasPrefix(name, oldName+"+copy+")
+			currentPrefix := "v2+" + oldName
+			currentStatus := strings.HasPrefix(name, currentPrefix+"+")
+			profileStatus := currentStatus || name == oldName+".json" || strings.HasPrefix(name, oldName+".") || strings.HasPrefix(name, oldName+"+copy+")
 			if !entry.Type().IsRegular() || strings.HasSuffix(name, ".lock") || !profileStatus {
 				continue
 			}
@@ -268,6 +273,9 @@ func statusRenameUpdates(configDir, oldName, newName string) ([]renameUpdate, er
 				continue
 			}
 			newFile := newName + strings.TrimPrefix(name, oldName)
+			if currentStatus {
+				newFile = "v2+" + newName + strings.TrimPrefix(name, currentPrefix)
+			}
 			updates = append(updates, renameUpdate{source: path, destination: filepath.Join(directory, newFile), content: data, description: "move status " + name + " to " + newFile})
 		}
 	}
@@ -288,10 +296,11 @@ func renameStatusIdentity(data []byte, oldName, newName string) ([]byte, bool, e
 		return nil, false, err
 	}
 	renameStatus := func(status map[string]any) bool {
-		if status["profile"] != oldName {
+		key := renameJSONKey(status, "profile")
+		if status[key] != oldName {
 			return false
 		}
-		status["profile"] = newName
+		status[key] = newName
 		return true
 	}
 	belongsToProfile := false
@@ -299,18 +308,36 @@ func renameStatusIdentity(data []byte, oldName, newName string) ([]byte, bool, e
 	case map[string]any:
 		belongsToProfile = renameStatus(typed)
 	case []any:
+		var identity string
 		for _, item := range typed {
 			status, ok := item.(map[string]any)
-			if !ok || !renameStatus(status) {
+			if !ok {
 				return nil, false, errors.New("status history contains an inconsistent profile identity")
 			}
-			belongsToProfile = true
+			name, ok := status[renameJSONKey(status, "profile")].(string)
+			if !ok || name == "" || (identity != "" && name != identity) {
+				return nil, false, errors.New("status history contains an inconsistent profile identity")
+			}
+			identity = name
+			belongsToProfile = renameStatus(status)
 		}
 	default:
 		return nil, false, errors.New("status must be a JSON object or array")
 	}
+	if !belongsToProfile {
+		return data, false, nil
+	}
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	return append(encoded, '\n'), belongsToProfile, err
+}
+
+func renameJSONKey[T any](document map[string]T, field string) string {
+	for key := range document {
+		if strings.EqualFold(key, field) {
+			return key
+		}
+	}
+	return field
 }
 
 func applyRenameUpdates(updates []renameUpdate) error {

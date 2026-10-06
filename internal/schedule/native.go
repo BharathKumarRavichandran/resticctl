@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/robfig/cron/v3"
+
+	"resticctl/internal/cronexpr"
 	"resticctl/internal/securefile"
 )
 
@@ -27,14 +30,42 @@ func systemdEscape(value string) string {
 	return strconv.Quote(strings.ReplaceAll(value, "%", "%%"))
 }
 
-func cronToOnCalendar(expression string) string {
-	f := strings.Fields(expression)
-	// systemd order is weekday year-month-day hour:minute:second.
-	weekday := "*"
-	if f[4] != "*" {
-		weekday = f[4]
+func cronToOnCalendar(expression string) (string, error) {
+	fields, err := cronexpr.Fields(expression)
+	if err != nil {
+		return "", err
 	}
-	return weekday + " *-" + f[3] + "-" + f[2] + " " + f[1] + ":" + f[0] + ":00"
+	parsed, err := cron.ParseStandard(strings.Join(fields, " "))
+	if err != nil {
+		return "", err
+	}
+	calendar := parsed.(*cron.SpecSchedule)
+	values := func(field string, mask uint64, first, last int) string {
+		if field == "*" {
+			return "*"
+		}
+		var selected []string
+		for value := first; value <= last; value++ {
+			if mask&(uint64(1)<<value) != 0 {
+				selected = append(selected, strconv.Itoa(value))
+			}
+		}
+		return strings.Join(selected, ",")
+	}
+	weekday := ""
+	if fields[4] != "*" {
+		names := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+		var selected []string
+		for day, name := range names {
+			if calendar.Dow&(uint64(1)<<day) != 0 {
+				selected = append(selected, name)
+			}
+		}
+		weekday = strings.Join(selected, ",") + " "
+	}
+	date := "*-" + values(fields[3], calendar.Month, 1, 12) + "-" + values(fields[2], calendar.Dom, 1, 31)
+	clock := values(fields[1], calendar.Hour, 0, 23) + ":" + values(fields[0], calendar.Minute, 0, 59) + ":00"
+	return weekday + date + " " + clock, nil
 }
 
 func (manager Manager) renderSystemd(configDir string, state State, executable string) ([]byte, []byte, error) {
@@ -68,7 +99,11 @@ func (manager Manager) renderSystemd(configDir string, state State, executable s
 	var timer strings.Builder
 	timer.WriteString("[Unit]\nDescription=Timer for " + nativeID(state) + "\n[Timer]\n")
 	for _, expression := range state.Expressions {
-		timer.WriteString("OnCalendar=" + cronToOnCalendar(expression) + "\n")
+		calendar, err := cronToOnCalendar(expression)
+		if err != nil {
+			return nil, nil, err
+		}
+		timer.WriteString("OnCalendar=" + calendar + "\n")
 	}
 	if state.CatchUp {
 		timer.WriteString("Persistent=true\n")

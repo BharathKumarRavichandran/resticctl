@@ -717,3 +717,56 @@ func (runner *cleanupCheckingRunner) RunHook(_ context.Context, _ []string) erro
 func (runner *cleanupCheckingRunner) RunDatabase(_ context.Context, arguments []string, _ map[string]string, cwd string) error {
 	return createDatabaseArtifact(arguments, cwd)
 }
+
+type pathCheckingRunner struct{ recordingRunner }
+
+func (runner *pathCheckingRunner) Run(_ context.Context, _ restic.Config, arguments []string, cwd string) error {
+	for index, argument := range arguments {
+		if argument != "--" {
+			continue
+		}
+		for _, path := range arguments[index+1:] {
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(cwd, path)
+			}
+			if _, err := os.Stat(path); err != nil {
+				return err
+			}
+		}
+		break
+	}
+	return nil
+}
+
+func TestBackupWithRelativeConfigDirectoryStagesDatabaseAndFindsSources(t *testing.T) {
+	t.Chdir(t.TempDir())
+	configDir := filepath.Join("config", "profiles")
+	if err := os.MkdirAll(filepath.Join(configDir, "documents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", filepath.Join(configDir, "source.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("CREATE TABLE data(value TEXT)"); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"repository":"fake","credentials":{"password":{"value":"test"}},"backup_paths":["documents"],"sqlite_databases":[{"name":"db","path":"source.sqlite3"}]}`)
+	if err := os.WriteFile(filepath.Join(configDir, "example.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupProfile, err := profile.Load(configDir, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(backupProfile.BackupPaths[0]) || !filepath.IsAbs(backupProfile.SQLiteDatabases[0].Path) {
+		t.Fatal("profile source paths remain relative")
+	}
+	if err := Backup(context.Background(), &pathCheckingRunner{}, backupProfile, true, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -860,3 +860,79 @@ func TestFakeInstallationCoversEveryBackendAndAction(t *testing.T) {
 		}
 	}
 }
+
+func TestCronToSystemdCalendar(t *testing.T) {
+	for _, test := range []struct{ cron, calendar string }{
+		{"@daily", "*-*-* 0:0:00"},
+		{"@weekly", "Sun *-*-* 0:0:00"},
+		{"15 2 * * 1-5", "Mon,Tue,Wed,Thu,Fri *-*-* 2:15:00"},
+		{"*/15 2-4 * * *", "*-*-* 2,3,4:0,15,30,45:00"},
+		{"0 6 1,15 JAN,MAR *", "*-1,3-1,15 6:0:00"},
+		{"0 0 * * SUN,TUE,THU", "Sun,Tue,Thu *-*-* 0:0:00"},
+	} {
+		t.Run(test.cron, func(t *testing.T) {
+			got, err := cronToOnCalendar(test.cron)
+			if err != nil || got != test.calendar {
+				t.Fatalf("calendar=%q, err=%v; want %q", got, err, test.calendar)
+			}
+		})
+	}
+	if _, err := cronToOnCalendar("invalid"); err == nil {
+		t.Fatal("invalid cron accepted")
+	}
+}
+
+func TestScheduleStateSeparatesDottedNamesAndReadsLegacy(t *testing.T) {
+	directory := t.TempDir()
+	backup := State{Profile: "photos.check", TargetType: TargetProfile, TargetName: "photos.check", Action: ActionBackup, Backend: BackendCron, Expression: "0 0 * * *", Installed: time.Now()}
+	if err := writeState(directory, backup); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(directory, "schedules", "photos.check.json")
+	if err := os.Rename(statePath(directory, backup.Profile, backup.Action), legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(directory, backup.Profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAction(directory, "photos", ActionCheck); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("colliding legacy state: %v", err)
+	}
+	check := backup
+	check.Profile, check.TargetName, check.Action = "photos", "photos", ActionCheck
+	if err := writeState(directory, check); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeState(directory, backup); err != nil {
+		t.Fatal(err)
+	}
+	states, err := List(directory, "")
+	if err != nil || len(states) != 2 {
+		t.Fatalf("states=%+v, err=%v", states, err)
+	}
+	if err := removeState(directory, "photos", ActionCheck); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(directory, backup.Profile); err != nil {
+		t.Fatal("removing check damaged backup:", err)
+	}
+	if err := removeState(directory, backup.Profile, ActionBackup); err != nil {
+		t.Fatal(err)
+	}
+	states, err = List(directory, "")
+	if err != nil || len(states) != 0 {
+		t.Fatalf("remaining states=%+v, err=%v", states, err)
+	}
+}
+
+func TestCronEscapesPercentInLogPaths(t *testing.T) {
+	manager := Manager{}
+	state := State{Profile: "example", TargetName: "example", Action: ActionBackup, Expressions: []string{"0 0 * * *"}, Log: "/logs/backup%date.log"}
+	definition, err := manager.renderCron(state, "/bin/resticctl", "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(definition), "'/logs/backup\\%date.log'") {
+		t.Fatalf("unescaped cron log path: %s", definition)
+	}
+}

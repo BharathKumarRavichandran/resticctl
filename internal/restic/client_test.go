@@ -407,3 +407,40 @@ func TestCommandErrorPreservesExitAndSupervisionFailures(t *testing.T) {
 		t.Fatalf("Restic conversion lost an error: %v", err)
 	}
 }
+
+func TestStagingDirectoryDoesNotChangeLocalRepository(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	staging := filepath.Join(root, "staging")
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ repository, want string }{
+		{"repository", filepath.Join(root, "repository")},
+		{"local:repository", "local:" + filepath.Join(root, "repository")},
+		{filepath.Join(root, "absolute"), filepath.Join(root, "absolute")},
+		{"s3:bucket/path", "s3:bucket/path"},
+	} {
+		t.Run(test.repository, func(t *testing.T) {
+			logPath := filepath.Join(root, "restic.json")
+			client := &Client{executable: os.Args[0], prefixArguments: []string{"-test.run=TestResticHelper", "--"}, stdout: io.Discard, stderr: io.Discard}
+			config := Config{Repository: test.repository, PasswordValue: "test", Environment: map[string]string{"GO_WANT_RESTIC_HELPER": "1", "RESTIC_HELPER_LOG": logPath}}
+			if err := client.Run(context.Background(), config, []string{"backup", "--", "databases"}, staging); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result helperResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatal(err)
+			}
+			for index, argument := range result.Arguments {
+				if argument == "--repo" && result.Arguments[index+1] != test.want {
+					t.Fatalf("repository=%q; want %q", result.Arguments[index+1], test.want)
+				}
+			}
+		})
+	}
+}

@@ -21,16 +21,35 @@ func IsReservedOption(argument string) bool {
 
 // IsDryRunOption reports whether argument enables Restic's dry-run mode.
 func IsDryRunOption(argument string) bool {
+	enabled, _ := dryRunValue(argument)
+	return enabled
+}
+
+func dryRunValue(argument string) (bool, bool) {
 	if argument == "--dry-run" || argument == "-n" {
-		return true
+		return true, true
 	}
 	for _, prefix := range []string{"--dry-run=", "-n="} {
 		if value, found := strings.CutPrefix(argument, prefix); found {
 			enabled, err := strconv.ParseBool(value)
-			return err == nil && enabled
+			return enabled, err == nil
 		}
 	}
-	return false
+	return false, false
+}
+
+// DryRunEnabled follows Restic's last-value-wins boolean flag semantics.
+func DryRunEnabled(arguments []string) bool {
+	enabled := false
+	for _, argument := range arguments {
+		if argument == "--" {
+			break
+		}
+		if value, found := dryRunValue(argument); found {
+			enabled = value
+		}
+	}
+	return enabled
 }
 
 // IsStreamingOption reports whether argument selects Restic's stdin backup

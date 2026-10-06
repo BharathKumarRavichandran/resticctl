@@ -67,6 +67,15 @@ func LoadTargetAction(configDir, targetType, name, action string) (State, error)
 	}
 	path := statePath(configDir, key, action)
 	state, err := readState(path)
+	legacy := false
+	if errors.Is(err, os.ErrNotExist) {
+		path = filepath.Join(configDir, "schedules", managedaction.Action(action).LegacyStateKey(key)+".json")
+		state, err = readState(path)
+		legacy = true
+	}
+	if legacy && err == nil && (state.Profile != name || state.TargetType != targetType || state.Action != action) {
+		return State{}, fmt.Errorf("%w for profile %s", ErrNotInstalled, name)
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return State{}, fmt.Errorf("%w for profile %s", ErrNotInstalled, name)
 	}
@@ -189,7 +198,7 @@ func List(configDir, profileName string) ([]State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot list schedule state in %s: %w", directory, err)
 	}
-	var states []State
+	byKey := make(map[string]State)
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -201,9 +210,17 @@ func List(configDir, profileName string) ([]State, error) {
 		if profileName != "" && state.Profile != profileName {
 			continue
 		}
-		if filepath.Base(statePath(configDir, targetIdentity(state), state.Action)) != entry.Name() {
+		key := managedaction.Action(state.Action).StateKey(targetIdentity(state))
+		current := entry.Name() == key+".json"
+		if !current && entry.Name() != managedaction.Action(state.Action).LegacyStateKey(targetIdentity(state))+".json" {
 			return nil, fmt.Errorf("schedule state filename %s does not match its profile and action", entry.Name())
 		}
+		if _, exists := byKey[key]; current || !exists {
+			byKey[key] = state
+		}
+	}
+	states := make([]State, 0, len(byKey))
+	for _, state := range byKey {
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool {
@@ -216,11 +233,7 @@ func List(configDir, profileName string) ([]State, error) {
 }
 
 func statePath(configDir, name, action string) string {
-	filename := name + ".json"
-	if action != ActionBackup {
-		filename = name + "." + action + ".json"
-	}
-	return filepath.Join(configDir, "schedules", filename)
+	return filepath.Join(configDir, "schedules", managedaction.Action(action).StateKey(name)+".json")
 }
 
 func targetKey(targetType, name string) (string, error) {
@@ -236,6 +249,17 @@ func targetKey(targetType, name string) (string, error) {
 func removeState(configDir, name, action string) error {
 	if err := os.Remove(statePath(configDir, name, action)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("cannot remove schedule state: %w", err)
+	}
+	legacyPath := filepath.Join(configDir, "schedules", managedaction.Action(action).LegacyStateKey(name)+".json")
+	state, err := readState(legacyPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if targetIdentity(state) == name && state.Action == action {
+		return os.Remove(legacyPath)
 	}
 	return nil
 }

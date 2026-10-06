@@ -110,7 +110,9 @@ func RunCopy(ctx context.Context, newRunner RunnerFactory, configDir string, bac
 // status, warning, and notification semantics as first-class commands.
 func RunRecordedRestic(ctx context.Context, newRunner RunnerFactory, configDir string, backupProfile profile.Profile, command string, arguments []string, now func() time.Time, output io.Writer) error {
 	return runWithPolicy(ctx, newRunner, backupProfile, false, func(runCtx context.Context, runner Runner) error {
-		if hasDryRunOption(arguments) || configuredDryRun(backupProfile, command) {
+		actualArguments := append([]string(nil), backupProfile.ResticArgs...)
+		actualArguments = append(actualArguments, configuredResticArguments(backupProfile, command, arguments)...)
+		if hasDryRunOption(actualArguments) {
 			return RunRestic(runCtx, runner, backupProfile, command, arguments)
 		}
 		return recordRun(runCtx, configDir, backupProfile, command, now, output, func(recordCtx context.Context) error {
@@ -162,36 +164,19 @@ func recoverRepositoryLocks(ctx context.Context, runner Runner, backupProfile pr
 }
 
 func configuredDryRun(backupProfile profile.Profile, command string) bool {
-	var workflowArguments []string
+	arguments := append([]string(nil), backupProfile.ResticArgs...)
 	switch command {
 	case schedule.ActionBackup:
-		workflowArguments = backupProfile.BackupArgs
+		arguments = append(arguments, backupProfile.BackupArgs...)
 	case schedule.ActionForget:
-		workflowArguments = backupProfile.ForgetArgs
+		arguments = append(arguments, backupProfile.ForgetArgs...)
 	}
-	for _, argument := range workflowArguments {
-		if profile.IsDryRunOption(argument) {
-			return true
-		}
-	}
-	for _, argument := range backupProfile.Commands[command].Args {
-		if profile.IsDryRunOption(argument) {
-			return true
-		}
-	}
-	return false
+	arguments = append(arguments, backupProfile.Commands[command].Args...)
+	return hasDryRunOption(arguments)
 }
 
 func hasDryRunOption(arguments []string) bool {
-	for _, argument := range arguments {
-		if argument == "--" {
-			return false
-		}
-		if profile.IsDryRunOption(argument) {
-			return true
-		}
-	}
-	return false
+	return profile.DryRunEnabled(arguments)
 }
 
 // ScheduledRun verifies and runs an overdue scheduled action.
@@ -267,7 +252,13 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 		return due, err
 	}
 	entered := false
-	policyErr := newPolicyRunner().Run(ctx, backupProfile.Runtime, true, repositoryIsRemote(backupProfile.Repository), func(runCtx context.Context) error {
+	remote := repositoryIsRemote(backupProfile.Repository)
+	if action == schedule.ActionCopy {
+		for _, target := range backupProfile.Copies {
+			remote = remote || repositoryIsRemote(target.Repository)
+		}
+	}
+	policyErr := newPolicyRunner().Run(ctx, backupProfile.Runtime, true, remote, func(runCtx context.Context) error {
 		entered = true
 		return finishRecordedRun(runCtx, recorder, backupProfile, now, output, func(recordCtx context.Context) error {
 			runner, runnerErr := newRunner()

@@ -210,6 +210,9 @@ func BeginActionIf(ctx context.Context, configDir, name, action string, wait tim
 }
 
 func acquireAction(ctx context.Context, configDir, name, action string, wait time.Duration) (func() error, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	if err := validateTargetName(name); err != nil {
 		return nil, "", err
 	}
@@ -322,6 +325,12 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	}
 	path := filepath.Join(configDir, "status", statusKey(name, action)+".json")
 	data, err := os.ReadFile(path)
+	legacy := false
+	if errors.Is(err, os.ErrNotExist) {
+		path = filepath.Join(filepath.Dir(path), managedaction.Action(action).LegacyStateKey(name)+".json")
+		data, err = os.ReadFile(path)
+		legacy = true
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return Status{}, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
@@ -331,6 +340,9 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	var status Status
 	if err := json.Unmarshal(data, &status); err != nil {
 		return Status{}, fmt.Errorf("cannot decode run status %s: %w", path, err)
+	}
+	if legacy && !statusIdentityMatches(status, name, action) {
+		return Status{}, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
 	if err := validateStatus(path, name, action, &status); err != nil {
 		return Status{}, err
@@ -397,6 +409,12 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	}
 	path := filepath.Join(configDir, "status", "history", statusKey(name, action)+".json")
 	data, err := os.ReadFile(path)
+	legacy := false
+	if errors.Is(err, os.ErrNotExist) {
+		path = filepath.Join(filepath.Dir(path), managedaction.Action(action).LegacyStateKey(name)+".json")
+		data, err = os.ReadFile(path)
+		legacy = true
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
@@ -406,6 +424,9 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	var statuses []Status
 	if err := json.Unmarshal(data, &statuses); err != nil {
 		return nil, fmt.Errorf("cannot decode status history %s: %w", path, err)
+	}
+	if legacy && len(statuses) > 0 && !statusIdentityMatches(statuses[0], name, action) {
+		return nil, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
 	for index := range statuses {
 		if err := validateStatus(path, name, action, &statuses[index]); err != nil {
@@ -465,13 +486,13 @@ func appendHistory(latestPath string, status Status, limit int) error {
 		return fmt.Errorf("cannot protect status history directory: %w", err)
 	}
 	path := filepath.Join(directory, filepath.Base(latestPath))
-	var history []Status
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &history); err != nil {
-			return fmt.Errorf("cannot decode status history %s: %w", path, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("cannot read status history %s: %w", path, err)
+	name := status.Profile
+	if status.TargetType == "copy" {
+		name += "+copy+" + status.TargetName
+	}
+	history, err := LoadHistory(filepath.Dir(filepath.Dir(latestPath)), name, status.Action)
+	if err != nil && !errors.Is(err, ErrNotRecorded) {
+		return err
 	}
 	history = append([]Status{status}, history...)
 	if len(history) > limit {
@@ -489,10 +510,17 @@ func appendHistory(latestPath string, status Status, limit int) error {
 }
 
 func statusKey(name, action string) string {
-	if action == "backup" {
-		return name
+	return managedaction.Action(action).StateKey(name)
+}
+
+func statusIdentityMatches(status Status, name, action string) bool {
+	if status.Action == "" {
+		status.Action = "backup"
 	}
-	return name + "." + action
+	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
+		return status.Profile == parts[0] && status.TargetType == "copy" && status.TargetName == parts[1] && status.Action == action
+	}
+	return status.Profile == name && status.Action == action
 }
 
 func validateAction(action string) error {
