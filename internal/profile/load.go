@@ -341,7 +341,12 @@ func resolve(configDir, name string, chain []string) (profileConfig, error) {
 	if err != nil {
 		return profileConfig{}, fmt.Errorf("merge profile %s: %w", name, err)
 	}
-	var configured profileConfig
+	configured := profileConfig{Monitoring: &Monitoring{
+		BackupStatistics:   true,
+		StatusFile:         "latest.json",
+		PrometheusTextfile: "metrics.prom",
+		Logs:               []LogDestination{{Type: "file", Path: "events.jsonl"}},
+	}}
 	if err := decodeStrictJSON(data, &configured); err != nil {
 		return profileConfig{}, fmt.Errorf("merge profile %s: %w", name, err)
 	}

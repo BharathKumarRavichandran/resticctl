@@ -60,11 +60,11 @@
   "monitoring": {
     "history_limit": 100,
     "warning_policy": "warning",
-    "backup_statistics": false,
-    "status_file": "",
-    "prometheus_textfile": "",
+    "backup_statistics": true,
+    "status_file": "latest.json",
+    "prometheus_textfile": "metrics.prom",
     "http": [],
-    "logs": []
+    "logs": [{"type": "file", "path": "events.jsonl"}]
   },
   "schedule": {
     "backend": "auto",

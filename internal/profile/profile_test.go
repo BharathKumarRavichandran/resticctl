@@ -1222,3 +1222,41 @@ func TestMonitoringOutputsUseConfigDirectoryAndInputsStayBesideProfile(t *testin
 		t.Fatalf("CA path: %s", m.HTTP[0].CAFile)
 	}
 }
+
+func TestMonitoringDefaultsAndExplicitOptOuts(t *testing.T) {
+	for _, test := range []struct {
+		name, configuration string
+		enabled, statistics bool
+	}{
+		{"omitted", "", true, true},
+		{"partial", `,"monitoring":{"history_limit":5}`, true, true},
+		{"statistics opt-out", `,"monitoring":{"backup_statistics":false}`, true, false},
+		{"disabled", `,"monitoring":{"status_file":"","prometheus_textfile":"","logs":[],"backup_statistics":false}`, false, false},
+		{"null", `,"monitoring":null`, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			directory := Dir(configDir)
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"repo","credentials":{"password":{"value":"test"}}`+test.configuration+`}`)
+			loaded, err := Load(directory, "example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := loaded.Monitoring
+			if m.BackupStatistics != test.statistics {
+				t.Fatalf("statistics=%v", m.BackupStatistics)
+			}
+			if test.enabled {
+				root := filepath.Join(configDir, "monitoring", "example")
+				if m.StatusFile != filepath.Join(root, "latest.json") || m.PrometheusTextfile != filepath.Join(root, "metrics.prom") || len(m.Logs) != 1 || m.Logs[0].Path != filepath.Join(root, "events.jsonl") {
+					t.Fatalf("monitoring=%+v", m)
+				}
+			} else if m.StatusFile != "" || m.PrometheusTextfile != "" || len(m.Logs) != 0 {
+				t.Fatalf("disabled monitoring=%+v", m)
+			}
+		})
+	}
+}

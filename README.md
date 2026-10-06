@@ -943,8 +943,18 @@ or temporary credential-file names. Dry runs do not replace status.
 
 ### Monitoring, notifications, and logs
 
-The optional `monitoring` object exports status. Delivery failures are non-fatal
-and never replace the Restic action's result. For example:
+Every recorded profile action exports `latest.json`, `metrics.prom` (Prometheus
+textfile), and `events.jsonl` under `<config-dir>/monitoring/<profile>/` by default.
+Backup runs also capture aggregate statistics. Group runs export monitoring for
+each member profile. Dry runs do not write monitoring output.
+
+The optional `monitoring` object overrides these defaults. Set `status_file` or
+`prometheus_textfile` to `""` to disable that export, `logs` to `[]` to disable
+logging, or `backup_statistics` to `false` to disable backup statistics.
+Set `"monitoring": null` to disable all monitoring exports. Prometheus textfiles
+require a collector to scrape them; no monitoring server is installed.
+Delivery failures are non-fatal and never replace the Restic action's result.
+For example:
 
 ```json
 {

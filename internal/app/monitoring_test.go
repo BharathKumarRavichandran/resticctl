@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"resticctl/internal/profile"
 	"resticctl/internal/restic"
 	"resticctl/internal/runstatus"
+	"resticctl/internal/securefile"
 )
 
 type statusSabotageRunner struct {
@@ -126,5 +128,75 @@ func TestResticWarningPolicyDoesNotSuppressCleanupOrCancellation(t *testing.T) {
 				t.Fatalf("warning or failure state lost: %#v", outcome)
 			}
 		})
+	}
+}
+
+func TestDefaultMonitoringWritesSuccessfulAndFailedActions(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%t", failed), func(t *testing.T) {
+			configDir := t.TempDir()
+			directory := profile.Dir(configDir)
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := securefile.WriteAtomic(filepath.Join(directory, "example.json"), []byte(`{"repository":"repo","credentials":{"password":{"value":"test"}}}`)); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := profile.Load(directory, "example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runner Runner = &recordingRunner{}
+			if failed {
+				runner = &warningRunner{}
+			}
+			err = RunCheck(context.Background(), func() (Runner, error) { return runner, nil }, configDir, loaded, time.Now)
+			if (err != nil) != failed {
+				t.Fatalf("error=%v", err)
+			}
+			root := filepath.Join(configDir, "monitoring", "example")
+			statusData, err := os.ReadFile(loaded.Monitoring.StatusFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var status runstatus.Status
+			if err := json.Unmarshal(statusData, &status); err != nil {
+				t.Fatal(err)
+			}
+			want := "succeeded"
+			if failed {
+				want = "failed"
+			}
+			if status.State != want || status.Command != "check" {
+				t.Fatalf("status=%+v", status)
+			}
+			for _, name := range []string{"latest.json", "metrics.prom", "events.jsonl"} {
+				data, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || len(data) == 0 {
+					t.Fatalf("%s data=%s error=%v", name, data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultMonitoringSkipsDryRun(t *testing.T) {
+	configDir := t.TempDir()
+	directory := profile.Dir(configDir)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := securefile.WriteAtomic(filepath.Join(directory, "example.json"), []byte(`{"repository":"repo","backup_paths":["."],"credentials":{"password":{"value":"test"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := profile.Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RunBackup(context.Background(), func() (Runner, error) { return &recordingRunner{}, nil }, configDir, loaded, true, io.Discard, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "monitoring")); !os.IsNotExist(err) {
+		t.Fatalf("dry run created monitoring output: %v", err)
 	}
 }
