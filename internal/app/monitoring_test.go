@@ -95,7 +95,7 @@ func TestStatusFinalizationFailureReportsControllerFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { newMonitoringReporter = original })
 	directory := t.TempDir()
-	runner := &statusSabotageRunner{statusDirectory: filepath.Join(directory, "status", "v2+example+check.json")}
+	runner := &statusSabotageRunner{statusDirectory: filepath.Join(directory, "status", "profiles", "example", "check.json")}
 	backupProfile := profile.Profile{Name: "example", Monitoring: profile.Monitoring{HistoryLimit: 1}}
 	err := RunCheck(context.Background(), func() (Runner, error) { return runner, nil }, directory, backupProfile, time.Now)
 	if err == nil {

@@ -1,18 +1,28 @@
 // Package action defines the controller's managed Restic actions.
 package action
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 type Action string
 
-// StateKey separates profile identities from actions, including dotted names.
+// StateKey separates targets and actions into directories.
 func (a Action) StateKey(name string) string {
-	return "v2+" + name + "+" + string(a)
+	if strings.HasPrefix(name, "group+") {
+		return filepath.Join("groups", strings.TrimPrefix(name, "group+"), string(a))
+	}
+	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
+		return filepath.Join("profiles", parts[0], "copies", parts[1], string(a))
+	}
+	return filepath.Join("profiles", name, string(a))
 }
 
-func (a Action) LegacyStateKey(name string) string {
-	if a == Backup {
-		return name
-	}
-	return name + "." + string(a)
+// HistoryKey keeps completed runs beside the corresponding latest status.
+func (a Action) HistoryKey(name string) string {
+	key := a.StateKey(name)
+	return filepath.Join(filepath.Dir(key), "history", filepath.Base(key))
 }
 
 const (

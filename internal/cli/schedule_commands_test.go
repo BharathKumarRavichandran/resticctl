@@ -122,7 +122,9 @@ func TestProfileRenameReinstallsScheduleUnderNewIdentity(t *testing.T) {
 	writeCLIProfile(t, directory)
 	executor := &recordingScheduleExecutor{}
 	manager := schedule.NewManager(schedule.WithExecutor(executor), schedule.WithPlatform("linux", 1000), schedule.WithEnvironmentPath(""), schedule.WithClock(time.Now))
-	if _, err := manager.InstallAction(context.Background(), directory, "example", schedule.ActionBackup, "0 2 * * *", schedule.BackendCron, "/usr/local/bin/resticctl", true, false); err != nil {
+	if _, err := manager.InstallSpec(context.Background(), schedule.Spec{
+		Name: "example", Action: schedule.ActionBackup, Expressions: []string{"0 2 * * *"}, Backend: schedule.BackendCron, Executable: "/usr/local/bin/resticctl", ConfigDir: directory, CatchUp: true, Enabled: true, Start: true, Log: filepath.Join(directory, "monitoring", "example", "backup.log"),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	cli := newTestCommandLine(io.Discard, io.Discard)
@@ -140,7 +142,7 @@ func TestProfileRenameReinstallsScheduleUnderNewIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.CatchUp || state.EnvironmentPath != "" || !strings.Contains(executor.crontab, "'schedule' 'run' 'renamed'") || strings.Contains(executor.crontab, "'schedule' 'run' 'example'") {
+	if state.Log != filepath.Join(directory, "monitoring", "renamed", "backup.log") || !state.CatchUp || state.EnvironmentPath != "" || !strings.Contains(executor.crontab, "'schedule' 'run' 'renamed'") || strings.Contains(executor.crontab, "'schedule' 'run' 'example'") {
 		t.Fatalf("renamed schedule = %#v, crontab = %q", state, executor.crontab)
 	}
 }
@@ -626,5 +628,24 @@ func setCLIProfileForget(t *testing.T, directory string, configured *profile.For
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenameScheduleMovesOnlyManagedMonitoringLog(t *testing.T) {
+	configDir := t.TempDir()
+	for _, managed := range []bool{false, true} {
+		log := filepath.Join(configDir, "monitoring", "example", "backup.log")
+		if !managed {
+			log = filepath.Join(configDir, "external", "backup.log")
+		}
+		state := schedule.State{Profile: "example", Action: schedule.ActionBackup, Log: log}
+		spec := renameScheduleSpec(configDir, "renamed", state)
+		want := log
+		if managed {
+			want = filepath.Join(configDir, "monitoring", "renamed", "backup.log")
+		}
+		if spec.Log != want {
+			t.Fatalf("log=%s want=%s", spec.Log, want)
+		}
 	}
 }

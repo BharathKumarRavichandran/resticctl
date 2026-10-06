@@ -35,7 +35,7 @@ func TestRecorderPersistsSuccessfulRun(t *testing.T) {
 	if finished.State != "succeeded" || finished.DurationMS != 1500 || finished.FinishedAt == nil {
 		t.Fatalf("finished status = %#v", finished)
 	}
-	info, err := os.Stat(filepath.Join(directory, "status", "v2+example+backup.json"))
+	info, err := os.Stat(filepath.Join(directory, "status", statusKey("example", "backup")+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestLoadHistoryRejectsInvalidRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(directory, "status", "history", "v2+example+check.json")
+			path := filepath.Join(directory, "status", "profiles", "example", "history", "check.json")
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +253,7 @@ func TestLoadHistoryRejectsInvalidRecords(t *testing.T) {
 	}
 }
 
-func TestDottedProfileStatusAndLegacyHistoryRemainIndependent(t *testing.T) {
+func TestDottedProfileStatusAndHistoryRemainIndependent(t *testing.T) {
 	directory := t.TempDir()
 	now := time.Now()
 	recorder, err := Begin(directory, "photos.check", now)
@@ -262,11 +262,6 @@ func TestDottedProfileStatusAndLegacyHistoryRemainIndependent(t *testing.T) {
 	}
 	if err := recorder.Finish(nil, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
-	}
-	for _, subdir := range []string{"status", filepath.Join("status", "history")} {
-		if err := os.Rename(filepath.Join(directory, subdir, statusKey("photos.check", "backup")+".json"), filepath.Join(directory, subdir, "photos.check.json")); err != nil {
-			t.Fatal(err)
-		}
 	}
 	check, err := BeginAction(directory, "photos", "check", now.Add(2*time.Second))
 	if err != nil {
@@ -280,7 +275,7 @@ func TestDottedProfileStatusAndLegacyHistoryRemainIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if recorder.Status().LastSuccessAt == nil || !recorder.Status().LastSuccessAt.Equal(now.Add(time.Second)) {
-		t.Fatal("legacy last success lost")
+		t.Fatal("last success lost")
 	}
 	if err := recorder.Finish(nil, now.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
@@ -311,5 +306,94 @@ func TestCancelledProfileLockDoesNotRunOrCreateState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(directory, "status")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cancelled lock created state: %v", err)
+	}
+}
+
+func TestGroupAndProfileStateUseSeparateDirectories(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Now()
+	recorder, err := Begin(directory, "daily", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := BeginGroupAction(directory, "daily", "backup", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Finish(nil, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := group.Finish(nil, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"profiles", "groups"} {
+		for _, relative := range []string{"backup.json", filepath.Join("history", "backup.json"), "run.lock"} {
+			if _, err := os.Stat(filepath.Join(directory, "status", target, "daily", relative)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	history, err := LoadHistory(directory, "group+daily", "backup")
+	if err != nil || len(history) != 1 || history[0].TargetType != "group" {
+		t.Fatalf("history=%+v, err=%v", history, err)
+	}
+}
+
+func TestFlatStatusFilesAreNotLoaded(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "status")
+	if err := os.MkdirAll(filepath.Join(root, "history"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"example.json", "v2+example+backup.json"} {
+		for _, subdir := range []string{"", "history"} {
+			if err := os.WriteFile(filepath.Join(root, subdir, file), []byte(`invalid JSON`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := Load(directory, "example"); !errors.Is(err, ErrNotRecorded) {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, err := LoadHistory(directory, "example", "backup"); !errors.Is(err, ErrNotRecorded) {
+		t.Fatalf("LoadHistory: %v", err)
+	}
+}
+
+func TestStatusRejectsTargetIdentityMismatch(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Now()
+	for _, group := range []bool{false, true} {
+		var recorder *Recorder
+		var err error
+		name := "home"
+		if group {
+			name = "group+home"
+			recorder, err = BeginGroupAction(directory, "home", "backup", now)
+		} else {
+			recorder, err = Begin(directory, "home", now)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := recorder.Finish(nil, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, "status", statusKey(name, "backup")+".json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status Status
+		if err := json.Unmarshal(data, &status); err != nil {
+			t.Fatal(err)
+		}
+		status.TargetName = "other"
+		if err := write(directory, path, status); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadAction(directory, name, "backup"); err == nil {
+			t.Fatal("accepted mismatched target")
+		}
 	}
 }

@@ -905,21 +905,17 @@ func TestCronToSystemdCalendar(t *testing.T) {
 	}
 }
 
-func TestScheduleStateSeparatesDottedNamesAndReadsLegacy(t *testing.T) {
+func TestScheduleStateSeparatesDottedNames(t *testing.T) {
 	directory := t.TempDir()
 	backup := State{Profile: "photos.check", TargetType: TargetProfile, TargetName: "photos.check", Action: ActionBackup, Backend: BackendCron, Expression: "0 0 * * *", Installed: time.Now()}
 	if err := writeState(directory, backup); err != nil {
-		t.Fatal(err)
-	}
-	legacy := filepath.Join(directory, "schedules", "photos.check.json")
-	if err := os.Rename(statePath(directory, backup.Profile, backup.Action), legacy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(directory, backup.Profile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadAction(directory, "photos", ActionCheck); !errors.Is(err, ErrNotInstalled) {
-		t.Fatalf("colliding legacy state: %v", err)
+		t.Fatalf("uninstalled check: %v", err)
 	}
 	check := backup
 	check.Profile, check.TargetName, check.Action = "photos", "photos", ActionCheck
@@ -957,5 +953,25 @@ func TestCronEscapesPercentInLogPaths(t *testing.T) {
 	}
 	if !strings.Contains(string(definition), "'/logs/backup\\%date.log'") {
 		t.Fatalf("unescaped cron log path: %s", definition)
+	}
+}
+
+func TestFlatScheduleFilesAreNotLoaded(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "schedules")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"example.json", "v2+example+backup.json"} {
+		if err := os.WriteFile(filepath.Join(root, file), []byte(`invalid JSON`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Load(directory, "example"); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Load: %v", err)
+	}
+	states, err := List(directory, "")
+	if err != nil || len(states) != 0 {
+		t.Fatalf("List: %+v, %v", states, err)
 	}
 }

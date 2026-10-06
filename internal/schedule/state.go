@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	managedaction "resticctl/internal/action"
@@ -68,15 +70,6 @@ func LoadTargetAction(configDir, targetType, name, action string) (State, error)
 	}
 	path := statePath(configDir, key, action)
 	state, err := readState(path)
-	legacy := false
-	if errors.Is(err, os.ErrNotExist) {
-		path = filepath.Join(configDir, "schedules", managedaction.Action(action).LegacyStateKey(key)+".json")
-		state, err = readState(path)
-		legacy = true
-	}
-	if legacy && err == nil && (state.Profile != name || state.TargetType != targetType || state.Action != action) {
-		return State{}, fmt.Errorf("%w for profile %s", ErrNotInstalled, name)
-	}
 	if errors.Is(err, os.ErrNotExist) {
 		return State{}, fmt.Errorf("%w for profile %s", ErrNotInstalled, name)
 	}
@@ -192,40 +185,55 @@ func List(configDir, profileName string) ([]State, error) {
 		}
 	}
 	directory := filepath.Join(configDir, "schedules")
-	entries, err := os.ReadDir(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	var states []State
+	err := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) && path == directory {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(directory, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(relative, string(filepath.Separator))
+		if entry.IsDir() {
+			if path == directory {
+				return nil
+			}
+			if (parts[0] != "profiles" && parts[0] != "groups") || len(parts) > 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(parts) != 3 || !entry.Type().IsRegular() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		state, err := readState(path)
+		if err != nil {
+			return err
+		}
+		if profileName != "" && state.Profile != profileName {
+			return nil
+		}
+		action := managedaction.Action(state.Action)
+		identity := targetIdentity(state)
+		key := action.StateKey(identity)
+		if relative != key+".json" {
+			return fmt.Errorf("schedule state filename %s does not match its profile and action", relative)
+		}
+		states = append(states, state)
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("cannot list schedule state in %s: %w", directory, err)
 	}
-	byKey := make(map[string]State)
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		state, err := readState(filepath.Join(directory, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		if profileName != "" && state.Profile != profileName {
-			continue
-		}
-		key := managedaction.Action(state.Action).StateKey(targetIdentity(state))
-		current := entry.Name() == key+".json"
-		if !current && entry.Name() != managedaction.Action(state.Action).LegacyStateKey(targetIdentity(state))+".json" {
-			return nil, fmt.Errorf("schedule state filename %s does not match its profile and action", entry.Name())
-		}
-		if _, exists := byKey[key]; current || !exists {
-			byKey[key] = state
-		}
-	}
-	states := make([]State, 0, len(byKey))
-	for _, state := range byKey {
-		states = append(states, state)
-	}
 	sort.Slice(states, func(i, j int) bool {
 		if states[i].Profile == states[j].Profile {
+			if states[i].Action == states[j].Action {
+				return states[i].TargetType < states[j].TargetType
+			}
 			return states[i].Action < states[j].Action
 		}
 		return states[i].Profile < states[j].Profile
@@ -251,27 +259,13 @@ func removeState(configDir, name, action string) error {
 	if err := os.Remove(statePath(configDir, name, action)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("cannot remove schedule state: %w", err)
 	}
-	legacyPath := filepath.Join(configDir, "schedules", managedaction.Action(action).LegacyStateKey(name)+".json")
-	state, err := readState(legacyPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if targetIdentity(state) == name && state.Action == action {
-		return os.Remove(legacyPath)
-	}
 	return nil
 }
 
 func writeState(configDir string, state State) error {
-	directory := filepath.Join(configDir, "schedules")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("cannot create schedule directory: %w", err)
-	}
-	if err := securefile.Protect(directory); err != nil {
-		return fmt.Errorf("cannot protect schedule directory: %w", err)
+	directory := filepath.Dir(statePath(configDir, targetIdentity(state), state.Action))
+	if err := securefile.MakePrivateDir(filepath.Join(configDir, "schedules"), directory); err != nil {
+		return fmt.Errorf("cannot create private schedule directory: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

@@ -601,7 +601,10 @@ Creates a profile and its matching private configuration file.
 
 Renames a profile and updates local references to it. This includes conventional
 `<profile>.private.json` files, child profile parent references, group membership,
-run status, status history, and installed schedules. Other referenced private
+run status, status history, monitoring files under `monitoring/<profile>/`,
+and installed schedules. Managed monitoring output paths and scheduler log paths
+follow the new name; explicitly configured outputs elsewhere keep their paths.
+Historical event log entries retain their original identity. Other referenced private
 files keep their existing names. The command refuses to overwrite destination
 files or schedules; use
 `--dry-run` to preview the changes.
@@ -913,12 +916,17 @@ activation where the backend separates installation from activation.
 Availability conditions are emitted only using facilities offered by the
 selected backend; cron cannot enforce network or power conditions itself.
 Non-secret installed-schedule metadata remains
-under `<config-dir>/schedules/`.
+under `<config-dir>/schedules/profiles/<name>/<action>.json` (or
+`schedules/groups/<name>/<action>.json` for groups).
 
 Each non-dry-run backup, check, forget, prune, or copy action records its
 command, state, start and finish times, duration, exit code, error category,
 Restic warning state, and last successful completion time in a private file
-under the configuration directory. A bounded per-command history is retained;
+at `<config-dir>/status/profiles/<name>/<action>.json`. Group status uses
+`status/groups/<name>/`; copy-target status uses
+`status/profiles/<name>/copies/<target>/copy.json`. History is stored in a
+`history/` directory beside each action file, and the profile lock is `run.lock`.
+A bounded per-command history is retained;
 operations for the same profile are locked so overlapping runs fail safely.
 View the latest result or history with:
 
@@ -975,8 +983,14 @@ and never replace the Restic action's result. For example:
 }
 ```
 
-Relative output and CA paths resolve beside the profile. Output files and log
-files are private. HTTP targets support `GET`, `POST`, `PUT`, and `PATCH`;
+Relative monitoring output paths resolve under
+`<config-dir>/monitoring/<profile>/`; for example, `"status_file": "latest.json"`
+writes `monitoring/<profile>/latest.json`, and `"path": "events.jsonl"` writes
+`monitoring/<profile>/events.jsonl`. Absolute output paths are used as configured.
+CA paths still resolve beside the profile. Output files and log files are private.
+The directory layout replaces the former flat state filenames; migrate existing
+state files and monitoring output paths before installing this version.
+HTTP targets support `GET`, `POST`, `PUT`, and `PATCH`;
 omitting `phases` selects `send-finally`, and omitting `actions` selects every
 recorded action. `body` sends literal content, while `body_template` uses Go's
 data-only text templating against `.Phase` and `.Status`. It cannot execute

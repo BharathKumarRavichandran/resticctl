@@ -74,10 +74,11 @@ type Outcome struct {
 }
 
 type Recorder struct {
-	path    string
-	status  Status
-	started time.Time
-	release func() error
+	path      string
+	configDir string
+	status    Status
+	started   time.Time
+	release   func() error
 }
 
 // WithProfileLock runs an operation while excluding all recorded actions for
@@ -105,21 +106,11 @@ func BeginAction(configDir, name, action string, now time.Time) (*Recorder, erro
 		_ = release()
 		return nil, err
 	}
-	return beginActionLocked(path, name, action, now, lastSuccess, release)
+	return beginActionLocked(configDir, path, name, action, now, lastSuccess, release)
 }
 
 func BeginGroupAction(configDir, name, action string, now time.Time) (*Recorder, error) {
-	key := "group+" + name
-	recorder, err := BeginAction(configDir, key, action, now)
-	if err == nil {
-		recorder.status.TargetType = "group"
-		recorder.status.TargetName = name
-		if writeErr := write(recorder.path, recorder.status); writeErr != nil {
-			_ = recorder.release()
-			return nil, writeErr
-		}
-	}
-	return recorder, err
+	return BeginAction(configDir, "group+"+name, action, now)
 }
 
 func BeginCopyTarget(configDir, profileName, target string, now time.Time) (*Recorder, error) {
@@ -149,7 +140,7 @@ func beginCopyTarget(configDir, profileName, target string, now time.Time, profi
 		if err != nil {
 			return nil, err
 		}
-		path = filepath.Join(filepath.Dir(path), statusKey(key, "copy")+".json")
+		path = filepath.Join(configDir, "status", statusKey(key, "copy")+".json")
 	}
 	lastSuccess, err := loadLastSuccess(configDir, key, "copy")
 	if err != nil {
@@ -157,10 +148,10 @@ func beginCopyTarget(configDir, profileName, target string, now time.Time, profi
 		return nil, err
 	}
 	recorder := &Recorder{
-		path: path, started: now, release: release,
+		path: path, configDir: configDir, started: now, release: release,
 		status: Status{Profile: profileName, TargetType: "copy", TargetName: target, Action: "copy", Command: "copy", State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
 	}
-	if err := write(recorder.path, recorder.status); err != nil {
+	if err := write(recorder.configDir, recorder.path, recorder.status); err != nil {
 		_ = recorder.release()
 		return nil, err
 	}
@@ -172,16 +163,7 @@ func LoadCopyTarget(configDir, profileName, target string) (Status, error) {
 }
 
 func BeginGroupActionIf(ctx context.Context, configDir, name, action string, wait time.Duration, now func() time.Time, shouldRun func(*time.Time) (bool, error)) (*Recorder, bool, error) {
-	recorder, due, err := BeginActionIf(ctx, configDir, "group+"+name, action, wait, now, shouldRun)
-	if err == nil && due {
-		recorder.status.TargetType = "group"
-		recorder.status.TargetName = name
-		if writeErr := write(recorder.path, recorder.status); writeErr != nil {
-			_ = recorder.release()
-			return nil, false, writeErr
-		}
-	}
-	return recorder, due, err
+	return BeginActionIf(ctx, configDir, "group+"+name, action, wait, now, shouldRun)
 }
 
 // BeginActionIf acquires the action lock and evaluates shouldRun against the
@@ -202,7 +184,7 @@ func BeginActionIf(ctx context.Context, configDir, name, action string, wait tim
 		releaseErr := release()
 		return nil, due, errors.Join(err, releaseErr)
 	}
-	recorder, err := beginActionLocked(path, name, action, now(), lastSuccess, release)
+	recorder, err := beginActionLocked(configDir, path, name, action, now(), lastSuccess, release)
 	if err != nil {
 		return nil, false, err
 	}
@@ -219,17 +201,15 @@ func acquireAction(ctx context.Context, configDir, name, action string, wait tim
 	if err := validateAction(action); err != nil {
 		return nil, "", err
 	}
-	directory := filepath.Join(configDir, "status")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, "", fmt.Errorf("cannot create status directory: %w", err)
+	path := filepath.Join(configDir, "status", statusKey(name, action)+".json")
+	directory := filepath.Dir(path)
+	if err := securefile.MakePrivateDir(filepath.Join(configDir, "status"), directory); err != nil {
+		return nil, "", fmt.Errorf("cannot create private status directory: %w", err)
 	}
-	if err := securefile.Protect(directory); err != nil {
-		return nil, "", fmt.Errorf("cannot protect status directory: %w", err)
-	}
-	lockPath := filepath.Join(directory, name+".lock")
+	lockPath := filepath.Join(directory, "run.lock")
 	release, err := acquire(lockPath)
 	if !errors.Is(err, ErrLocked) || wait <= 0 {
-		return release, filepath.Join(directory, statusKey(name, action)+".json"), err
+		return release, path, err
 	}
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
@@ -244,7 +224,7 @@ func acquireAction(ctx context.Context, configDir, name, action string, wait tim
 		case <-retry.C:
 			release, err := acquire(lockPath)
 			if !errors.Is(err, ErrLocked) {
-				return release, filepath.Join(directory, statusKey(name, action)+".json"), err
+				return release, path, err
 			}
 		}
 	}
@@ -264,14 +244,19 @@ func loadLastSuccess(configDir, name, action string) (*time.Time, error) {
 	return lastSuccess, nil
 }
 
-func beginActionLocked(path, name, action string, now time.Time, lastSuccess *time.Time, release func() error) (*Recorder, error) {
+func beginActionLocked(configDir, path, name, action string, now time.Time, lastSuccess *time.Time, release func() error) (*Recorder, error) {
 	recorder := &Recorder{
-		path:    path,
-		status:  Status{Profile: name, Action: action, Command: action, State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
-		started: now,
-		release: release,
+		path:      path,
+		configDir: configDir,
+		status:    Status{Profile: name, Action: action, Command: action, State: "running", StartedAt: now.UTC(), LastSuccessAt: lastSuccess},
+		started:   now,
+		release:   release,
 	}
-	if err := write(recorder.path, recorder.status); err != nil {
+	if strings.HasPrefix(name, "group+") {
+		recorder.status.TargetType = "group"
+		recorder.status.TargetName = strings.TrimPrefix(name, "group+")
+	}
+	if err := write(recorder.configDir, recorder.path, recorder.status); err != nil {
 		_ = release()
 		return nil, err
 	}
@@ -304,8 +289,8 @@ func (recorder *Recorder) FinishOutcome(outcome Outcome, now time.Time) error {
 	} else {
 		recorder.status.State = "failed"
 	}
-	writeErr := write(recorder.path, recorder.status)
-	historyErr := appendHistory(recorder.path, recorder.status, outcome.HistoryLimit)
+	writeErr := write(recorder.configDir, recorder.path, recorder.status)
+	historyErr := appendHistory(recorder.configDir, recorder.path, recorder.status, outcome.HistoryLimit)
 	releaseErr := recorder.release()
 	return errors.Join(writeErr, historyErr, releaseErr)
 }
@@ -325,12 +310,6 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	}
 	path := filepath.Join(configDir, "status", statusKey(name, action)+".json")
 	data, err := os.ReadFile(path)
-	legacy := false
-	if errors.Is(err, os.ErrNotExist) {
-		path = filepath.Join(filepath.Dir(path), managedaction.Action(action).LegacyStateKey(name)+".json")
-		data, err = os.ReadFile(path)
-		legacy = true
-	}
 	if errors.Is(err, os.ErrNotExist) {
 		return Status{}, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
@@ -340,9 +319,6 @@ func LoadAction(configDir, name, action string) (Status, error) {
 	var status Status
 	if err := json.Unmarshal(data, &status); err != nil {
 		return Status{}, fmt.Errorf("cannot decode run status %s: %w", path, err)
-	}
-	if legacy && !statusIdentityMatches(status, name, action) {
-		return Status{}, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
 	if err := validateStatus(path, name, action, &status); err != nil {
 		return Status{}, err
@@ -356,6 +332,15 @@ func validateStatus(path, name, action string, status *Status) error {
 		expectedProfile = parts[0]
 		if status.TargetType != "copy" || status.TargetName != parts[1] {
 			return fmt.Errorf("run status %s has inconsistent copy target identity", path)
+		}
+	}
+	if strings.HasPrefix(name, "group+") {
+		if status.TargetType != "group" || status.TargetName != strings.TrimPrefix(name, "group+") {
+			return fmt.Errorf("run status %s has inconsistent group target identity", path)
+		}
+	} else if !strings.Contains(name, "+copy+") {
+		if (status.TargetType != "" && status.TargetType != "profile") || (status.TargetName != "" && status.TargetName != name) {
+			return fmt.Errorf("run status %s has inconsistent profile target identity", path)
 		}
 	}
 	if status.Profile != expectedProfile {
@@ -407,14 +392,8 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	if err := validateAction(action); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(configDir, "status", "history", statusKey(name, action)+".json")
+	path := filepath.Join(configDir, "status", managedaction.Action(action).HistoryKey(name)+".json")
 	data, err := os.ReadFile(path)
-	legacy := false
-	if errors.Is(err, os.ErrNotExist) {
-		path = filepath.Join(filepath.Dir(path), managedaction.Action(action).LegacyStateKey(name)+".json")
-		data, err = os.ReadFile(path)
-		legacy = true
-	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
@@ -424,9 +403,6 @@ func LoadHistory(configDir, name, action string) ([]Status, error) {
 	var statuses []Status
 	if err := json.Unmarshal(data, &statuses); err != nil {
 		return nil, fmt.Errorf("cannot decode status history %s: %w", path, err)
-	}
-	if legacy && len(statuses) > 0 && !statusIdentityMatches(statuses[0], name, action) {
-		return nil, fmt.Errorf("%w for profile %s", ErrNotRecorded, name)
 	}
 	for index := range statuses {
 		if err := validateStatus(path, name, action, &statuses[index]); err != nil {
@@ -474,23 +450,20 @@ func classify(err error) (string, *int) {
 	return category, nil
 }
 
-func appendHistory(latestPath string, status Status, limit int) error {
+func appendHistory(configDir, latestPath string, status Status, limit int) error {
 	if limit <= 0 {
 		return nil
 	}
 	directory := filepath.Join(filepath.Dir(latestPath), "history")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("cannot create status history directory: %w", err)
-	}
-	if err := securefile.Protect(directory); err != nil {
-		return fmt.Errorf("cannot protect status history directory: %w", err)
+	if err := securefile.MakePrivateDir(filepath.Join(configDir, "status"), directory); err != nil {
+		return fmt.Errorf("cannot create private status history directory: %w", err)
 	}
 	path := filepath.Join(directory, filepath.Base(latestPath))
 	name := status.Profile
 	if status.TargetType == "copy" {
 		name += "+copy+" + status.TargetName
 	}
-	history, err := LoadHistory(filepath.Dir(filepath.Dir(latestPath)), name, status.Action)
+	history, err := LoadHistory(configDir, name, status.Action)
 	if err != nil && !errors.Is(err, ErrNotRecorded) {
 		return err
 	}
@@ -513,16 +486,6 @@ func statusKey(name, action string) string {
 	return managedaction.Action(action).StateKey(name)
 }
 
-func statusIdentityMatches(status Status, name, action string) bool {
-	if status.Action == "" {
-		status.Action = "backup"
-	}
-	if parts := strings.Split(name, "+copy+"); len(parts) == 2 {
-		return status.Profile == parts[0] && status.TargetType == "copy" && status.TargetName == parts[1] && status.Action == action
-	}
-	return status.Profile == name && status.Action == action
-}
-
 func validateAction(action string) error {
 	if !managedaction.Action(action).Capabilities().Recordable {
 		return fmt.Errorf("unsupported status action %q", action)
@@ -530,7 +493,10 @@ func validateAction(action string) error {
 	return nil
 }
 
-func write(path string, status Status) error {
+func write(configDir, path string, status Status) error {
+	if err := securefile.MakePrivateDir(filepath.Join(configDir, "status"), filepath.Dir(path)); err != nil {
+		return fmt.Errorf("cannot create private run status directory: %w", err)
+	}
 	data, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
 		return fmt.Errorf("cannot encode run status: %w", err)

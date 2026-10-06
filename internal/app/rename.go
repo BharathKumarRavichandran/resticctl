@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,12 +24,18 @@ func RenameProfile(ctx context.Context, configDir, oldName, newName string, dryR
 	if err := validateRenameNames(oldName, newName); err != nil {
 		return nil, err
 	}
+	var err error
+	configDir, err = filepath.Abs(configDir)
+	if err != nil {
+		return nil, err
+	}
+
 	if dryRun {
 		updates, err := planProfileRename(configDir, oldName, newName)
 		return describeRenameUpdates(updates), err
 	}
 	var changes []string
-	err := withRenameActionLocks(ctx, configDir, oldName, newName, func() error {
+	err = withRenameActionLocks(ctx, configDir, oldName, newName, func() error {
 		var err error
 		changes, err = renameProfileLocked(configDir, oldName, newName)
 		return err
@@ -42,6 +49,12 @@ func RenameProfileUnderLocks(ctx context.Context, configDir, oldName, newName st
 	if err := validateRenameNames(oldName, newName); err != nil {
 		return nil, err
 	}
+	var err error
+	configDir, err = filepath.Abs(configDir)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -71,7 +84,7 @@ func renameProfileLocked(configDir, oldName, newName string) ([]string, error) {
 				return err
 			}
 			changes = describeRenameUpdates(updates)
-			return applyRenameUpdates(updates)
+			return applyRenameUpdates(configDir, updates)
 		})
 	})
 	return changes, err
@@ -101,13 +114,15 @@ type renameUpdate struct {
 	source, destination string
 	content             []byte
 	description         string
+	moveOnly            bool
 }
 
 func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, error) {
 	profilesDir := profile.Dir(configDir)
 	oldPath := filepath.Join(profilesDir, oldName+".json")
 	newPath := filepath.Join(profilesDir, newName+".json")
-	if _, err := profile.Load(profilesDir, oldName); err != nil {
+	loaded, err := profile.Load(profilesDir, oldName)
+	if err != nil {
 		return nil, err
 	}
 	data, err := readRenameFile(oldPath)
@@ -141,6 +156,9 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 		}
 		document[privateKey], _ = json.Marshal(newName + ".private.json")
 		updates = append(updates, renameUpdate{source: source, destination: destination, content: companion, description: "rename " + filepath.Base(source) + " to " + filepath.Base(destination)})
+	}
+	if err := renameMonitoringConfig(document, configDir, oldName, newName); err != nil {
+		return nil, err
 	}
 	data, err = json.MarshalIndent(document, "", "  ")
 	if err != nil {
@@ -217,6 +235,11 @@ func planProfileRename(configDir, oldName, newName string) ([]renameUpdate, erro
 		return nil, err
 	}
 	updates = append(updates, statusUpdates...)
+	monitoringUpdates, err := monitoringRenameUpdates(configDir, oldName, newName, loaded.Monitoring)
+	if err != nil {
+		return nil, err
+	}
+	updates = append(updates, monitoringUpdates...)
 	if err := validateRenameUpdates(updates); err != nil {
 		return nil, err
 	}
@@ -244,41 +267,43 @@ func replaceJSONName(path, field, oldName, newName string) ([]byte, bool, error)
 
 func statusRenameUpdates(configDir, oldName, newName string) ([]renameUpdate, error) {
 	var updates []renameUpdate
-	for _, directory := range []string{filepath.Join(configDir, "status"), filepath.Join(configDir, "status", "history")} {
-		entries, err := os.ReadDir(directory)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+	root := filepath.Join(configDir, "status", "profiles", oldName)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) && path == root {
+			return nil
 		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		data, err := readRenameFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("cannot inspect status directory %s: %w", directory, err)
+			return err
 		}
-		for _, entry := range entries {
-			name := entry.Name()
-			currentPrefix := "v2+" + oldName
-			currentStatus := strings.HasPrefix(name, currentPrefix+"+")
-			profileStatus := currentStatus || name == oldName+".json" || strings.HasPrefix(name, oldName+".") || strings.HasPrefix(name, oldName+"+copy+")
-			if !entry.Type().IsRegular() || strings.HasSuffix(name, ".lock") || !profileStatus {
-				continue
-			}
-			path := filepath.Join(directory, name)
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("cannot read status %s: %w", path, err)
-			}
-			data, belongsToProfile, err := renameStatusIdentity(data, oldName, newName)
-			if err != nil {
-				return nil, fmt.Errorf("cannot update status %s: %w", path, err)
-			}
-			if !belongsToProfile {
-				continue
-			}
-			newFile := newName + strings.TrimPrefix(name, oldName)
-			if currentStatus {
-				newFile = "v2+" + newName + strings.TrimPrefix(name, currentPrefix)
-			}
-			updates = append(updates, renameUpdate{source: path, destination: filepath.Join(directory, newFile), content: data, description: "move status " + name + " to " + newFile})
+		data, belongs, err := renameStatusIdentity(data, oldName, newName)
+		if err != nil {
+			return err
 		}
+		if !belongs {
+			return fmt.Errorf("status %s has inconsistent profile identity", path)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(configDir, "status", "profiles", newName, relative)
+		updates = append(updates, renameUpdate{source: path, destination: destination, content: data, description: "move status " + path + " to " + destination})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+
 	return updates, nil
 }
 
@@ -301,6 +326,10 @@ func renameStatusIdentity(data []byte, oldName, newName string) ([]byte, bool, e
 			return false
 		}
 		status[key] = newName
+		typeKey, nameKey := renameJSONKey(status, "target_type"), renameJSONKey(status, "target_name")
+		if status[typeKey] == "profile" && status[nameKey] == oldName {
+			status[nameKey] = newName
+		}
 		return true
 	}
 	belongsToProfile := false
@@ -340,13 +369,17 @@ func renameJSONKey[T any](document map[string]T, field string) string {
 	return field
 }
 
-func applyRenameUpdates(updates []renameUpdate) error {
+func applyRenameUpdates(configDir string, updates []renameUpdate) error {
 	originals := make(map[string][]byte, len(updates))
 	created := make(map[string]struct{})
+	var moved []renameUpdate
 	if err := validateRenameUpdates(updates); err != nil {
 		return err
 	}
 	for _, update := range updates {
+		if update.moveOnly {
+			continue
+		}
 		if _, captured := originals[update.source]; !captured {
 			data, err := os.ReadFile(update.source)
 			if err != nil {
@@ -360,6 +393,9 @@ func applyRenameUpdates(updates []renameUpdate) error {
 	}
 	rollback := func(cause error) error {
 		var rollbackErr error
+		for index := len(moved) - 1; index >= 0; index-- {
+			rollbackErr = errors.Join(rollbackErr, os.Rename(moved[index].destination, moved[index].source))
+		}
 		for path, data := range originals {
 			rollbackErr = errors.Join(rollbackErr, securefile.WriteAtomic(path, data))
 		}
@@ -371,12 +407,22 @@ func applyRenameUpdates(updates []renameUpdate) error {
 		return errors.Join(cause, rollbackErr)
 	}
 	for _, update := range updates {
+		if err := securefile.MakePrivateDir(configDir, filepath.Dir(update.destination)); err != nil {
+			return rollback(err)
+		}
+		if update.moveOnly {
+			if err := os.Rename(update.source, update.destination); err != nil {
+				return rollback(err)
+			}
+			moved = append(moved, update)
+			continue
+		}
 		if err := securefile.WriteAtomic(update.destination, update.content); err != nil {
 			return rollback(err)
 		}
 	}
 	for _, update := range updates {
-		if update.source != update.destination {
+		if update.source != update.destination && !update.moveOnly {
 			if err := os.Remove(update.source); err != nil {
 				return rollback(err)
 			}

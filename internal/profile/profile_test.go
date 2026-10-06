@@ -489,7 +489,7 @@ func TestLoadMonitoringDefaultsAndResolvesPaths(t *testing.T) {
 	if loaded.Monitoring.HistoryLimit != 100 || loaded.Monitoring.WarningPolicy != "failure" {
 		t.Fatalf("monitoring defaults = %#v", loaded.Monitoring)
 	}
-	if loaded.Monitoring.StatusFile != filepath.Join(directory, "exports/status.json") || loaded.Monitoring.Logs[0].Path != filepath.Join(directory, "events.jsonl") {
+	if loaded.Monitoring.StatusFile != filepath.Join(directory, "monitoring", "example", "exports/status.json") || loaded.Monitoring.Logs[0].Path != filepath.Join(directory, "monitoring", "example", "events.jsonl") {
 		t.Fatalf("monitoring paths = %#v", loaded.Monitoring)
 	}
 }
@@ -499,7 +499,7 @@ func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	for name, monitoring := range map[string]string{
 		"credential URL":       `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
-		"credential overwrite": `{"status_file":"credentials.json"}`,
+		"credential overwrite": `{"status_file":"../../credentials.json"}`,
 		"header newline":       `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1193,5 +1193,32 @@ func TestLoadAllowsDistinctDatabaseArtifacts(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"value":"secret"}},"postgresql_databases":[{"name":"app","database":"app","globals":false}],"mysql_databases":[{"name":"app-globals","database":"app"}]}`)
 	if _, err := Load(directory, "example"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMonitoringOutputsUseConfigDirectoryAndInputsStayBesideProfile(t *testing.T) {
+	configDir := t.TempDir()
+	directory := Dir(configDir)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePrivate(t, filepath.Join(directory, "example.json"), `{
+  "repository":"local:test", "credentials":{"password":{"value":"test"}},
+  "monitoring":{"status_file":"latest.json","prometheus_textfile":"metrics.prom",
+   "logs":[{"type":"file","path":"events.jsonl"}],
+   "http":[{"url":"https://example.test","ca_file":"ca.pem"}]}
+ }`)
+	writePrivate(t, filepath.Join(directory, "ca.pem"), "test CA")
+	loaded, err := Load(directory, "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := loaded.Monitoring
+	root := filepath.Join(configDir, "monitoring", "example")
+	if m.StatusFile != filepath.Join(root, "latest.json") || m.PrometheusTextfile != filepath.Join(root, "metrics.prom") || m.Logs[0].Path != filepath.Join(root, "events.jsonl") {
+		t.Fatalf("outputs: %+v", m)
+	}
+	if m.HTTP[0].CAFile != filepath.Join(directory, "ca.pem") {
+		t.Fatalf("CA path: %s", m.HTTP[0].CAFile)
 	}
 }

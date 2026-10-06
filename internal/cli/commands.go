@@ -155,7 +155,7 @@ func renameScheduleSpec(configDir, name string, state schedule.State) schedule.S
 		Name: name, TargetType: schedule.TargetProfile, Action: state.Action, Expressions: expressions,
 		Backend: state.Backend, Executable: state.Executable, ConfigDir: configDir, CatchUp: state.CatchUp,
 		Prune: state.Prune, Permission: state.Permission, CronFile: state.CronFile, User: state.User,
-		Priority: state.Priority, Log: state.Log, LockMode: state.LockMode, LockWait: state.LockWait,
+		Priority: state.Priority, Log: app.RenamedMonitoringPath(configDir, state.Profile, name, state.Log), LockMode: state.LockMode, LockWait: state.LockWait,
 		Enabled: state.Enabled, Start: state.Start, Network: state.Network, ACPower: state.ACPower,
 		EnvironmentPath: &environmentPath,
 	}

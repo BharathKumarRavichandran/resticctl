@@ -20,9 +20,9 @@ func TestRenameProfileUpdatesLocalReferences(t *testing.T) {
 	writeRenameTestFile(t, filepath.Join(profilesDir, "old.private.json"), `{"repository":"repo","credentials":{"password":{"command":["unused"]}}}`)
 	writeRenameTestFile(t, filepath.Join(profilesDir, "child.json"), `{"parent":"old","backup_paths":["child"],"credentials":{"password":{"command":["unused"]}}}`)
 	writeRenameTestFile(t, filepath.Join(configDir, "groups", "daily.json"), `{"name":"daily","profiles":["old","child"]}`)
-	writeRenameTestFile(t, filepath.Join(configDir, "status", "old.json"), `{"profile":"old"}`)
-	writeRenameTestFile(t, filepath.Join(configDir, "status", "old+copy+remote.copy.json"), `{"profile":"old","action":"copy"}`)
-	writeRenameTestFile(t, filepath.Join(configDir, "status", "old.check.json"), `{"profile":"old.check"}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "old", "backup.json"), `{"profile":"old"}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "old", "copies", "remote", "copy.json"), `{"profile":"old","action":"copy"}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "old.check", "backup.json"), `{"profile":"old.check"}`)
 
 	changes, err := RenameProfile(context.Background(), configDir, "old", "new", false)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestRenameProfileUpdatesLocalReferences(t *testing.T) {
 	}
 	for _, path := range []string{
 		filepath.Join(profilesDir, "new.json"), filepath.Join(profilesDir, "new.private.json"),
-		filepath.Join(configDir, "status", "new.json"), filepath.Join(configDir, "status", "new+copy+remote.copy.json"),
+		filepath.Join(configDir, "status", "profiles", "new", "backup.json"), filepath.Join(configDir, "status", "profiles", "new", "copies", "remote", "copy.json"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s: %v", path, err)
@@ -46,8 +46,8 @@ func TestRenameProfileUpdatesLocalReferences(t *testing.T) {
 	}
 	assertRenameJSONField(t, filepath.Join(profilesDir, "new.json"), "private_file", "new.private.json")
 	assertRenameJSONField(t, filepath.Join(profilesDir, "child.json"), "parent", "new")
-	assertRenameJSONField(t, filepath.Join(configDir, "status", "new.json"), "profile", "new")
-	assertRenameJSONField(t, filepath.Join(configDir, "status", "old.check.json"), "profile", "old.check")
+	assertRenameJSONField(t, filepath.Join(configDir, "status", "profiles", "new", "backup.json"), "profile", "new")
+	assertRenameJSONField(t, filepath.Join(configDir, "status", "profiles", "old.check", "backup.json"), "profile", "old.check")
 
 	var configured struct {
 		Profiles []string `json:"profiles"`
@@ -92,8 +92,8 @@ func TestRenameProfileRejectsDuplicateGroupMember(t *testing.T) {
 func TestRenameProfileDryRunRejectsStatusCollision(t *testing.T) {
 	configDir := t.TempDir()
 	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), `{"repository":"repo","credentials":{"password":{"command":["unused"]}},"backup_paths":["."]}`)
-	writeRenameTestFile(t, filepath.Join(configDir, "status", "old.json"), `{"profile":"old"}`)
-	writeRenameTestFile(t, filepath.Join(configDir, "status", "new.json"), `{"profile":"new"}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "old", "backup.json"), `{"profile":"old"}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "new", "backup.json"), `{"profile":"new"}`)
 	if _, err := RenameProfile(context.Background(), configDir, "old", "new", true); err == nil {
 		t.Fatal("dry run unexpectedly accepted a status destination collision")
 	}
@@ -164,21 +164,21 @@ func assertRenameJSONField(t *testing.T, path, field, want string) {
 func TestRenameMovesCurrentStatusAndCopyHistory(t *testing.T) {
 	configDir := t.TempDir()
 	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), `{"repository":"repo","credentials":{"password":{"command":["unused"]}},"backup_paths":["."]}`)
-	for _, subdir := range []string{"status", filepath.Join("status", "history")} {
-		for _, suffix := range []string{"+backup", "+check", "+copy+remote+copy"} {
+	for _, subdir := range []string{"", "history"} {
+		for _, actionPath := range []string{"backup", "check", filepath.Join("copies", "remote", "copy")} {
 			data := `{"profile":"old"}`
 			if strings.HasSuffix(subdir, "history") {
 				data = "[" + data + "]"
 			}
-			writeRenameTestFile(t, filepath.Join(configDir, subdir, "v2+old"+suffix+".json"), data)
+			writeRenameTestFile(t, filepath.Join(configDir, "status", "profiles", "old", filepath.Dir(actionPath), subdir, filepath.Base(actionPath)+".json"), data)
 		}
 	}
 	if _, err := RenameProfile(context.Background(), configDir, "old", "new", false); err != nil {
 		t.Fatal(err)
 	}
-	for _, subdir := range []string{"status", filepath.Join("status", "history")} {
-		for _, suffix := range []string{"+backup", "+check", "+copy+remote+copy"} {
-			path := filepath.Join(configDir, subdir, "v2+new"+suffix+".json")
+	for _, subdir := range []string{"", "history"} {
+		for _, actionPath := range []string{"backup", "check", filepath.Join("copies", "remote", "copy")} {
+			path := filepath.Join(configDir, "status", "profiles", "new", filepath.Dir(actionPath), subdir, filepath.Base(actionPath)+".json")
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -186,17 +186,17 @@ func TestRenameMovesCurrentStatusAndCopyHistory(t *testing.T) {
 			if !strings.Contains(string(data), `"profile": "new"`) {
 				t.Fatalf("identity was not updated: %s", data)
 			}
-			if _, err := os.Stat(filepath.Join(configDir, subdir, "v2+old"+suffix+".json")); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(configDir, "status", "profiles", "old", filepath.Dir(actionPath), subdir, filepath.Base(actionPath)+".json")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("old state remains: %v", err)
 			}
 		}
 	}
 }
 
-func TestRenamePreservesUnrelatedLegacyHistory(t *testing.T) {
+func TestRenamePreservesUnrelatedHistory(t *testing.T) {
 	configDir := t.TempDir()
 	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), `{"repository":"repo","credentials":{"password":{"command":["unused"]}}}`)
-	path := filepath.Join(configDir, "status", "history", "old.check.json")
+	path := filepath.Join(configDir, "status", "profiles", "old.check", "history", "backup.json")
 	const history = `[{"profile":"old.check"},{"profile":"old.check"}]`
 	writeRenameTestFile(t, path, history)
 	if _, err := RenameProfile(context.Background(), configDir, "old", "new", false); err != nil {
@@ -233,5 +233,122 @@ func TestRenameUpdatesCaseInsensitiveJSONReferences(t *testing.T) {
 	}
 	if members := document["Profiles"]; len(members) != 1 || members[0] != "new" {
 		t.Fatalf("group members=%v", members)
+	}
+}
+
+func TestRenameMovesMonitoringAndUpdatesAbsoluteOutputs(t *testing.T) {
+	configDir := t.TempDir()
+	root := filepath.Join(configDir, "monitoring", "old")
+	statusPath := filepath.Join(root, "latest.json")
+	metricsPath := filepath.Join(root, "metrics.prom")
+	eventPath := filepath.Join(root, "events.jsonl")
+	data, err := json.Marshal(map[string]any{
+		"repository": "repo", "credentials": map[string]any{"password": map[string]any{"value": "secret"}},
+		"monitoring": map[string]any{"status_file": statusPath, "prometheus_textfile": metricsPath, "logs": []any{map[string]any{"type": "file", "path": eventPath}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), string(data))
+	writeRenameTestFile(t, statusPath, `{"profile":"old","target_type":"profile","target_name":"old"}`)
+	writeRenameTestFile(t, metricsPath, "resticctl_success{profile=\"old\",command=\"backup\"} 1\n")
+	const events = "historical event bytes\n"
+	writeRenameTestFile(t, eventPath, events)
+	writeRenameTestFile(t, filepath.Join(root, "backup.log"), "stderr bytes\n")
+	changes, err := RenameProfile(context.Background(), configDir, "old", "new", true)
+	if err != nil || len(changes) != 5 {
+		t.Fatalf("changes=%q, err=%v", changes, err)
+	}
+	if _, err := os.Stat(eventPath); err != nil {
+		t.Fatal("dry run changed monitoring", err)
+	}
+	if _, err := RenameProfile(context.Background(), configDir, "old", "new", false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := profile.Load(profile.Dir(configDir), "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRoot := filepath.Join(configDir, "monitoring", "new")
+	if loaded.Monitoring.StatusFile != filepath.Join(newRoot, "latest.json") || loaded.Monitoring.Logs[0].Path != filepath.Join(newRoot, "events.jsonl") {
+		t.Fatalf("paths=%+v", loaded.Monitoring)
+	}
+	assertRenameJSONField(t, loaded.Monitoring.StatusFile, "target_name", "new")
+	metrics, err := os.ReadFile(loaded.Monitoring.PrometheusTextfile)
+	if err != nil || !strings.Contains(string(metrics), `profile="new"`) {
+		t.Fatalf("metrics=%s, err=%v", metrics, err)
+	}
+	copied, err := os.ReadFile(loaded.Monitoring.Logs[0].Path)
+	if err != nil || string(copied) != events {
+		t.Fatalf("events=%s, err=%v", copied, err)
+	}
+	for _, name := range []string{"latest.json", "metrics.prom", "events.jsonl", "backup.log"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("old file %s remains: %v", name, err)
+		}
+	}
+}
+
+func TestRenameMonitoringCollisionPreservesOriginals(t *testing.T) {
+	configDir := t.TempDir()
+	oldPath := filepath.Join(profile.Dir(configDir), "old.json")
+	writeRenameTestFile(t, oldPath, `{"repository":"repo","credentials":{"password":{"value":"secret"}}}`)
+	writeRenameTestFile(t, filepath.Join(configDir, "monitoring", "old", "events.jsonl"), "old events")
+	writeRenameTestFile(t, filepath.Join(configDir, "monitoring", "new", "events.jsonl"), "destination events")
+	if _, err := RenameProfile(context.Background(), configDir, "old", "new", false); err == nil {
+		t.Fatal("accepted collision")
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("modified profile", err)
+	}
+}
+
+func TestRenameMonitoringExpandsEnvironmentPath(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("RESTICCTL_TEST_MONITORING_ROOT", configDir)
+	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), `{
+  "repository":"repo","credentials":{"password":{"value":"secret"}},
+  "monitoring":{"logs":[{"type":"file","path":"${RESTICCTL_TEST_MONITORING_ROOT}/monitoring/old/events.jsonl"}]}
+ }`)
+	writeRenameTestFile(t, filepath.Join(configDir, "monitoring", "old", "events.jsonl"), "events")
+	if _, err := RenameProfile(context.Background(), configDir, "old", "new", false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := profile.Load(profile.Dir(configDir), "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(configDir, "monitoring", "new", "events.jsonl")
+	if loaded.Monitoring.Logs[0].Path != want {
+		t.Fatalf("path=%s want=%s", loaded.Monitoring.Logs[0].Path, want)
+	}
+}
+
+func TestRenameRollsBackMovedLogOnLaterFailure(t *testing.T) {
+	configDir := t.TempDir()
+	source := filepath.Join(configDir, "monitoring", "old", "events.jsonl")
+	destination := filepath.Join(configDir, "monitoring", "new", "events.jsonl")
+	writeRenameTestFile(t, source, "events")
+	profilePath := filepath.Join(configDir, "profiles", "old.json")
+	writeRenameTestFile(t, profilePath, "original")
+	outside := filepath.Join(t.TempDir(), "new.json")
+	updates := []renameUpdate{
+		{source: source, destination: destination, moveOnly: true},
+		{source: profilePath, destination: profilePath, content: []byte("replacement")},
+		{source: profilePath, destination: outside, content: []byte("outside")},
+	}
+	if err := applyRenameUpdates(configDir, updates); err == nil {
+		t.Fatal("accepted destination outside configuration directory")
+	}
+	data, err := os.ReadFile(source)
+	if err != nil || string(data) != "events" {
+		t.Fatalf("source=%s, err=%v", data, err)
+	}
+	data, err = os.ReadFile(profilePath)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("profile=%s, err=%v", data, err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination remains: %v", err)
 	}
 }

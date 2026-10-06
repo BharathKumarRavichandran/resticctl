@@ -29,11 +29,15 @@ func validateMonitoring(p *Profile, base string) error {
 	if m.WarningPolicy != "failure" && m.WarningPolicy != "warning" && m.WarningPolicy != "success" {
 		return errors.New("monitoring.warning_policy must be failure, warning, or success")
 	}
+	outputBase := filepath.Join(base, "monitoring", p.Name)
+	if filepath.Base(base) == profilesDirectory {
+		outputBase = filepath.Join(filepath.Dir(base), "monitoring", p.Name)
+	}
 	var err error
-	if m.StatusFile, err = optionalMonitoringPath(m.StatusFile, base); err != nil {
+	if m.StatusFile, err = optionalMonitoringPath(m.StatusFile, outputBase); err != nil {
 		return fmt.Errorf("invalid monitoring.status_file: %w", err)
 	}
-	if m.PrometheusTextfile, err = optionalMonitoringPath(m.PrometheusTextfile, base); err != nil {
+	if m.PrometheusTextfile, err = optionalMonitoringPath(m.PrometheusTextfile, outputBase); err != nil {
 		return fmt.Errorf("invalid monitoring.prometheus_textfile: %w", err)
 	}
 	if m.Pushgateway != nil {
@@ -116,7 +120,7 @@ func validateMonitoring(p *Profile, base string) error {
 			if destination.Path == "" {
 				return fmt.Errorf("monitoring.logs[%d].path is required", i)
 			}
-			destination.Path, err = optionalMonitoringPath(destination.Path, base)
+			destination.Path, err = optionalMonitoringPath(destination.Path, outputBase)
 			if err != nil {
 				return fmt.Errorf("invalid monitoring.logs[%d].path: %w", i, err)
 			}
