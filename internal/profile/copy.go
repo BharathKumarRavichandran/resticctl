@@ -2,6 +2,7 @@ package profile
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -135,16 +136,29 @@ func sameRepository(source, destination string) bool {
 	if source == destination {
 		return true
 	}
-	a, aAbsolute, aok := localRepositoryPath(source)
-	b, bAbsolute, bok := localRepositoryPath(destination)
-	return aok && bok && aAbsolute == bAbsolute && a == b
+	a, aok := localRepositoryPath(source)
+	b, bok := localRepositoryPath(destination)
+	if !aok || !bok {
+		return false
+	}
+	a, aErr := filepath.Abs(a)
+	b, bErr := filepath.Abs(b)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aInfo, aErr := os.Stat(a)
+	bInfo, bErr := os.Stat(b)
+	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
 }
 
-func localRepositoryPath(repository string) (string, bool, bool) {
+func localRepositoryPath(repository string) (string, bool) {
 	if strings.HasPrefix(repository, "local:") {
 		repository = strings.TrimPrefix(repository, "local:")
 	} else if strings.Contains(repository, ":") && !filepath.IsAbs(repository) {
-		return "", false, false
+		return "", false
 	}
-	return filepath.Clean(repository), filepath.IsAbs(repository), true
+	return filepath.Clean(repository), true
 }

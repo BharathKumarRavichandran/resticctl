@@ -497,13 +497,17 @@ func TestLoadMonitoringDefaultsAndResolvesPaths(t *testing.T) {
 func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
+	writePrivate(t, filepath.Join(directory, "custom-ca.pem"), "test CA input")
 	for name, monitoring := range map[string]string{
 		"credential URL":       `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
 		"credential overwrite": `{"status_file":"../../credentials.json"}`,
+		"database overwrite":   `{"status_file":"../../source.sqlite"}`,
+		"database log append":  `{"logs":[{"type":"file","path":"../../source.sqlite"}]}`,
+		"CA overwrite":         `{"prometheus_textfile":"../../custom-ca.pem","http":[{"url":"https://monitor.example","ca_file":"custom-ca.pem"}]}`,
 		"header newline":       `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","monitoring":`+monitoring+`}`)
+			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","sqlite_databases":[{"name":"source","path":"source.sqlite"}],"monitoring":`+monitoring+`}`)
 			if _, err := Load(directory, "example"); err == nil {
 				t.Fatal("Load succeeded")
 			}

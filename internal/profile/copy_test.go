@@ -1,10 +1,37 @@
 package profile
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSameRepositoryLocalAliases(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{
+		{"local:primary", filepath.Join(workingDirectory, "primary")},
+		{"./primary", "local:primary"},
+	} {
+		if !sameRepository(pair[0], pair[1]) {
+			t.Errorf("repositories %q and %q were treated as distinct", pair[0], pair[1])
+		}
+	}
+	directory := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(directory, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if !sameRepository(directory, "local:"+alias) {
+		t.Fatal("symlink alias was treated as a distinct repository")
+	}
+	if sameRepository("s3:bucket/primary", "s3:bucket/secondary") || sameRepository("local:primary", "local:secondary") {
+		t.Fatal("distinct repositories were treated as identical")
+	}
+}
 
 func TestLoadNamedCopyTargets(t *testing.T) {
 	directory := t.TempDir()

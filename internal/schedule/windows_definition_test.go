@@ -13,6 +13,22 @@ import (
 	"unicode/utf16"
 )
 
+func TestWindowsLoggedTaskPreservesExitStatus(t *testing.T) {
+	state := State{Profile: "example", Action: ActionBackup, Expressions: []string{"0 0 * * *"}, Log: `C:\Backup Logs\backup.log`}
+	definition, err := (Manager{}).renderWindows(`C:\config`, state, `C:\resticctl.exe`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeTaskXML(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := decoded.fields["Task/Actions/Exec/Arguments"]
+	if len(arguments) != 1 || !strings.Contains(arguments[0], "$ErrorActionPreference = 'Stop'; & ") || !strings.HasSuffix(arguments[0], "; exit $LASTEXITCODE\"") {
+		t.Fatalf("logged task does not preserve command exit status: %q", arguments)
+	}
+}
+
 func TestWindowsVerifyUsesRegisteredTask(t *testing.T) {
 	for _, test := range []struct{ name, old, replacement string }{
 		{"command", "<Command>", "<Command>changed-"},

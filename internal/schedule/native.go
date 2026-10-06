@@ -213,7 +213,8 @@ func (manager Manager) renderWindows(configDir string, state State, executable s
 		for i, arg := range args {
 			parts[i] = "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 		}
-		arguments = "-NoProfile -NonInteractive -Command & " + strings.Join(parts, " ") + " *>> '" + strings.ReplaceAll(state.Log, "'", "''") + "'"
+		script := "$ErrorActionPreference = 'Stop'; & " + strings.Join(parts, " ") + " *>> '" + strings.ReplaceAll(state.Log, "'", "''") + "'; exit $LASTEXITCODE"
+		arguments = windowsJoin([]string{"-NoProfile", "-NonInteractive", "-Command", script})
 	}
 	content := fmt.Sprintf(`<?xml version="1.0"?>
 <Task version="1.4"><Principals><Principal><UserId>%s</UserId><LogonType>%s</LogonType><RunLevel>%s</RunLevel></Principal></Principals>

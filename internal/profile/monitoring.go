@@ -139,6 +139,15 @@ func validateMonitoring(p *Profile, base string) error {
 		}
 	}
 	sensitive := []string{filepath.Join(base, p.Name+".json"), p.PrivateFile, p.Credentials.Password.File}
+	for _, database := range p.SQLiteDatabases {
+		sensitive = append(sensitive, database.Path)
+	}
+	for _, hook := range m.HTTP {
+		sensitive = append(sensitive, hook.CAFile)
+	}
+	if m.Pushgateway != nil {
+		sensitive = append(sensitive, m.Pushgateway.CAFile)
+	}
 	for _, target := range p.Copies {
 		sensitive = append(sensitive, target.PrivateFile, target.Credentials.Password.File)
 	}
@@ -160,7 +169,7 @@ func validateMonitoring(p *Profile, base string) error {
 		}
 		for _, protected := range sensitive {
 			if protected != "" && strings.EqualFold(filepath.Clean(output), filepath.Clean(protected)) {
-				return fmt.Errorf("monitoring output must not overwrite a sensitive configuration file: %s", output)
+				return fmt.Errorf("monitoring output must not overwrite a protected input file: %s", output)
 			}
 		}
 		for _, earlier := range outputs[:index] {
