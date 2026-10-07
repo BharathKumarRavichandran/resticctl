@@ -496,6 +496,31 @@ func TestNativeBackendsRejectCronDayFieldORSemantics(t *testing.T) {
 	}
 }
 
+func TestSystemdAcceptsWildcardDayForms(t *testing.T) {
+	for _, expression := range []string{"0 0 ? * MON", "0 0 */1 * MON", "0 0 1,* * MON", "0 0 1 * */1"} {
+		t.Run(expression, func(t *testing.T) {
+			directory := t.TempDir()
+			executor := &fakeExecutor{}
+			manager := NewManager(WithExecutor(executor), WithPlatform("linux", 1000),
+				WithSystemdDirs(filepath.Join(directory, "user"), filepath.Join(directory, "system")))
+			state, err := manager.InstallSpec(context.Background(), Spec{
+				Name: "example", Action: ActionBackup, Backend: BackendSystemd,
+				Executable: "/bin/resticctl", ConfigDir: directory,
+				Expressions: []string{expression}, Permission: PermissionUser, DryRun: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(state.Rendered, "OnCalendar=") {
+				t.Fatal("rendered timer has no calendar")
+			}
+			if len(executor.executions) != 0 {
+				t.Fatal("dry run invoked scheduler")
+			}
+		})
+	}
+}
+
 func TestLaunchdRejectsNetworkRequirement(t *testing.T) {
 	directory := t.TempDir()
 	manager := NewManager(

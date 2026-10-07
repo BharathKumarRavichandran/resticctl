@@ -20,6 +20,8 @@ func preparePasswordFile(ctx context.Context, config Config) (path string, tempo
 		password := []byte(config.PasswordValue)
 		defer clear(password)
 		switch err := secretvalue.Validate(password); {
+		case errors.Is(err, secretvalue.ErrEmpty):
+			return "", false, errors.New("password value is empty")
 		case errors.Is(err, secretvalue.ErrTooLarge):
 			return "", false, errors.New("password value exceeds 1 MiB")
 		case errors.Is(err, secretvalue.ErrNUL):

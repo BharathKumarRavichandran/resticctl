@@ -56,6 +56,18 @@ func TestPasswordValueRejectsNUL(t *testing.T) {
 	}
 }
 
+func TestPasswordValueRejectsOnlyLineEndings(t *testing.T) {
+	for _, value := range []string{"\n", "\r\n", "\r\n\r\n"} {
+		path, temporary, err := preparePasswordFile(context.Background(), Config{PasswordValue: value})
+		if path != "" {
+			_ = os.Remove(path)
+		}
+		if err == nil || path != "" || temporary {
+			t.Fatalf("preparePasswordFile(%q) = %q, %v, %v", value, path, temporary, err)
+		}
+	}
+}
+
 func TestTemporaryPasswordFileIsPrivate(t *testing.T) {
 	t.Setenv("GO_WANT_PASSWORD_HELPER", "1")
 	config := Config{PasswordCommand: []string{os.Args[0], "-test.run=TestPasswordHelper"}}

@@ -56,11 +56,19 @@ func Fields(expression string) ([]string, error) {
 // HasRestrictedDayFields reports cron expressions whose day-of-month and
 // day-of-week restrictions require standard cron OR semantics.
 func HasRestrictedDayFields(expression string) (bool, error) {
-	fields, err := Fields(expression)
+	normalized, err := Normalize(expression)
 	if err != nil {
 		return false, err
 	}
-	return fields[2] != "*" && fields[4] != "*", nil
+	schedule, err := parser.Parse(normalized)
+	if err != nil {
+		return false, err
+	}
+	// The parser marks wildcard day fields with the highest bit, including
+	// equivalent forms such as ? and */1. Their day restrictions are ANDed.
+	const wildcardBit = uint64(1) << 63
+	calendar := schedule.(*cron.SpecSchedule)
+	return calendar.Dom&wildcardBit == 0 && calendar.Dow&wildcardBit == 0, nil
 }
 
 func Due(expression string, lastSuccess *time.Time, now time.Time) (bool, error) {

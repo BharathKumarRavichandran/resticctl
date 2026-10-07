@@ -64,3 +64,26 @@ func TestDueImpossibleSchedule(t *testing.T) {
 		t.Fatalf("impossible schedule due = %v, error = %v", due, err)
 	}
 }
+
+func TestHasRestrictedDayFields(t *testing.T) {
+	for _, test := range []struct {
+		expression string
+		want       bool
+	}{
+		{"0 0 1 * MON", true},
+		{"0 0 * * MON", false},
+		{"0 0 ? * MON", false},
+		{"0 0 */1 * MON", false},
+		{"0 0 1 * */1", false},
+		{"0 0 */2 * MON", true},
+		{"0 0 1,* * MON", false},
+	} {
+		got, err := HasRestrictedDayFields(test.expression)
+		if err != nil || got != test.want {
+			t.Errorf("HasRestrictedDayFields(%q) = %v, %v; want %v", test.expression, got, err, test.want)
+		}
+	}
+	if _, err := HasRestrictedDayFields("invalid"); err == nil {
+		t.Fatal("invalid expression accepted")
+	}
+}

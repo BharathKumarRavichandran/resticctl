@@ -953,6 +953,11 @@ The optional `monitoring` object overrides these defaults. Set `status_file` or
 logging, or `backup_statistics` to `false` to disable backup statistics.
 Set `"monitoring": null` to disable all monitoring exports. Prometheus textfiles
 require a collector to scrape them; no monitoring server is installed.
+Textfiles retain the latest result for each profile, command, and copy destination.
+Copy destinations use separate Pushgateway groups, with `profile`, `command`,
+`target_type`, and `target_name` grouping labels supplied by resticctl. Removed
+destinations remain in the textfile or Pushgateway until those metrics are cleared.
+JSON status files continue to contain only the latest exported result.
 Delivery failures are non-fatal and never replace the Restic action's result.
 For example:
 

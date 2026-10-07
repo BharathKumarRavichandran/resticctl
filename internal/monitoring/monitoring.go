@@ -75,7 +75,7 @@ func (reporter *Reporter) Report(ctx context.Context, phase string, status runst
 	}
 	if phase == "send-finally" {
 		if reporter.profile.Monitoring.StatusFile != "" || reporter.profile.Monitoring.PrometheusTextfile != "" {
-			deliveries = append(deliveries, delivery{name: "status export", run: func() error { return reporter.export(status) }})
+			deliveries = append(deliveries, delivery{name: "status export", run: func() error { return reporter.export(reportCtx, status) }})
 		}
 		if gateway := reporter.profile.Monitoring.Pushgateway; gateway != nil {
 			deliveries = append(deliveries, delivery{name: "Pushgateway", run: func() error { return push(reportCtx, *gateway, status) }})
@@ -200,7 +200,7 @@ func sendHTTP(ctx context.Context, hook profile.HTTPHook, event Event) error {
 	return nil
 }
 
-func (reporter *Reporter) export(status runstatus.Status) error {
+func (reporter *Reporter) export(ctx context.Context, status runstatus.Status) error {
 	monitoring := reporter.profile.Monitoring
 	var exportErrors []error
 	if monitoring.StatusFile != "" {
@@ -214,7 +214,7 @@ func (reporter *Reporter) export(status runstatus.Status) error {
 		}
 	}
 	if monitoring.PrometheusTextfile != "" {
-		if err := writeAtomic(monitoring.PrometheusTextfile, []byte(prometheus(status))); err != nil {
+		if err := writePrometheus(ctx, monitoring.PrometheusTextfile, status); err != nil {
 			exportErrors = append(exportErrors, fmt.Errorf("Prometheus textfile export: %w", err))
 		}
 	}
@@ -229,8 +229,16 @@ func writeAtomic(path string, data []byte) error {
 	return securefile.WriteAtomic(path, data)
 }
 
-func prometheus(status runstatus.Status) string {
+func metricLabels(status runstatus.Status) string {
 	labels := `profile="` + metricEscape(status.Profile) + `",command="` + metricEscape(status.Command) + `"`
+	if status.TargetType != "" {
+		labels += `,target_type="` + metricEscape(status.TargetType) + `",target_name="` + metricEscape(status.TargetName) + `"`
+	}
+	return labels
+}
+
+func prometheus(status runstatus.Status) string {
+	labels := metricLabels(status)
 	success, warning := 0, 0
 	if status.State == "succeeded" || status.State == "warning" {
 		success = 1
@@ -268,13 +276,23 @@ func metricEscape(value string) string {
 
 func push(ctx context.Context, gateway profile.Pushgateway, status runstatus.Status) error {
 	endpoint := strings.TrimRight(gateway.URL, "/") + "/metrics/job/" + url.PathEscape(gateway.Job)
-	labels := make([]string, 0, len(gateway.Labels))
-	for key := range gateway.Labels {
+	grouping := make(map[string]string, len(gateway.Labels)+4)
+	for key, value := range gateway.Labels {
+		grouping[key] = value
+	}
+	if status.TargetType == "copy" {
+		grouping["profile"] = status.Profile
+		grouping["command"] = status.Command
+		grouping["target_type"] = status.TargetType
+		grouping["target_name"] = status.TargetName
+	}
+	labels := make([]string, 0, len(grouping))
+	for key := range grouping {
 		labels = append(labels, key)
 	}
 	sort.Strings(labels)
 	for _, key := range labels {
-		endpoint += "/" + url.PathEscape(key) + "/" + url.PathEscape(gateway.Labels[key])
+		endpoint += "/" + url.PathEscape(key) + "/" + url.PathEscape(grouping[key])
 	}
 	timeout := parseTimeout(gateway.Timeout)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)

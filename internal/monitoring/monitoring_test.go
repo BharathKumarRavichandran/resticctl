@@ -23,6 +23,30 @@ import (
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+func TestPrometheusDistinguishesCopyTargets(t *testing.T) {
+	finished := time.Unix(100, 0)
+	exitCode := 0
+	for _, target := range []string{"local", "remote"} {
+		metrics := prometheus(runstatus.Status{
+			Profile: "example", Command: "copy", TargetType: "copy", TargetName: target,
+			FinishedAt: &finished, ExitCode: &exitCode, Statistics: &runstatus.Statistics{FilesNew: 1},
+		})
+		want := `target_type="copy",target_name="` + target + `"`
+		count := 0
+		for _, line := range strings.Split(metrics, "\n") {
+			if strings.HasPrefix(line, "resticctl_") {
+				count++
+				if !strings.Contains(line, want) {
+					t.Errorf("metric lacks copy target identity: %s", line)
+				}
+			}
+		}
+		if count != 11 {
+			t.Errorf("metric count = %d, want 11", count)
+		}
+	}
+}
+
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
@@ -63,6 +87,60 @@ func TestHTTPDeliveriesCloseIdleConnections(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPushgatewayCopyGroupsRetainSeparateResults(t *testing.T) {
+	groups := make(map[string]string)
+	var mu sync.Mutex
+	useHTTPFake(t, func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPut {
+			t.Errorf("method = %s", request.Method)
+		}
+		data, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		groups[request.URL.Path] = string(data)
+		mu.Unlock()
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	})
+	gateway := profile.Pushgateway{URL: "https://push.example", Job: "backups", Labels: map[string]string{"site": "test", "target_name": "override"}}
+	for _, target := range []string{"local", "remote", "local"} {
+		status := runstatus.Status{Profile: "example", Command: "copy", TargetType: "copy", TargetName: target, State: "failed"}
+		if target == "local" {
+			status.State = "succeeded"
+		}
+		if err := push(context.Background(), gateway, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results := make(chan error, 2)
+	for _, target := range []string{"local", "remote"} {
+		go func() {
+			results <- push(context.Background(), gateway, runstatus.Status{
+				Profile: "example", Command: "copy", TargetType: "copy", TargetName: target, State: "failed",
+			})
+		}()
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	if len(groups) != 2 {
+		t.Fatalf("group count = %d", len(groups))
+	}
+	for _, target := range []string{"local", "remote"} {
+		path := "/metrics/job/backups/command/copy/profile/example/site/test/target_name/" + target + "/target_type/copy"
+		status := runstatus.Status{Profile: "example", Command: "copy", TargetType: "copy", TargetName: target}
+		if !strings.Contains(groups[path], "resticctl_run_success{"+metricLabels(status)+"} 0\n") {
+			t.Fatalf("missing group %s: %v", path, groups)
+		}
+	}
+	if gateway.Labels["target_name"] != "override" {
+		t.Fatal("configured labels were mutated")
 	}
 }
 
