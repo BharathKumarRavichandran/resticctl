@@ -649,3 +649,48 @@ func TestRenameScheduleMovesOnlyManagedMonitoringLog(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleInstallRejectsStdinOnlyProfilesAndGroups(t *testing.T) {
+	for _, groupTarget := range []bool{false, true} {
+		name := "profile"
+		if groupTarget {
+			name = "group"
+		}
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeCLIProfile(t, directory)
+			content := `{"repository":"local:test","private_file":"example.credentials.json","stream":{"filename":"stdin"}}`
+			if err := os.WriteFile(filepath.Join(profile.Dir(directory), "example.json"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeCLIGroup(t, directory, `{"profiles":["example"]}`)
+			executor := &recordingScheduleExecutor{}
+			cli := newTestCommandLine(io.Discard, io.Discard)
+			cli.newScheduleManager = func() schedule.Manager { return newCronManager(executor, time.Now) }
+			name := "example"
+			if groupTarget {
+				name = "daily"
+			}
+			args := []string{"--config-dir", directory, "schedule", "install", name, "--cron", "0 2 * * *", "--backend", "cron"}
+			if groupTarget {
+				args = append(args, "--group")
+			}
+			_, err := cli.run(context.Background(), args)
+			if err == nil || !strings.Contains(err.Error(), "stream.command") {
+				t.Fatalf("error=%v", err)
+			}
+			if len(executor.executions) != 0 {
+				t.Fatalf("scheduler mutated: %v", executor.executions)
+			}
+		})
+	}
+}
+
+func TestPreserveSchedulePolicyIncludesPath(t *testing.T) {
+	state := schedule.State{EnvironmentPath: "recorded-path"}
+	var spec schedule.Spec
+	preserveSchedulePolicy(&spec, state)
+	if spec.EnvironmentPath == nil || *spec.EnvironmentPath != "recorded-path" {
+		t.Fatalf("PATH=%v", spec.EnvironmentPath)
+	}
+}

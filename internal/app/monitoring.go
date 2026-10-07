@@ -88,18 +88,21 @@ func applyResticExitPolicy(ctx context.Context, backupProfile profile.Profile, e
 		}
 		return nil
 	}
-	if observation, ok := ctx.Value(observationKey{}).(*runObservation); ok {
-		observation.mu.Lock()
-		observation.warning = true
-		observation.warningState = backupProfile.Monitoring.WarningPolicy == "warning"
-		code := exitError.Code
-		observation.exitCode = &code
-		observation.mu.Unlock()
-	}
+	recordResticWarning(ctx, backupProfile, exitError.Code)
 	if backupProfile.Monitoring.WarningPolicy == "warning" || backupProfile.Monitoring.WarningPolicy == "success" {
 		return nil
 	}
 	return err
+}
+
+func recordResticWarning(ctx context.Context, backupProfile profile.Profile, code int) {
+	if observation, ok := ctx.Value(observationKey{}).(*runObservation); ok {
+		observation.mu.Lock()
+		observation.warning = true
+		observation.warningState = backupProfile.Monitoring.WarningPolicy == "warning"
+		observation.exitCode = &code
+		observation.mu.Unlock()
+	}
 }
 
 func hasOption(arguments []string, target string) bool {

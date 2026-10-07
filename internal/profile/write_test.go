@@ -90,3 +90,39 @@ func TestWriteScheduleRejectsSymlink(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestWriteSchedulePreservesExistingKeyCase(t *testing.T) {
+	for _, field := range []string{"Schedule", "Forget"} {
+		t.Run(field, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "example.json")
+			content := `{"repository":"local:test","credentials":{"password":{"command":["unused"]}},"backup_paths":["."],"forget_args":["--keep-last","3"],"` + field + `":{"cron":"@daily","backend":"auto"}}`
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if field == "Schedule" {
+				_, err = WriteBackupSchedule(directory, "example", Schedule{Cron: "@hourly", Backend: "auto"})
+			} else {
+				_, err = WriteForgetSchedule(directory, "example", ForgetSchedule{Cron: "@hourly", Backend: "auto"})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(directory, "example"); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]json.RawMessage
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			if document[field] == nil || document[strings.ToLower(field)] != nil {
+				t.Fatalf("keys changed: %s", data)
+			}
+		})
+	}
+}

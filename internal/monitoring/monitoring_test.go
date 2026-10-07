@@ -191,7 +191,7 @@ func TestReporterDeliversHooksAndExports(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	sort.Strings(paths)
-	if len(paths) != 2 || paths[0] != "/event" || paths[1] != "/metrics/job/backups/site/test" {
+	if len(paths) != 2 || paths[0] != "/event" || paths[1] != "/metrics/job/backups/command/backup/profile/example/site/test" {
 		t.Fatalf("request paths = %v", paths)
 	}
 }
@@ -255,5 +255,31 @@ func TestRemoteSyslogUsesConfiguredTransport(t *testing.T) {
 	}
 	if message := <-received; !strings.Contains(message, `\"profile\":\"example\"`) {
 		t.Fatalf("syslog message = %s", message)
+	}
+}
+
+func TestPushgatewaySeparatesProfilesAndCommands(t *testing.T) {
+	paths := map[string]bool{}
+	useHTTPFake(t, func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPut {
+			t.Fatalf("method=%s", request.Method)
+		}
+		paths[request.URL.Path] = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	gateway := profile.Pushgateway{URL: "http://gateway", Job: "backups", Labels: map[string]string{"profile": "override", "command": "override"}}
+	for _, name := range []string{"home", "work"} {
+		for _, command := range []string{"backup", "check"} {
+			if err := push(context.Background(), gateway, runstatus.Status{Profile: name, Command: command}); err != nil {
+				t.Fatal(err)
+			}
+			want := "/metrics/job/backups/command/" + command + "/profile/" + name
+			if !paths[want] {
+				t.Fatalf("missing grouping %s: %v", want, paths)
+			}
+		}
+	}
+	if len(paths) != 4 {
+		t.Fatalf("groupings=%v", paths)
 	}
 }

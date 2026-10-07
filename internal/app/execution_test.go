@@ -52,7 +52,7 @@ func TestConfiguredBackupDryRunIsNotRecorded(t *testing.T) {
 }
 
 func TestRawDryRunSpellingsAreNotRecorded(t *testing.T) {
-	for _, argument := range []string{"--dry-run", "-n", "--dry-run=true", "-n=true", "--dry-run=1", "-n=t"} {
+	for _, argument := range []string{"--dry-run", "-n", "--dry-run=true", "-n=true", "--dry-run=1", "-n=t", "-qn", "-qvn=true"} {
 		t.Run(argument, func(t *testing.T) {
 			directory := t.TempDir()
 			runner := &recordingRunner{}
@@ -108,6 +108,72 @@ func TestConfiguredDryRunForOtherActionsIsNotRecorded(t *testing.T) {
 type concurrentScheduleExecutor struct {
 	mu      sync.Mutex
 	crontab []byte
+}
+
+type warningCopyRunner struct{ recordingRunner }
+
+func (runner *warningCopyRunner) Copy(ctx context.Context, config restic.CopyConfig, arguments []string) error {
+	if err := runner.recordingRunner.Copy(ctx, config, arguments); err != nil {
+		return err
+	}
+	if config.Destination.Repository == "local:warning" {
+		return &restic.ExitError{Code: 3}
+	}
+	return nil
+}
+
+func TestScheduledCopyPreservesTargetWarningsAndHistoryLimit(t *testing.T) {
+	for _, policy := range []string{"warning", "success"} {
+		t.Run(policy, func(t *testing.T) {
+			directory := t.TempDir()
+			manager := schedule.NewManager(schedule.WithExecutor(&concurrentScheduleExecutor{}), schedule.WithPlatform("linux", 1000))
+			if _, err := manager.InstallAction(context.Background(), directory, "home", schedule.ActionCopy, "@daily", schedule.BackendCron, filepath.Join(directory, "resticctl"), false, false); err != nil {
+				t.Fatal(err)
+			}
+			value := profile.Profile{
+				Name: "home", Repository: "local:source",
+				Monitoring: profile.Monitoring{WarningPolicy: policy, HistoryLimit: 2},
+				Copies: map[string]profile.CopyTarget{
+					"a-warning": {Repository: "local:warning"},
+					"b-healthy": {Repository: "local:healthy"},
+				},
+			}
+			runner := &warningCopyRunner{}
+			for range 3 {
+				if _, err := ScheduledRun(context.Background(), func() (Runner, error) { return runner, nil }, manager, directory, value, schedule.ActionCopy, time.Now, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, target := range []string{"a-warning", "b-healthy"} {
+				history, err := runstatus.LoadCopyTargetHistory(directory, value.Name, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(history) != 2 {
+					t.Fatalf("%s history length=%d, want 2", target, len(history))
+				}
+				status := history[0]
+				warning := target == "a-warning"
+				code, state := 0, "succeeded"
+				if warning {
+					code = 3
+					if policy == "warning" {
+						state = "warning"
+					}
+				}
+				if status.Warning != warning || status.State != state || status.ExitCode == nil || *status.ExitCode != code {
+					t.Fatalf("%s status=%+v", target, status)
+				}
+			}
+			aggregate, err := runstatus.LoadAction(directory, value.Name, schedule.ActionCopy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !aggregate.Warning || aggregate.ExitCode == nil || *aggregate.ExitCode != 3 {
+				t.Fatalf("aggregate warning was lost: %+v", aggregate)
+			}
+		})
+	}
 }
 
 func (executor *concurrentScheduleExecutor) Run(_ context.Context, input []byte, name string, arguments ...string) ([]byte, error) {

@@ -934,6 +934,8 @@ func TestLoadRejectsConfiguredBackupDryRunOptions(t *testing.T) {
 	}{
 		{"long", `"backup_args":["--dry-run"]`},
 		{"short", `"backup_args":["-n"]`},
+		{"bundle", `"backup_args":["-qn"]`},
+		{"command bundle", `"commands":{"backup":{"args":["-qvn=true"]}}`},
 		{"explicit true", `"backup_args":["--dry-run=true"]`},
 		{"numeric true", `"backup_args":["--dry-run=1"]`},
 		{"command arguments", `"commands":{"backup":{"args":["-n=true"]}}`},
@@ -1262,5 +1264,13 @@ func TestMonitoringDefaultsAndExplicitOptOuts(t *testing.T) {
 				t.Fatalf("disabled monitoring=%+v", m)
 			}
 		})
+	}
+}
+
+func TestLoadAcceptsAttachedRestoreIncludeValue(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"command":["unused"]}},"backup_paths":["."],"commands":{"restore":{"args":["-qiprivate"]}}}`)
+	if _, err := Load(directory, "example"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"resticctl/internal/configlock"
 	"resticctl/internal/cronexpr"
@@ -36,6 +37,12 @@ func writeSchedule(configDir, name, field string, scheduled any, expression, bac
 		value, err := json.Marshal(scheduled)
 		if err != nil {
 			return fmt.Errorf("cannot encode %s: %w", field, err)
+		}
+		for key := range document {
+			if strings.EqualFold(key, field) {
+				field = key
+				break
+			}
 		}
 		document[field] = value
 		return writeDocument(profilePath, document)

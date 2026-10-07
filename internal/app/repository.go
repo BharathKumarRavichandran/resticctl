@@ -22,7 +22,7 @@ func Stats(ctx context.Context, runner ResticRunner, backupProfile profile.Profi
 }
 
 func ListSnapshot(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot string, paths []string, long, recursive, humanReadable bool, sort string, reverse bool) error {
-	arguments := []string{"ls", snapshot, "--tag", profileTag(backupProfile)}
+	arguments := []string{"ls", "--tag", profileTag(backupProfile)}
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "ls")
 	if long {
 		arguments = append(arguments, "--long")
@@ -39,6 +39,7 @@ func ListSnapshot(ctx context.Context, runner ResticRunner, backupProfile profil
 	if reverse {
 		arguments = append(arguments, "--reverse")
 	}
+	arguments = append(arguments, "--", snapshot)
 	arguments = append(arguments, paths...)
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
@@ -58,21 +59,23 @@ func Find(ctx context.Context, runner ResticRunner, backupProfile profile.Profil
 	if reverse {
 		arguments = append(arguments, "--reverse")
 	}
+	arguments = append(arguments, "--")
 	arguments = append(arguments, patterns...)
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Diff(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, first, second string, metadata bool) error {
-	arguments := []string{"diff", first, second}
+	arguments := []string{"diff"}
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "diff")
 	if metadata {
 		arguments = append(arguments, "--metadata")
 	}
+	arguments = append(arguments, "--", first, second)
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
 func Dump(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot, path, archive, target string) error {
-	arguments := []string{"dump", snapshot, path, "--tag", profileTag(backupProfile)}
+	arguments := []string{"dump", "--tag", profileTag(backupProfile)}
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "dump")
 	if archive != "" {
 		arguments = append(arguments, "--archive", archive)
@@ -80,6 +83,7 @@ func Dump(ctx context.Context, runner ResticRunner, backupProfile profile.Profil
 	if target != "" {
 		arguments = append(arguments, "--target", target)
 	}
+	arguments = append(arguments, "--", snapshot, path)
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 
@@ -106,11 +110,12 @@ func Forget(ctx context.Context, runner ResticRunner, backupProfile profile.Prof
 }
 
 func Restore(ctx context.Context, runner ResticRunner, backupProfile profile.Profile, snapshot, target string, dryRun bool) error {
-	arguments := []string{"restore", snapshot, "--tag", profileTag(backupProfile), "--target", target}
+	arguments := []string{"restore", "--tag", profileTag(backupProfile), "--target", target}
 	arguments = appendConfiguredCommandArgs(arguments, backupProfile, "restore")
 	if dryRun {
 		arguments = append(arguments, "--dry-run", "--verbose=2")
 	}
+	arguments = append(arguments, "--", snapshot)
 	return invokeRestic(ctx, runner, backupProfile, arguments, "")
 }
 

@@ -70,7 +70,7 @@ func validateCopyTarget(name string, target *CopyTarget) error {
 			if item == "" || strings.ContainsRune(item, 0) {
 				return fmt.Errorf("copies.%s.%s must not contain empty strings or NUL bytes", name, field)
 			}
-			if field == "args" && IsReservedOption(item) {
+			if field == "args" && IsReservedCommandOption(item, "copy") {
 				return fmt.Errorf("copies.%s.args must not override repository or password options: %s", name, item)
 			}
 			if field == "args" && IsDryRunOption(item) {

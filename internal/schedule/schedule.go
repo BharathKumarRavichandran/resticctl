@@ -226,29 +226,35 @@ func (manager Manager) installSpec(ctx context.Context, spec Spec) (State, error
 	} else if backend == BackendWindows {
 		state.JobFile = filepath.Join(configDir, "schedules", nativeID(state)+".xml")
 	}
-	if spec.DryRun {
-		definition, renderErr := manager.render(configDir, state, executable)
-		state.Rendered = string(definition)
-		return state, renderErr
+	definition, err := manager.render(configDir, state, executable)
+	if err != nil {
+		return State{}, err
 	}
-	switchedBackend := existing != nil && existing.Backend != state.Backend
-	if switchedBackend {
-		if err := manager.removeApplied(ctx, configDir, *existing); err != nil {
-			return State{}, fmt.Errorf("cannot remove previous %s schedule: %w", existing.Backend, err)
-		}
+	if spec.DryRun {
+		state.Rendered = string(definition)
+		return state, nil
 	}
 	rollbackCtx := context.WithoutCancel(ctx)
+	movedInstallation := existing != nil && (existing.Backend != state.Backend || existing.CronFile != state.CronFile ||
+		existing.Permission != state.Permission || existing.JobFile != state.JobFile ||
+		(state.Backend == BackendLaunchd && existing.Start && !state.Start))
+	if movedInstallation {
+		if err := manager.removeApplied(ctx, configDir, *existing); err != nil {
+			return State{}, errors.Join(fmt.Errorf("cannot remove previous %s schedule: %w", existing.Backend, err),
+				manager.restore(rollbackCtx, configDir, *existing, executable))
+		}
+	}
 	rollback := func(cause error) error {
 		if existing == nil {
 			return errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state), removeState(configDir, identity, action))
 		}
-		if switchedBackend {
+		if movedInstallation {
 			cause = errors.Join(cause, manager.removeApplied(rollbackCtx, configDir, state))
 		}
 		return errors.Join(cause, manager.restore(rollbackCtx, configDir, *existing, executable), writeState(configDir, *existing))
 	}
 	if err := writeState(configDir, state); err != nil {
-		if switchedBackend {
+		if movedInstallation {
 			err = errors.Join(err, manager.restore(rollbackCtx, configDir, *existing, executable))
 		}
 		return State{}, err
@@ -257,7 +263,7 @@ func (manager Manager) installSpec(ctx context.Context, spec Spec) (State, error
 	if err != nil {
 		return State{}, rollback(err)
 	}
-	definition, err := manager.installedDefinition(ctx, state)
+	definition, err = manager.installedDefinition(ctx, state)
 	if err != nil {
 		return State{}, rollback(err)
 	}
@@ -278,7 +284,6 @@ func (manager Manager) installSpec(ctx context.Context, spec Spec) (State, error
 func (manager Manager) restore(ctx context.Context, configDir string, state State, executable string) error {
 	if state.Executable != "" {
 		executable = state.Executable
-		manager.environmentPath = state.EnvironmentPath
 	}
 	if err := manager.apply(ctx, configDir, &state, executable); err != nil {
 		return fmt.Errorf("cannot restore previous schedule: %w", err)
@@ -368,8 +373,8 @@ func shellQuote(value string) string {
 
 func (manager Manager) jobArguments(executable, configDir string, state State) []string {
 	arguments := scheduledArguments(executable, configDir, state)
-	if manager.environmentPath != "" {
-		arguments = append([]string{"/usr/bin/env", "PATH=" + manager.environmentPath}, arguments...)
+	if state.EnvironmentPath != "" {
+		arguments = append([]string{"/usr/bin/env", "PATH=" + state.EnvironmentPath}, arguments...)
 	}
 	return arguments
 }

@@ -39,22 +39,22 @@ func TestProfileCommandDispatch(t *testing.T) {
 		{
 			name:      "ls",
 			arguments: []string{"ls", "example", "latest", "/documents", "--long", "--recursive"},
-			want:      []string{"ls", "latest", "--tag", "profile:example", "--long", "--recursive", "/documents"},
+			want:      []string{"ls", "--tag", "profile:example", "--long", "--recursive", "--", "latest", "/documents"},
 		},
 		{
 			name:      "find",
 			arguments: []string{"find", "example", "*.json", "*.yaml", "--ignore-case"},
-			want:      []string{"find", "--tag", "profile:example", "--ignore-case", "*.json", "*.yaml"},
+			want:      []string{"find", "--tag", "profile:example", "--ignore-case", "--", "*.json", "*.yaml"},
 		},
 		{
 			name:      "diff",
 			arguments: []string{"diff", "example", "abc123", "def456", "--metadata"},
-			want:      []string{"diff", "abc123", "def456", "--metadata"},
+			want:      []string{"diff", "--metadata", "--", "abc123", "def456"},
 		},
 		{
 			name:      "dump",
 			arguments: []string{"dump", "example", "latest", "/documents", "--archive", "zip", "--target", "backup.zip"},
-			want:      []string{"dump", "latest", "/documents", "--tag", "profile:example", "--archive", "zip", "--target", "backup.zip"},
+			want:      []string{"dump", "--tag", "profile:example", "--archive", "zip", "--target", "backup.zip", "--", "latest", "/documents"},
 		},
 		{name: "key list", arguments: []string{"key", "list", "example"}, want: []string{"key", "list"}},
 		{name: "key add", arguments: []string{"key", "add", "example"}, want: []string{"key", "add"}},
@@ -81,7 +81,7 @@ func TestProfileCommandDispatch(t *testing.T) {
 			name:      "restore flags",
 			arguments: []string{"restore", "example", "latest", "target", "--dry-run"},
 			want: []string{
-				"restore", "latest", "--tag", "profile:example", "--target", "target", "--dry-run", "--verbose=2",
+				"restore", "--tag", "profile:example", "--target", "target", "--dry-run", "--verbose=2", "--", "latest",
 			},
 		},
 	}

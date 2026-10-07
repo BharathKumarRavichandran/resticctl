@@ -8,6 +8,15 @@ func TestReservedRepositoryAndPasswordOptions(t *testing.T) {
 		reserved bool
 	}{
 		{argument: "-r", reserved: true},
+		{argument: "-qr", reserved: true},
+		{argument: "-cqr", reserved: true},
+		{argument: "-xfr", reserved: true},
+		{argument: "-lqp", reserved: true},
+		{argument: "-qpsecret", reserved: true},
+		{argument: "-vqr=other", reserved: true},
+		{argument: "-n=true", reserved: false},
+		{argument: "-Hserver", reserved: false},
+		{argument: "-ooption=password", reserved: false},
 		{argument: "-r=other", reserved: true},
 		{argument: "-rother", reserved: true},
 		{argument: "-p", reserved: true},
@@ -70,5 +79,40 @@ func TestDryRunUsesFinalBooleanValue(t *testing.T) {
 		if got := DryRunEnabled(test.arguments); got != test.enabled {
 			t.Errorf("DryRunEnabled(%q)=%t; want %t", test.arguments, got, test.enabled)
 		}
+	}
+}
+
+func TestReservedShorthandsRespectCommandValues(t *testing.T) {
+	for _, test := range []struct {
+		command, argument string
+		reserved          bool
+	}{
+		{"restore", "-iprivate", false}, {"restore", "-qiprivate", false},
+		{"restore", "-qpsecret", true}, {"find", "-iprivate", true},
+		{"find", "-iqrrepository", true}, {"backup", "-xfrrepository", true},
+		{"forget", "-lunlimited", false}, {"forget", "-qrrepository", true},
+	} {
+		if got := IsReservedCommandOption(test.argument, test.command); got != test.reserved {
+			t.Errorf("%s %s: reserved=%v want=%v", test.command, test.argument, got, test.reserved)
+		}
+	}
+}
+
+func TestDryRunShortBundles(t *testing.T) {
+	for _, test := range []struct {
+		arguments []string
+		want      bool
+	}{
+		{[]string{"-qn"}, true}, {[]string{"-qvn=true"}, true},
+		{[]string{"-qn=false"}, false}, {[]string{"-qn", "--dry-run=false"}, false},
+		{[]string{"--dry-run=false", "-qn"}, true}, {[]string{"-qnn=false"}, false},
+		{[]string{"-xnf"}, true}, {[]string{"-Hname"}, false},
+	} {
+		if got := DryRunEnabled(test.arguments); got != test.want {
+			t.Errorf("DryRunEnabled(%v)=%v want=%v", test.arguments, got, test.want)
+		}
+	}
+	if !IsDryRunOption("-qn") {
+		t.Fatal("bundled dry run was accepted by backup validation")
 	}
 }

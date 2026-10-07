@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -83,8 +84,8 @@ func (manager Manager) renderSystemd(configDir string, state State, executable s
 		service.WriteString("ConditionACPower=true\n")
 	}
 	service.WriteString("[Service]\nType=oneshot\nExecStart=" + strings.Join(quoted, " ") + "\n")
-	if manager.environmentPath != "" {
-		service.WriteString("Environment=" + systemdEscape("PATH="+manager.environmentPath) + "\n")
+	if state.EnvironmentPath != "" {
+		service.WriteString("Environment=" + systemdEscape("PATH="+state.EnvironmentPath) + "\n")
 	}
 	if state.User != "" && state.Permission == PermissionSystem {
 		service.WriteString("User=" + strings.ReplaceAll(state.User, "%", "%%") + "\n")
@@ -117,7 +118,7 @@ func (manager Manager) installSystemd(ctx context.Context, configDir string, sta
 	if err != nil {
 		return err
 	}
-	dir := manager.systemdDir(*state)
+	dir := filepath.Dir(state.JobFile)
 	if !filepath.IsAbs(dir) {
 		return errors.New("systemd unit directory must be absolute")
 	}
@@ -138,25 +139,27 @@ func (manager Manager) installSystemd(ctx context.Context, configDir string, sta
 	if _, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "daemon-reload")...); err != nil {
 		return err
 	}
+	unit := filepath.Base(timerPath)
+	enableAction := "disable"
 	if state.Enabled {
-		if state.Start {
-			args = append(args, "enable", "--now", filepath.Base(timerPath))
-		} else {
-			args = append(args, "enable", filepath.Base(timerPath))
-		}
-		_, err = manager.executor.Run(ctx, nil, "systemctl", args...)
+		enableAction = "enable"
+	}
+	if _, err := manager.executor.Run(ctx, nil, "systemctl", append(args, enableAction, unit)...); err != nil {
 		return err
 	}
+	startAction := "stop"
 	if state.Start {
-		_, err = manager.executor.Run(ctx, nil, "systemctl", append(args, "start", filepath.Base(timerPath))...)
-		return err
+		startAction = "start"
 	}
-	return nil
+	_, err = manager.executor.Run(ctx, nil, "systemctl", append(args, startAction, unit)...)
+	return err
 }
 
 func (manager Manager) removeSystemd(ctx context.Context, state *State) error {
-	dir := manager.systemdDir(*state)
-	base := filepath.Join(dir, nativeID(*state))
+	base := strings.TrimSuffix(state.JobFile, ".timer")
+	if state.JobFile == "" {
+		base = filepath.Join(manager.systemdDir(*state), nativeID(*state))
+	}
 	args := systemctlArguments(*state)
 	var cleanupErrors []error
 	output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "disable", "--now", filepath.Base(base)+".timer")...)
@@ -202,22 +205,37 @@ func (manager Manager) renderWindows(configDir string, state State, executable s
 		runLevel = "HighestAvailable"
 		logonType = "ServiceAccount"
 	}
+	if user == "" {
+		current, err := osuser.Current()
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve Windows task account: %w", err)
+		}
+		user = current.Username
+	}
 	priority := "5"
 	if state.Priority == PriorityBackground {
 		priority = "7"
 	}
 	command, arguments := executable, windowsJoin(args[1:])
-	if state.Log != "" {
+	if state.Log != "" || state.EnvironmentPath != "" {
 		command = "powershell.exe"
 		parts := make([]string, len(args))
 		for i, arg := range args {
 			parts[i] = "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 		}
-		script := "$ErrorActionPreference = 'Stop'; & " + strings.Join(parts, " ") + " *>> '" + strings.ReplaceAll(state.Log, "'", "''") + "'; exit $LASTEXITCODE"
+		script := "$ErrorActionPreference = 'Stop'; "
+		if state.EnvironmentPath != "" {
+			script += "$env:PATH = '" + strings.ReplaceAll(state.EnvironmentPath, "'", "''") + "'; "
+		}
+		script += "& " + strings.Join(parts, " ")
+		if state.Log != "" {
+			script += " *>> '" + strings.ReplaceAll(state.Log, "'", "''") + "'"
+		}
+		script += "; exit $LASTEXITCODE"
 		arguments = windowsJoin([]string{"-NoProfile", "-NonInteractive", "-Command", script})
 	}
 	content := fmt.Sprintf(`<?xml version="1.0"?>
-<Task version="1.4"><Principals><Principal><UserId>%s</UserId><LogonType>%s</LogonType><RunLevel>%s</RunLevel></Principal></Principals>
+<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task" version="1.4"><Principals><Principal><UserId>%s</UserId><LogonType>%s</LogonType><RunLevel>%s</RunLevel></Principal></Principals>
 <Triggers>%s</Triggers>
 <Settings><Priority>%s</Priority><DisallowStartIfOnBatteries>%t</DisallowStartIfOnBatteries><RunOnlyIfNetworkAvailable>%t</RunOnlyIfNetworkAvailable><StartWhenAvailable>%t</StartWhenAvailable><Enabled>%t</Enabled></Settings>
 <Actions><Exec><Command>%s</Command><Arguments>%s</Arguments></Exec></Actions></Task>
@@ -365,17 +383,23 @@ func (manager Manager) nativeDefinition(state State) ([]byte, error) {
 func (manager Manager) verifyNative(ctx context.Context, state State) error {
 	args := systemctlArguments(state)
 	unit := filepath.Base(state.JobFile)
-	if state.Enabled {
-		output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-enabled", unit)...)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect enabled systemd timer", output, err))
-		}
+	output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-enabled", unit)...)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	if state.Start {
-		output, err := manager.executor.Run(ctx, nil, "systemctl", append(args, "is-active", unit)...)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrDrift, commandError("inspect active systemd timer", output, err))
-		}
+	status := strings.TrimSpace(string(output))
+	enabled := status == "enabled" || status == "enabled-runtime"
+	disabled := status == "disabled" || status == "static" || status == "indirect" || status == "linked" || status == "linked-runtime"
+	if (state.Enabled && (!enabled || err != nil)) || (!state.Enabled && !disabled) {
+		return fmt.Errorf("%w: systemd timer enabled state is %q, expected enabled=%t", ErrDrift, status, state.Enabled)
+	}
+	output, err = manager.executor.Run(ctx, nil, "systemctl", append(args, "is-active", unit)...)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	status = strings.TrimSpace(string(output))
+	if (state.Start && (status != "active" || err != nil)) || (!state.Start && status != "inactive" && status != "failed") {
+		return fmt.Errorf("%w: systemd timer active state is %q, expected active=%t", ErrDrift, status, state.Start)
 	}
 	return nil
 }

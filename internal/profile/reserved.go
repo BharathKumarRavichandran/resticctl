@@ -8,8 +8,25 @@ import (
 // IsReservedOption reports whether an argument could override the repository
 // or password source managed by resticctl.
 func IsReservedOption(argument string) bool {
-	if argument == "--" || strings.HasPrefix(argument, "-r") || strings.HasPrefix(argument, "-p") {
+	return IsReservedCommandOption(argument, "")
+}
+
+// IsReservedCommandOption accounts for command-specific shorthand values.
+func IsReservedCommandOption(argument, command string) bool {
+	if argument == "--" {
 		return true
+	}
+	if strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") {
+		for _, flag := range argument[1:] {
+			switch flag {
+			case 'r', 'p':
+				return true
+			default:
+				if !shortFlagHasNoValue(flag, command) {
+					return false
+				}
+			}
+		}
 	}
 	for _, option := range []string{"--repo", "--repository", "--repository-file", "--password", "--password-file", "--password-command", "--insecure-no-password", "--from-repo", "--from-repository-file", "--from-password-file", "--from-password-command", "--from-insecure-no-password"} {
 		if argument == option || strings.HasPrefix(argument, option+"=") {
@@ -26,16 +43,49 @@ func IsDryRunOption(argument string) bool {
 }
 
 func dryRunValue(argument string) (bool, bool) {
-	if argument == "--dry-run" || argument == "-n" {
+	if argument == "--dry-run" {
 		return true, true
 	}
-	for _, prefix := range []string{"--dry-run=", "-n="} {
-		if value, found := strings.CutPrefix(argument, prefix); found {
-			enabled, err := strconv.ParseBool(value)
-			return enabled, err == nil
+	if value, ok := strings.CutPrefix(argument, "--dry-run="); ok {
+		enabled, err := strconv.ParseBool(value)
+		return enabled, err == nil
+	}
+	if !strings.HasPrefix(argument, "-") || strings.HasPrefix(argument, "--") {
+		return false, false
+	}
+	enabled, found := false, false
+	for index, flag := range argument[1:] {
+		if flag == 'n' {
+			if value, ok := strings.CutPrefix(argument[index+2:], "="); ok {
+				enabled, err := strconv.ParseBool(value)
+				return enabled, err == nil
+			}
+			enabled, found = true, true
+			continue
+		}
+		if !shortFlagHasNoValue(flag, "") {
+			break
 		}
 	}
-	return false, false
+	return enabled, found
+}
+
+func shortFlagHasNoValue(flag rune, command string) bool {
+	switch flag {
+	case 'q', 'v', 'h':
+		return true
+	case 'n':
+		return command == "" || command == "backup" || command == "forget" || command == "prune"
+	case 'f', 'x':
+		return command == "" || command == "backup"
+	case 'l':
+		return command == "" || command == "ls" || command == "find"
+	case 'i', 'R':
+		return command == "" || command == "find"
+	case 'c':
+		return command == "" || command == "snapshots"
+	}
+	return false
 }
 
 // DryRunEnabled follows Restic's last-value-wins boolean flag semantics.

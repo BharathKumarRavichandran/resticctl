@@ -70,6 +70,25 @@ func TestVerifyMigrationUsesDestination(t *testing.T) {
 	}
 }
 
+func TestVerifyMigrationScopesGlobalTagFiltersLikeCopy(t *testing.T) {
+	runner := &migrationRecordingRunner{snapshots: map[string][]restic.SnapshotIdentity{
+		"local:source": {{ID: "source-id"}}, "local:destination": {{ID: "destination-id", Original: "source-id"}},
+	}}
+	value := profile.Profile{
+		Name: "home", Repository: "local:source", ResticArgs: []string{"--tag", "important"},
+		Copies: map[string]profile.CopyTarget{"offsite": {Repository: "local:destination"}},
+	}
+	if err := VerifyMigration(context.Background(), func() (Runner, error) { return runner, nil }, t.TempDir(), value, "offsite", false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(runner.runs[0].config.Arguments, []string{"--tag", "profile:home,important"}) {
+		t.Fatalf("source listing has unscoped tags: %v", runner.runs[0].config.Arguments)
+	}
+	if !slices.Equal(value.ResticArgs, []string{"--tag", "important"}) {
+		t.Fatalf("verification changed profile arguments: %v", value.ResticArgs)
+	}
+}
+
 func TestVerifyMigrationRejectsMissingSnapshots(t *testing.T) {
 	runner := &migrationRecordingRunner{snapshots: map[string][]restic.SnapshotIdentity{
 		"local:source": {{ID: "present"}, {ID: "missing"}}, "local:destination": {{ID: "new-id", Original: "present"}},

@@ -17,7 +17,7 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 	if err != nil {
 		return "", err
 	}
-	path, err := manager.launchdJobPath(targetIdentity(state), state.Action)
+	path, err := manager.launchdStatePath(state)
 	if err != nil {
 		return "", err
 	}
@@ -47,6 +47,9 @@ func (manager Manager) installLaunchd(ctx context.Context, configDir string, sta
 }
 
 func (manager Manager) verifyLaunchd(ctx context.Context, state State) error {
+	if !state.Start {
+		return nil
+	}
 	domain := "gui/" + strconv.Itoa(manager.uid)
 	output, err := manager.executor.Run(ctx, nil, "launchctl", "print", domain+"/"+launchdLabel(targetIdentity(state), state.Action))
 	if err != nil {
@@ -56,7 +59,7 @@ func (manager Manager) verifyLaunchd(ctx context.Context, state State) error {
 }
 
 func (manager Manager) launchdDefinition(state State) ([]byte, error) {
-	jobFile, err := manager.launchdJobPath(targetIdentity(state), state.Action)
+	jobFile, err := manager.launchdStatePath(state)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +100,7 @@ func (manager Manager) renderLaunchd(configDir string, state State, executable s
 <plist version="1.0"><dict>
 <key>Label</key><string>` + xmlText(label) + `</string>
 <key>ProgramArguments</key><array>` + argumentXML.String() + `</array>
-` + launchdEnvironment(manager.environmentPath) + `
+` + launchdEnvironment(state.EnvironmentPath) + `
 <key>StartCalendarInterval</key>` + calendar + `
 ` + launchdRunAtLoad(state.CatchUp) + `
 ` + launchdPolicy(state) + `
@@ -123,7 +126,7 @@ func launchdPolicy(state State) string {
 }
 
 func (manager Manager) removeLaunchd(ctx context.Context, configDir string, state State) error {
-	jobFile, err := manager.launchdJobPath(targetIdentity(state), state.Action)
+	jobFile, err := manager.launchdStatePath(state)
 	if err != nil {
 		return err
 	}
@@ -178,4 +181,14 @@ func launchdRunAtLoad(enabled bool) string {
 		return ""
 	}
 	return "<key>RunAtLoad</key><true/>"
+}
+
+func (manager Manager) launchdStatePath(state State) (string, error) {
+	if state.JobFile != "" {
+		if !filepath.IsAbs(state.JobFile) {
+			return "", errors.New("launchd job file must be absolute")
+		}
+		return state.JobFile, nil
+	}
+	return manager.launchdJobPath(targetIdentity(state), state.Action)
 }

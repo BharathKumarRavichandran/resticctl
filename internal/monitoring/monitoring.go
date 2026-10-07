@@ -280,9 +280,9 @@ func push(ctx context.Context, gateway profile.Pushgateway, status runstatus.Sta
 	for key, value := range gateway.Labels {
 		grouping[key] = value
 	}
+	grouping["profile"] = status.Profile
+	grouping["command"] = status.Command
 	if status.TargetType == "copy" {
-		grouping["profile"] = status.Profile
-		grouping["command"] = status.Command
 		grouping["target_type"] = status.TargetType
 		grouping["target_name"] = status.TargetName
 	}

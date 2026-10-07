@@ -61,7 +61,9 @@ func verifyMigration(ctx context.Context, newRunner RunnerFactory, backupProfile
 			return errors.New("runner does not support migration snapshot verification")
 		}
 		target := backupProfile.Copies[targetName]
-		sourceSnapshots, err := capable.SnapshotIdentities(runCtx, resticConfig(backupProfile), copyArguments(backupProfile, target))
+		sourceConfig := resticConfig(backupProfile)
+		sourceConfig.Arguments, _ = scopeCopyTags(sourceConfig.Arguments, profileTag(backupProfile))
+		sourceSnapshots, err := capable.SnapshotIdentities(runCtx, sourceConfig, copyArguments(backupProfile, target))
 		if err != nil {
 			return fmt.Errorf("list selected source snapshots: %w", err)
 		}

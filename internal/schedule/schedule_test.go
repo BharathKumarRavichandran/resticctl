@@ -23,6 +23,8 @@ type execution struct {
 
 type fakeExecutor struct {
 	windowsTasks    map[string][]byte
+	systemdEnabled  map[string]bool
+	systemdActive   map[string]bool
 	executions      []execution
 	crontab         string
 	crontabError    error
@@ -72,6 +74,42 @@ func (executor *fakeExecutor) Run(_ context.Context, input []byte, name string, 
 		}
 		if arguments[0] == "/Delete" {
 			delete(executor.windowsTasks, arguments[2])
+		}
+	}
+	if name == "systemctl" && len(arguments) > 0 {
+		if executor.systemdEnabled == nil {
+			executor.systemdEnabled = make(map[string]bool)
+			executor.systemdActive = make(map[string]bool)
+		}
+		verb := arguments[0]
+		scope := "system:"
+		if verb == "--user" {
+			verb = arguments[1]
+			scope = "user:"
+		}
+		key := scope + arguments[len(arguments)-1]
+		switch verb {
+		case "enable":
+			executor.systemdEnabled[key] = true
+		case "disable":
+			executor.systemdEnabled[key] = false
+			if slices.Contains(arguments, "--now") {
+				executor.systemdActive[key] = false
+			}
+		case "start":
+			executor.systemdActive[key] = true
+		case "stop":
+			executor.systemdActive[key] = false
+		case "is-enabled":
+			if executor.systemdEnabled[key] {
+				return []byte("enabled\n"), nil
+			}
+			return []byte("disabled\n"), errors.New("exit 1")
+		case "is-active":
+			if executor.systemdActive[key] {
+				return []byte("active\n"), nil
+			}
+			return []byte("inactive\n"), errors.New("exit 3")
 		}
 	}
 	if name == "launchctl" && executor.launchctlError != nil {
@@ -590,7 +628,7 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, execution := range executor.executions {
-		if slices.Contains(execution.arguments, "start") || slices.Contains(execution.arguments, "--now") || slices.Contains(execution.arguments, "is-active") {
+		if slices.Contains(execution.arguments, "start") || slices.Contains(execution.arguments, "--now") {
 			t.Fatalf("no-start ran %#v", execution)
 		}
 	}
@@ -605,7 +643,7 @@ func TestSystemdUserInstallRendersMultipleCalendarsAndPolicies(t *testing.T) {
 func TestSystemdCommandPreservesLiteralDollars(t *testing.T) {
 	manager := NewManager(WithEnvironmentPath("/opt/$tools/bin"))
 	service, _, err := manager.renderSystemd("/backup/${CONFIG}", State{
-		Profile: "example", Action: ActionBackup, Expressions: []string{"0 2 * * *"},
+		Profile: "example", Action: ActionBackup, Expressions: []string{"0 2 * * *"}, EnvironmentPath: "/opt/$tools/bin",
 	}, "/opt/$tools/resticctl")
 	if err != nil {
 		t.Fatal(err)

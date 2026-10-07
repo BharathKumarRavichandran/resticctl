@@ -132,20 +132,20 @@ func normalizeProfileSources(backupProfile *Profile, base string) error {
 
 func validateProfileArguments(backupProfile Profile) error {
 	argumentLists := []struct {
-		name   string
-		values []string
+		name, command string
+		values        []string
 	}{
-		{"restic_args", backupProfile.ResticArgs},
-		{"backup_args", backupProfile.BackupArgs},
-		{"forget_args", backupProfile.ForgetArgs},
-		{"check_args", backupProfile.CheckArgs},
+		{"restic_args", "", backupProfile.ResticArgs},
+		{"backup_args", "backup", backupProfile.BackupArgs},
+		{"forget_args", "forget", backupProfile.ForgetArgs},
+		{"check_args", "check", backupProfile.CheckArgs},
 	}
 	for _, list := range argumentLists {
 		for _, value := range list.values {
 			if value == "" || strings.ContainsRune(value, 0) {
 				return fmt.Errorf("%s must not contain empty strings or NUL bytes", list.name)
 			}
-			if IsReservedOption(value) {
+			if IsReservedCommandOption(value, list.command) {
 				return fmt.Errorf("%s must not override repository or password options: %s", list.name, value)
 			}
 			if list.name == "backup_args" && IsDryRunOption(value) {
@@ -175,7 +175,7 @@ func validateProfileArguments(backupProfile Profile) error {
 			if value == "" || strings.ContainsRune(value, 0) {
 				return fmt.Errorf("commands.%s.args must not contain empty strings or NUL bytes", name)
 			}
-			if IsReservedOption(value) {
+			if IsReservedCommandOption(value, name) {
 				return fmt.Errorf("commands.%s.args must not override repository or password options: %s", name, value)
 			}
 			if name == "backup" && IsDryRunOption(value) {
@@ -313,8 +313,8 @@ func validateStream(value Profile) error {
 	if len(value.BackupPaths) != 0 || profileDatabaseCount(value) != 0 {
 		return errors.New("stream must not be combined with backup_paths or databases")
 	}
-	if len(value.Stream.Command) == 0 && value.Schedule != nil {
-		return errors.New("stdin stream backups cannot be scheduled; configure stream.command")
+	if value.Schedule != nil {
+		return ValidateScheduledBackup(value)
 	}
 	return nil
 }
@@ -912,6 +912,14 @@ func validateDatabaseArtifacts(value Profile) error {
 		if err := add(db.Name, db.Name+".bak"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidateScheduledBackup ensures unattended backups have an input producer.
+func ValidateScheduledBackup(value Profile) error {
+	if value.Stream != nil && len(value.Stream.Command) == 0 {
+		return errors.New("stdin stream backups cannot be scheduled; configure stream.command")
 	}
 	return nil
 }

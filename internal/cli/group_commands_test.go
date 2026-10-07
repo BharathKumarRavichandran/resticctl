@@ -363,3 +363,74 @@ func TestScheduledGroupRejectsGlobalDryRunWithoutRecordingSuccess(t *testing.T) 
 		t.Fatalf("status was recorded: %v", err)
 	}
 }
+
+func TestGroupCheckDoesNotRequireDumpExecutable(t *testing.T) {
+	directory := t.TempDir()
+	writeGroupCLIProfile(t, directory, "home")
+	path := filepath.Join(profile.Dir(directory), "home.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["mysql_databases"] = []map[string]any{{"name": "main", "database": "app", "executable": "resticctl-definitely-missing-mysqldump"}}
+	data, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIGroup(t, directory, `{"profiles":["home"]}`)
+	runner := &groupRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+	code, err := cli.run(context.Background(), []string{"--config-dir", directory, "group", "check", "daily"})
+	if code != 0 || err != nil {
+		t.Fatalf("check code=%d error=%v", code, err)
+	}
+	if runner.runs != 1 {
+		t.Fatalf("runs=%d", runner.runs)
+	}
+	code, err = cli.run(context.Background(), []string{"--config-dir", directory, "group", "validate", "daily"})
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "missing-mysqldump") {
+		t.Fatalf("validate code=%d error=%v", code, err)
+	}
+	code, err = cli.run(context.Background(), []string{"--config-dir", directory, "group", "backup", "daily"})
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "missing-mysqldump") {
+		t.Fatalf("backup code=%d error=%v", code, err)
+	}
+}
+
+func TestScheduledGroupRejectsStdinOnlyMember(t *testing.T) {
+	directory := t.TempDir()
+	writeCLIProfile(t, directory)
+	data := `{"repository":"local:test","private_file":"example.credentials.json","stream":{"filename":"stdin"}}`
+	if err := os.WriteFile(filepath.Join(profile.Dir(directory), "example.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIGroup(t, directory, `{"profiles":["example"]}`)
+	executor := &recordingScheduleExecutor{}
+	manager := newCronManager(executor, time.Now)
+	_, err := manager.InstallSpec(context.Background(), schedule.Spec{Name: "daily", TargetType: schedule.TargetGroup, Action: schedule.ActionBackup, Expressions: []string{"@daily"}, Backend: schedule.BackendCron, Executable: filepath.Join(directory, "resticctl"), ConfigDir: directory, Enabled: true, Start: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &groupRunner{}
+	cli := newTestCommandLine(io.Discard, io.Discard)
+	cli.newRunner = func() (app.Runner, error) { return runner, nil }
+	cli.newScheduleManager = func() schedule.Manager { return manager }
+	code, err := cli.run(context.Background(), []string{"--config-dir", directory, "schedule", "run", "daily", "--group"})
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "stream.command") {
+		t.Fatalf("code=%d error=%v", code, err)
+	}
+	if runner.runs != 0 {
+		t.Fatalf("Restic executed: %d", runner.runs)
+	}
+	if _, err := runstatus.LoadGroupAction(directory, "daily", schedule.ActionBackup); !errors.Is(err, runstatus.ErrNotRecorded) {
+		t.Fatalf("status recorded: %v", err)
+	}
+}

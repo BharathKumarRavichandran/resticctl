@@ -268,9 +268,14 @@ func (cli *commandLine) groupValidateCommand() *cobra.Command {
 		Use: "validate <group>", Short: "Validate a group and all its profiles", Args: cobra.ExactArgs(1),
 		ValidArgsFunction: cli.completeGroups,
 		RunE: execute(func(_ *cobra.Command, arguments []string) error {
-			configDir, configured, _, err := cli.loadGroup(arguments[0])
+			configDir, configured, members, err := cli.loadGroup(arguments[0])
 			if err != nil {
 				return err
+			}
+			for _, member := range members {
+				if err := app.ValidateDatabaseTools(member); err != nil {
+					return fmt.Errorf("profile %s: %w", member.Name, err)
+				}
 			}
 			return writeOutput(cli.stdout, "Group %s is valid (%d profiles in %s)\n", configured.Name, len(configured.Profiles), configDir)
 		}),
@@ -313,6 +318,13 @@ func (cli *commandLine) groupActionCommand(action string) *cobra.Command {
 			configDir, configured, profiles, err := cli.loadGroup(arguments[0])
 			if err != nil {
 				return err
+			}
+			if action == schedule.ActionBackup {
+				for _, member := range profiles {
+					if err := app.ValidateDatabaseTools(member); err != nil {
+						return fmt.Errorf("profile %s: %w", member.Name, err)
+					}
+				}
 			}
 			configuredDryRun := false
 			for _, member := range profiles {
@@ -435,18 +447,20 @@ func (cli *commandLine) loadGroup(name string) (string, group.Group, []profile.P
 	if err != nil {
 		return "", group.Group{}, nil, err
 	}
+	profiles, err := loadGroupProfiles(configDir, configured)
+	return configDir, configured, profiles, err
+}
+
+func loadGroupProfiles(configDir string, configured group.Group) ([]profile.Profile, error) {
 	profiles := make([]profile.Profile, 0, len(configured.Profiles))
 	for _, member := range configured.Profiles {
 		backupProfile, err := profile.Load(profile.Dir(configDir), member)
 		if err != nil {
-			return "", group.Group{}, nil, fmt.Errorf("invalid profile %s in group %s: %w", member, configured.Name, err)
-		}
-		if err := app.ValidateDatabaseTools(backupProfile); err != nil {
-			return "", group.Group{}, nil, fmt.Errorf("invalid profile %s in group %s: %w", member, configured.Name, err)
+			return nil, fmt.Errorf("invalid profile %s in group %s: %w", member, configured.Name, err)
 		}
 		profiles = append(profiles, backupProfile)
 	}
-	return configDir, configured, profiles, nil
+	return profiles, nil
 }
 
 func (cli *commandLine) createCommand() *cobra.Command {

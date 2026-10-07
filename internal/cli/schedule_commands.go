@@ -51,17 +51,19 @@ func (cli *commandLine) scheduleInstallCommand() *cobra.Command {
 			}
 			var backupProfile profile.Profile
 			var configuredGroup group.Group
+			var members []profile.Profile
 			if groupTarget {
-				if _, configuredGroup, _, err = cli.loadGroup(arguments[0]); err != nil {
+				if _, configuredGroup, members, err = cli.loadGroup(arguments[0]); err != nil {
 					return err
 				}
 			} else if backupProfile, err = profile.Load(profile.Dir(configDir), arguments[0]); err != nil {
 				return err
 			}
-			if !groupTarget && action == schedule.ActionBackup {
-				if err := app.ValidateDatabaseTools(backupProfile); err != nil {
-					return err
-				}
+			if !groupTarget {
+				members = []profile.Profile{backupProfile}
+			}
+			if err := validateScheduledMembers(members, action); err != nil {
+				return err
 			}
 			if !groupTarget && action == schedule.ActionBackup && backupProfile.Schedule != nil {
 				if !command.Flags().Changed("cron") && !command.Flags().Changed("calendar") {
@@ -300,6 +302,15 @@ func (cli *commandLine) scheduleReconcileCommand() *cobra.Command {
 }
 
 func (cli *commandLine) reconcileGroupSchedules(ctx context.Context, manager schedule.Manager, configDir, executable string, configured group.Group, dryRun bool) error {
+	if _, ok := configured.Schedules[schedule.ActionBackup]; ok {
+		members, err := loadGroupProfiles(configDir, configured)
+		if err != nil {
+			return err
+		}
+		if err := validateScheduledMembers(members, schedule.ActionBackup); err != nil {
+			return err
+		}
+	}
 	declared := make(map[string]struct{}, len(configured.Schedules))
 	actions := make([]string, 0, len(configured.Schedules))
 	for action := range configured.Schedules {
@@ -351,7 +362,7 @@ func (cli *commandLine) reconcileGroupSchedules(ctx context.Context, manager sch
 
 func (cli *commandLine) reconcileProfileSchedules(ctx context.Context, manager schedule.Manager, configDir, executable string, backupProfile profile.Profile, dryRun bool) error {
 	if backupProfile.Schedule != nil {
-		if err := app.ValidateDatabaseTools(backupProfile); err != nil {
+		if err := validateScheduledMembers([]profile.Profile{backupProfile}, schedule.ActionBackup); err != nil {
 			return err
 		}
 	}
@@ -435,6 +446,8 @@ func declaredScheduleSpecs(configDir, executable string, backupProfile profile.P
 }
 
 func preserveSchedulePolicy(spec *schedule.Spec, installed schedule.State) {
+	environmentPath := installed.EnvironmentPath
+	spec.EnvironmentPath = &environmentPath
 	spec.Permission = installed.Permission
 	spec.CronFile = installed.CronFile
 	spec.User = installed.User
@@ -494,6 +507,9 @@ func (cli *commandLine) runScheduledGroup(ctx context.Context, configDir, name, 
 		return err
 	}
 	if err := cli.newScheduleManager().Verify(ctx, state); err != nil {
+		return err
+	}
+	if err := validateScheduledMembers(profiles, action); err != nil {
 		return err
 	}
 	for _, member := range profiles {
@@ -829,6 +845,21 @@ func writeJSON(writer io.Writer, value any) error {
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
 		return fmt.Errorf("cannot write command output: %w", err)
+	}
+	return nil
+}
+
+func validateScheduledMembers(members []profile.Profile, action string) error {
+	if action != schedule.ActionBackup {
+		return nil
+	}
+	for _, member := range members {
+		if err := profile.ValidateScheduledBackup(member); err != nil {
+			return fmt.Errorf("profile %s: %w", member.Name, err)
+		}
+		if err := app.ValidateDatabaseTools(member); err != nil {
+			return fmt.Errorf("profile %s: %w", member.Name, err)
+		}
 	}
 	return nil
 }

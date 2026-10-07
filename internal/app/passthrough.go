@@ -14,7 +14,7 @@ func RunRestic(ctx context.Context, runner ResticRunner, backupProfile profile.P
 	if !profile.IsSupportedResticCommand(command) || strings.Contains(command, " ") {
 		return fmt.Errorf("unsupported restic command %q", command)
 	}
-	if err := validateResticArguments(arguments); err != nil {
+	if err := validateResticArguments(command, arguments); err != nil {
 		return err
 	}
 	if err := validateResticSubcommand(command, arguments); err != nil {
@@ -59,12 +59,12 @@ func appendConfiguredCommandArgs(arguments []string, backupProfile profile.Profi
 	return arguments
 }
 
-func validateResticArguments(arguments []string) error {
+func validateResticArguments(command string, arguments []string) error {
 	for _, argument := range arguments {
 		if argument == "--" {
 			break
 		}
-		if profile.IsReservedOption(argument) {
+		if profile.IsReservedCommandOption(argument, command) {
 			return fmt.Errorf("restic argument %q is reserved by resticctl", argument)
 		}
 	}

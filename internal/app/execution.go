@@ -173,6 +173,11 @@ func hasDryRunOption(arguments []string) bool {
 
 // ScheduledRun verifies and runs an overdue scheduled action.
 func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule.Manager, configDir string, backupProfile profile.Profile, action string, now func() time.Time, output io.Writer) (bool, error) {
+	if action == schedule.ActionBackup {
+		if err := profile.ValidateScheduledBackup(backupProfile); err != nil {
+			return false, err
+		}
+	}
 	state, err := schedule.LoadAction(configDir, backupProfile.Name, action)
 	if err != nil {
 		return false, err
@@ -203,8 +208,13 @@ func ScheduledRun(ctx context.Context, newRunner RunnerFactory, manager schedule
 				if err != nil {
 					return fmt.Errorf("lock copy target %s: %w", target, err)
 				}
-				err = Copy(runCtx, runner, backupProfile, target, false)
-				err = errors.Join(err, targetRecorder.Finish(err, now()))
+				targetCtx, targetObservation := observe(runCtx)
+				err = Copy(targetCtx, runner, backupProfile, target, false)
+				outcome := targetObservation.outcome(err, backupProfile.Monitoring.HistoryLimit)
+				if outcome.Warning && outcome.ExitCode != nil {
+					recordResticWarning(runCtx, backupProfile, *outcome.ExitCode)
+				}
+				err = errors.Join(err, targetRecorder.FinishOutcome(outcome, now()))
 				if err != nil {
 					return fmt.Errorf("copy target %s: %w", target, err)
 				}
