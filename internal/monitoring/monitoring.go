@@ -207,7 +207,13 @@ func (reporter *Reporter) export(ctx context.Context, status runstatus.Status) e
 		data, err := json.MarshalIndent(status, "", "  ")
 		if err == nil {
 			data = append(data, '\n')
-			err = writeAtomic(monitoring.StatusFile, data)
+			paths := []string{monitoring.StatusFile}
+			if path := profile.ActionStatusFile(monitoring.StatusFile, status.Action); path != "" {
+				paths = append(paths, path)
+			}
+			for _, path := range paths {
+				err = errors.Join(err, writeAtomic(path, data))
+			}
 		}
 		if err != nil {
 			exportErrors = append(exportErrors, fmt.Errorf("JSON status export: %w", err))

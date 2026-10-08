@@ -251,12 +251,13 @@ func TestRenameMovesMonitoringAndUpdatesAbsoluteOutputs(t *testing.T) {
 	}
 	writeRenameTestFile(t, filepath.Join(profile.Dir(configDir), "old.json"), string(data))
 	writeRenameTestFile(t, statusPath, `{"profile":"old","target_type":"profile","target_name":"old"}`)
+	writeRenameTestFile(t, filepath.Join(root, "latest-forget.json"), `{"profile":"old","target_type":"profile","target_name":"old","action":"forget"}`)
 	writeRenameTestFile(t, metricsPath, "resticctl_success{profile=\"old\",command=\"backup\"} 1\n")
 	const events = "historical event bytes\n"
 	writeRenameTestFile(t, eventPath, events)
 	writeRenameTestFile(t, filepath.Join(root, "backup.log"), "stderr bytes\n")
 	changes, err := RenameProfile(context.Background(), configDir, "old", "new", true)
-	if err != nil || len(changes) != 5 {
+	if err != nil || len(changes) != 6 {
 		t.Fatalf("changes=%q, err=%v", changes, err)
 	}
 	if _, err := os.Stat(eventPath); err != nil {
@@ -274,6 +275,8 @@ func TestRenameMovesMonitoringAndUpdatesAbsoluteOutputs(t *testing.T) {
 		t.Fatalf("paths=%+v", loaded.Monitoring)
 	}
 	assertRenameJSONField(t, loaded.Monitoring.StatusFile, "target_name", "new")
+	assertRenameJSONField(t, filepath.Join(newRoot, "latest-forget.json"), "profile", "new")
+	assertRenameJSONField(t, filepath.Join(newRoot, "latest-forget.json"), "target_name", "new")
 	metrics, err := os.ReadFile(loaded.Monitoring.PrometheusTextfile)
 	if err != nil || !strings.Contains(string(metrics), `profile="new"`) {
 		t.Fatalf("metrics=%s, err=%v", metrics, err)
@@ -282,7 +285,7 @@ func TestRenameMovesMonitoringAndUpdatesAbsoluteOutputs(t *testing.T) {
 	if err != nil || string(copied) != events {
 		t.Fatalf("events=%s, err=%v", copied, err)
 	}
-	for _, name := range []string{"latest.json", "metrics.prom", "events.jsonl", "backup.log"} {
+	for _, name := range []string{"latest.json", "latest-forget.json", "metrics.prom", "events.jsonl", "backup.log"} {
 		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
 			t.Fatalf("old file %s remains: %v", name, err)
 		}

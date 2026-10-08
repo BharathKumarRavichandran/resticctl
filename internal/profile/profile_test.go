@@ -499,12 +499,16 @@ func TestLoadRejectsUnsafeMonitoringConfiguration(t *testing.T) {
 	writePrivate(t, filepath.Join(directory, "credentials.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
 	writePrivate(t, filepath.Join(directory, "custom-ca.pem"), "test CA input")
 	for name, monitoring := range map[string]string{
-		"credential URL":       `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
-		"credential overwrite": `{"status_file":"../../credentials.json"}`,
-		"database overwrite":   `{"status_file":"../../source.sqlite"}`,
-		"database log append":  `{"logs":[{"type":"file","path":"../../source.sqlite"}]}`,
-		"CA overwrite":         `{"prometheus_textfile":"../../custom-ca.pem","http":[{"url":"https://monitor.example","ca_file":"custom-ca.pem"}]}`,
-		"header newline":       `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
+		"credential URL":                  `{"http":[{"url":"https://user:secret@monitor.example/events"}]}`,
+		"credential overwrite":            `{"status_file":"../../credentials.json"}`,
+		"database overwrite":              `{"status_file":"../../source.sqlite"}`,
+		"action log parent collision":     `{"logs":[{"type":"file","path":"latest-forget.json/events.jsonl"}]}`,
+		"action metrics parent collision": `{"status_file":"exports/latest.json","prometheus_textfile":"exports"}`,
+		"action log collision":            `{"logs":[{"type":"file","path":"latest-forget.json"}]}`,
+		"action metrics collision":        `{"status_file":"../../source.json","logs":[],"prometheus_textfile":"../../source-check.json"}`,
+		"database log append":             `{"logs":[{"type":"file","path":"../../source.sqlite"}]}`,
+		"CA overwrite":                    `{"prometheus_textfile":"../../custom-ca.pem","http":[{"url":"https://monitor.example","ca_file":"custom-ca.pem"}]}`,
+		"header newline":                  `{"http":[{"url":"https://monitor.example/events","headers":{"X-Test":"bad\nvalue"}}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials.json","sqlite_databases":[{"name":"source","path":"source.sqlite"}],"monitoring":`+monitoring+`}`)
@@ -1270,6 +1274,39 @@ func TestMonitoringDefaultsAndExplicitOptOuts(t *testing.T) {
 func TestLoadAcceptsAttachedRestoreIncludeValue(t *testing.T) {
 	directory := t.TempDir()
 	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"command":["unused"]}},"backup_paths":["."],"commands":{"restore":{"args":["-qiprivate"]}}}`)
+	if _, err := Load(directory, "example"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActionStatusFile(t *testing.T) {
+	for _, test := range []struct{ file, action, want string }{
+		{"latest.json", "backup", "latest-backup.json"},
+		{filepath.Join("exports", "custom.status.json"), "check", filepath.Join("exports", "custom.status-check.json")},
+		{filepath.Join("exports", ".status"), "prune", filepath.Join("exports", "-prune.status")},
+		{"status", "forget", "status-forget"},
+		{"", "backup", ""},
+		{"latest.json", "../forget", ""},
+		{"latest.json", "", ""},
+	} {
+		if got := ActionStatusFile(test.file, test.action); got != test.want {
+			t.Errorf("ActionStatusFile(%q, %q) = %q, want %q", test.file, test.action, got, test.want)
+		}
+	}
+}
+
+func TestLoadRejectsActionStatusOverwritingCredentials(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "credentials-backup.json"), `{"credentials":{"password":{"command":["password-command"]}}}`)
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","private_file":"credentials-backup.json","monitoring":{"status_file":"../../credentials.json"}}`)
+	if _, err := Load(directory, "example"); err == nil || !strings.Contains(err.Error(), "protected input") {
+		t.Fatalf("expected protected input error, got %v", err)
+	}
+}
+
+func TestMonitoringOutputPathsMayShareDirectory(t *testing.T) {
+	directory := t.TempDir()
+	writePrivate(t, filepath.Join(directory, "example.json"), `{"repository":"local:test","credentials":{"password":{"value":"test"}},"monitoring":{"status_file":"exports/latest.json","prometheus_textfile":"exports2/metrics.prom","logs":[{"type":"file","path":"exports/events.jsonl"}]}}`)
 	if _, err := Load(directory, "example"); err != nil {
 		t.Fatal(err)
 	}

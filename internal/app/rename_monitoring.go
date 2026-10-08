@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"resticctl/internal/action"
 	"resticctl/internal/profile"
 )
 
@@ -95,7 +96,11 @@ func monitoringRenameUpdates(configDir, oldName, newName string, monitoring prof
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("monitoring file %s must be a regular file", path)
 		}
-		moveOnly := path != monitoring.StatusFile && path != monitoring.PrometheusTextfile
+		isStatus := path == monitoring.StatusFile
+		for _, managedAction := range action.All() {
+			isStatus = isStatus || path == profile.ActionStatusFile(monitoring.StatusFile, string(managedAction))
+		}
+		moveOnly := !isStatus && path != monitoring.PrometheusTextfile
 		var data []byte
 		if !moveOnly {
 			var err error
@@ -104,7 +109,7 @@ func monitoringRenameUpdates(configDir, oldName, newName string, monitoring prof
 				return err
 			}
 		}
-		if path == monitoring.StatusFile {
+		if isStatus {
 			var belongs bool
 			var err error
 			data, belongs, err = renameStatusIdentity(data, oldName, newName)

@@ -170,7 +170,7 @@ func TestDefaultMonitoringWritesSuccessfulAndFailedActions(t *testing.T) {
 			if status.State != want || status.Command != "check" {
 				t.Fatalf("status=%+v", status)
 			}
-			for _, name := range []string{"latest.json", "metrics.prom", "events.jsonl"} {
+			for _, name := range []string{"latest.json", "latest-check.json", "metrics.prom", "events.jsonl"} {
 				data, err := os.ReadFile(filepath.Join(root, name))
 				if err != nil || len(data) == 0 {
 					t.Fatalf("%s data=%s error=%v", name, data, err)

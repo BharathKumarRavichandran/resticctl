@@ -15,6 +15,16 @@ import (
 
 var monitoringPhases = map[string]bool{"send-before": true, "send-after": true, "send-after-fail": true, "send-finally": true, "warning": true}
 
+// ActionStatusFile derives a per-action export beside the shared status file.
+// Disabled status exports and unsupported actions have no output path.
+func ActionStatusFile(statusFile, action string) string {
+	if statusFile == "" || !managedaction.Action(action).Capabilities().Recordable {
+		return ""
+	}
+	extension := filepath.Ext(statusFile)
+	return strings.TrimSuffix(statusFile, extension) + "-" + action + extension
+}
+
 func validateMonitoring(p *Profile, base string) error {
 	m := &p.Monitoring
 	if m.HistoryLimit < 0 {
@@ -158,6 +168,9 @@ func validateMonitoring(p *Profile, base string) error {
 		sensitive = append(sensitive, database.ConfigFile)
 	}
 	outputs := []string{m.StatusFile, m.PrometheusTextfile}
+	for _, action := range managedaction.All() {
+		outputs = append(outputs, ActionStatusFile(m.StatusFile, string(action)))
+	}
 	for _, destination := range m.Logs {
 		if destination.Type == "file" {
 			outputs = append(outputs, destination.Path)
@@ -173,12 +186,21 @@ func validateMonitoring(p *Profile, base string) error {
 			}
 		}
 		for _, earlier := range outputs[:index] {
-			if earlier != "" && strings.EqualFold(filepath.Clean(output), filepath.Clean(earlier)) {
-				return fmt.Errorf("monitoring outputs must use distinct paths: %s", output)
+			if earlier != "" && monitoringPathsConflict(output, earlier) {
+				return fmt.Errorf("monitoring outputs must use distinct paths without nesting: %s and %s", output, earlier)
 			}
 		}
 	}
 	return nil
+}
+
+func monitoringPathsConflict(first, second string) bool {
+	first, second = filepath.Clean(first), filepath.Clean(second)
+	contains := func(parent, child string) bool {
+		prefix := strings.TrimSuffix(parent, string(filepath.Separator)) + string(filepath.Separator)
+		return len(child) >= len(prefix) && strings.EqualFold(child[:len(prefix)], prefix)
+	}
+	return strings.EqualFold(first, second) || contains(first, second) || contains(second, first)
 }
 
 func validateHTTPEndpoint(raw string) error {

@@ -945,6 +945,10 @@ or temporary credential-file names. Dry runs do not replace status.
 
 Every recorded profile action exports `latest.json`, `metrics.prom` (Prometheus
 textfile), and `events.jsonl` under `<config-dir>/monitoring/<profile>/` by default.
+Each action also writes its own latest status: `latest-backup.json`,
+`latest-forget.json`, `latest-check.json`, `latest-prune.json`, or
+`latest-copy.json`. These retain the latest result for that action even when
+another action runs. `latest.json` continues to show the most recent action.
 Backup runs also capture aggregate statistics. Group runs export monitoring for
 each member profile. Dry runs do not write monitoring output.
 
@@ -1000,8 +1004,15 @@ For example:
 
 Relative monitoring output paths resolve under
 `<config-dir>/monitoring/<profile>/`; for example, `"status_file": "latest.json"`
-writes `monitoring/<profile>/latest.json`, and `"path": "events.jsonl"` writes
-`monitoring/<profile>/events.jsonl`. Absolute output paths are used as configured.
+writes `monitoring/<profile>/latest.json` plus the per-action files, and
+`"path": "events.jsonl"` writes `monitoring/<profile>/events.jsonl`. Absolute
+output paths are used as configured.
+Per-action filenames insert `-<action>` before the configured status file's
+extension; for example, `exports/status.json` also produces
+`exports/status-backup.json`. Setting `status_file` to `""` disables both shared
+and per-action JSON exports. Files are created when the corresponding action
+finishes; existing run history is not backfilled. Manual copies to different
+targets share `latest-copy.json`; its `target_name` identifies the last target.
 CA paths still resolve beside the profile. Output files and log files are private.
 The directory layout replaces the former flat state filenames; migrate existing
 state files and monitoring output paths before installing this version.

@@ -283,3 +283,97 @@ func TestPushgatewaySeparatesProfilesAndCommands(t *testing.T) {
 		t.Fatalf("groupings=%v", paths)
 	}
 }
+
+func TestActionStatusExportsRetainIndependentResults(t *testing.T) {
+	for _, test := range []struct{ filename, prefix, suffix string }{
+		{"latest.json", "latest-", ".json"},
+		{"custom.status.json", "custom.status-", ".json"},
+		{"status", "status-", ""},
+	} {
+		t.Run(test.filename, func(t *testing.T) {
+			directory := t.TempDir()
+			shared := filepath.Join(directory, test.filename)
+			reporter := New(profile.Profile{Monitoring: profile.Monitoring{StatusFile: shared}}, nil)
+			assertStatus := func(path, action, state string) {
+				t.Helper()
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var status runstatus.Status
+				if err := json.Unmarshal(data, &status); err != nil || status.Action != action || status.State != state {
+					t.Fatalf("%s: status=%+v error=%v", path, status, err)
+				}
+			}
+			for _, action := range []string{"backup", "forget", "check", "prune", "copy"} {
+				state := "succeeded"
+				if action == "backup" {
+					state = "failed"
+				}
+				status := runstatus.Status{Profile: "example", Action: action, Command: action, State: state}
+				if err := reporter.Report(context.Background(), "send-finally", status); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, action := range []string{"backup", "forget", "check", "prune", "copy"} {
+				state := "succeeded"
+				if action == "backup" {
+					state = "failed"
+				}
+				assertStatus(filepath.Join(directory, test.prefix+action+test.suffix), action, state)
+			}
+			assertStatus(shared, "copy", "succeeded")
+			if err := reporter.Report(context.Background(), "send-finally", runstatus.Status{Action: "backup", State: "succeeded"}); err != nil {
+				t.Fatal(err)
+			}
+			assertStatus(shared, "backup", "succeeded")
+			assertStatus(filepath.Join(directory, test.prefix+"backup"+test.suffix), "backup", "succeeded")
+			assertStatus(filepath.Join(directory, test.prefix+"forget"+test.suffix), "forget", "succeeded")
+		})
+	}
+}
+
+func TestActionStatusExportSurvivesSharedExportFailure(t *testing.T) {
+	directory := t.TempDir()
+	shared := filepath.Join(directory, "latest.json")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reporter := New(profile.Profile{Monitoring: profile.Monitoring{StatusFile: shared}}, nil)
+	if err := reporter.export(context.Background(), runstatus.Status{Action: "forget"}); err == nil {
+		t.Fatal("expected shared export error")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "latest-forget.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSharedStatusExportSurvivesActionExportFailure(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "latest-forget.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(directory, "latest.json")
+	reporter := New(profile.Profile{Monitoring: profile.Monitoring{StatusFile: shared}}, nil)
+	if err := reporter.export(context.Background(), runstatus.Status{Action: "forget"}); err == nil {
+		t.Fatal("expected action export error")
+	}
+	data, err := os.ReadFile(shared)
+	if err != nil || !strings.Contains(string(data), `"action": "forget"`) {
+		t.Fatalf("shared export=%s error=%v", data, err)
+	}
+}
+
+func TestActionStatusExportsDisabled(t *testing.T) {
+	directory := t.TempDir()
+	reporter := New(profile.Profile{Monitoring: profile.Monitoring{
+		PrometheusTextfile: filepath.Join(directory, "metrics.prom"),
+	}}, nil)
+	if err := reporter.Report(context.Background(), "send-finally", runstatus.Status{Action: "backup"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 2 || entries[0].Name() != "metrics.prom" || entries[1].Name() != "metrics.prom.lock" {
+		t.Fatalf("disabled JSON exports created unexpected files: %v error=%v", entries, err)
+	}
+}
